@@ -1,1 +1,2 @@
-export { BeforeDashboardServer } from '../components/BeforeDashboardServer.js'
+export { MerchantCenterAdminView } from '../components/MerchantCenterAdminView.js'
+export { MerchantCenterDashboardWidget } from '../components/MerchantCenterDashboardWidget.js'

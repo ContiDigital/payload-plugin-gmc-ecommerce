@@ -1,15 +1,15 @@
 import type { Payload } from 'payload'
 
 import config from '@payload-config'
-import { createPayloadRequest, getPayload } from 'payload'
+import { getPayload } from 'payload'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
-
-import { customEndpointHandler } from '../src/endpoints/customEndpointHandler.js'
 
 let payload: Payload
 
 afterAll(async () => {
-  await payload.destroy()
+  if (typeof payload?.db?.destroy === 'function') {
+    await payload.db.destroy()
+  }
 })
 
 beforeAll(async () => {
@@ -17,36 +17,77 @@ beforeAll(async () => {
 })
 
 describe('Plugin integration tests', () => {
-  test('should query custom endpoint added by plugin', async () => {
-    const request = new Request('http://localhost:3000/api/my-plugin-endpoint', {
-      method: 'GET',
-    })
-
-    const payloadRequest = await createPayloadRequest({ config, request })
-    const response = await customEndpointHandler(payloadRequest)
-    expect(response.status).toBe(200)
-
-    const data = await response.json()
-    expect(data).toMatchObject({
-      message: 'Hello from custom endpoint',
-    })
+  test('plugin registers hidden gmc-field-mappings collection', () => {
+    expect(payload.collections['gmc-field-mappings']).toBeDefined()
   })
 
-  test('can create post with custom text field added by plugin', async () => {
-    const post = await payload.create({
-      collection: 'posts',
+  test('plugin registers hidden gmc-sync-log collection', () => {
+    expect(payload.collections['gmc-sync-log']).toBeDefined()
+  })
+
+  test('products collection has merchantCenter group field', () => {
+    const productsConfig = payload.config.collections?.find((c) => c.slug === 'products')
+    expect(productsConfig).toBeDefined()
+
+    const flatFields = flattenFields(productsConfig!.fields ?? [])
+    const mcField = flatFields.find((f) => 'name' in f && f.name === 'merchantCenter')
+    expect(mcField).toBeDefined()
+  })
+
+  test('can create a product with merchantCenter fields', async () => {
+    const product = await payload.create({
+      collection: 'products',
       data: {
-        addedByPlugin: 'added by plugin',
+        title: 'Test Statue',
+        sku: 'TEST-001',
+        price: 1999.99,
+        description: 'A test product',
+        merchantCenter: {
+          enabled: true,
+          identity: {
+            offerId: 'TEST-001',
+          },
+        },
       },
     })
-    expect(post.addedByPlugin).toBe('added by plugin')
+
+    expect(product.merchantCenter?.enabled).toBe(true)
+    expect(product.merchantCenter?.identity?.offerId).toBe('TEST-001')
   })
 
-  test('plugin creates and seeds plugin-collection', async () => {
-    expect(payload.collections['plugin-collection']).toBeDefined()
+  test('can query products with merchantCenter.enabled filter', async () => {
+    const { docs } = await payload.find({
+      collection: 'products',
+      where: {
+        'merchantCenter.enabled': { equals: true },
+      },
+    })
 
-    const { docs } = await payload.find({ collection: 'plugin-collection' })
-
-    expect(docs).toHaveLength(1)
+    expect(docs.length).toBeGreaterThan(0)
+    expect(
+      docs.every(
+        (d: Record<string, unknown>) =>
+          (d.merchantCenter as Record<string, unknown>)?.enabled === true,
+      ),
+    ).toBe(true)
   })
 })
+
+// Utility: flatten tabs/row/collapsible fields to find nested fields
+function flattenFields(fields: Record<string, unknown>[]): Record<string, unknown>[] {
+  const result: Record<string, unknown>[] = []
+  for (const field of fields) {
+    result.push(field)
+    if (field.type === 'tabs' && Array.isArray(field.tabs)) {
+      for (const tab of field.tabs as Record<string, unknown>[]) {
+        if (Array.isArray(tab.fields)) {
+          result.push(...flattenFields(tab.fields as Record<string, unknown>[]))
+        }
+      }
+    }
+    if (Array.isArray(field.fields)) {
+      result.push(...flattenFields(field.fields as Record<string, unknown>[]))
+    }
+  }
+  return result
+}

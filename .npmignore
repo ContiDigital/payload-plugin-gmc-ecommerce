@@ -1,0 +1,34 @@
+# Source (published via dist/)
+src/
+
+# Development
+dev/
+.swcrc
+tsconfig.json
+tsconfig.build.json
+vitest.config.js
+playwright.config.js
+eslint.config.js
+.prettierrc.json
+CONTRIBUTING.md
+
+# Tests
+**/__tests__/
+**/*.test.*
+**/*.spec.*
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# CI / Git
+.github/
+.gitignore
+
+# Build artifacts
+*.tsbuildinfo
+package-lock.json
+
+# Scripts
+scripts/

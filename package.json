@@ -1,35 +1,57 @@
 {
   "name": "payload-plugin-gmc-ecommerce",
   "version": "1.0.0",
-  "description": "A blank template to get started with Payload 3.0",
+  "description": "Google Merchant Center integration plugin for Payload CMS — full product sync, field mapping, and admin UI",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ContiDigital/payload-plugin-gmc-ecommerce.git"
+  },
+  "homepage": "https://github.com/ContiDigital/payload-plugin-gmc-ecommerce#readme",
+  "bugs": {
+    "url": "https://github.com/ContiDigital/payload-plugin-gmc-ecommerce/issues"
+  },
   "type": "module",
+  "keywords": [
+    "payload",
+    "payloadcms",
+    "plugin",
+    "google-merchant-center",
+    "ecommerce",
+    "shopping",
+    "product-feed",
+    "google-shopping"
+  ],
   "exports": {
     ".": {
-      "import": "./src/index.ts",
-      "types": "./src/index.ts",
-      "default": "./src/index.ts"
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     },
     "./client": {
-      "import": "./src/exports/client.ts",
-      "types": "./src/exports/client.ts",
-      "default": "./src/exports/client.ts"
+      "import": "./dist/exports/client.js",
+      "types": "./dist/exports/client.d.ts",
+      "default": "./dist/exports/client.js"
     },
     "./rsc": {
-      "import": "./src/exports/rsc.ts",
-      "types": "./src/exports/rsc.ts",
-      "default": "./src/exports/rsc.ts"
+      "import": "./dist/exports/rsc.js",
+      "types": "./dist/exports/rsc.d.ts",
+      "default": "./dist/exports/rsc.js"
     }
   },
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
   ],
+  "sideEffects": false,
   "scripts": {
-    "build": "pnpm copyfiles && pnpm build:types && pnpm build:swc",
-    "build:swc": "swc ./src -d ./dist --config-file .swcrc --strip-leading-paths",
-    "build:types": "tsc --outDir dist --rootDir ./src",
+    "build": "pnpm clean && pnpm copyfiles && pnpm build:types && pnpm build:swc",
+    "build:swc": "swc ./src -d ./dist --config-file .swcrc --strip-leading-paths --ignore \"**/*.test.ts\" --ignore \"**/__tests__/**\"",
+    "build:types": "tsc -p tsconfig.build.json",
     "clean": "rimraf {dist,*.tsbuildinfo}",
     "copyfiles": "copyfiles -u 1 \"src/**/*.{html,css,scss,ttf,woff,woff2,eot,svg,jpg,png,json}\" dist/",
     "dev": "next dev dev --turbo",
@@ -38,11 +60,15 @@
     "dev:payload": "cross-env PAYLOAD_CONFIG_PATH=./dev/payload.config.ts payload",
     "generate:importmap": "pnpm dev:generate-importmap",
     "generate:types": "pnpm dev:generate-types",
-    "lint": "eslint",
-    "lint:fix": "eslint ./src --fix",
-    "test": "pnpm test:int && pnpm test:e2e",
+    "lint": "eslint src --max-warnings=0",
+    "lint:fix": "eslint src --fix",
+    "pack:smoke": "bash ./scripts/pack-smoke.sh",
+    "prepack": "pnpm build",
+    "release:check": "pnpm lint && pnpm test:int && pnpm build && pnpm pack:smoke",
+    "test": "pnpm test:int",
+    "test:coverage": "vitest --run --coverage",
     "test:e2e": "playwright test",
-    "test:int": "vitest"
+    "test:int": "vitest --run"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
@@ -56,6 +82,7 @@
     "@playwright/test": "1.58.2",
     "@swc-node/register": "1.10.9",
     "@swc/cli": "0.6.0",
+    "@swc/core": "^1.15.18",
     "@types/node": "22.19.9",
     "@types/react": "19.2.9",
     "@types/react-dom": "19.2.3",
@@ -80,32 +107,16 @@
     "vitest": "4.0.18"
   },
   "peerDependencies": {
-    "payload": "^3.37.0"
+    "@payloadcms/ui": "^3.0.0",
+    "payload": "^3.37.0",
+    "react": "^18.0.0 || ^19.0.0"
   },
   "engines": {
     "node": "^18.20.2 || >=20.9.0",
     "pnpm": "^9 || ^10"
   },
   "publishConfig": {
-    "exports": {
-      ".": {
-        "import": "./dist/index.js",
-        "types": "./dist/index.d.ts",
-        "default": "./dist/index.js"
-      },
-      "./client": {
-        "import": "./dist/exports/client.js",
-        "types": "./dist/exports/client.d.ts",
-        "default": "./dist/exports/client.js"
-      },
-      "./rsc": {
-        "import": "./dist/exports/rsc.js",
-        "types": "./dist/exports/rsc.d.ts",
-        "default": "./dist/exports/rsc.js"
-      }
-    },
-    "main": "./dist/index.js",
-    "types": "./dist/index.d.ts"
+    "access": "public"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -113,7 +124,5 @@
       "esbuild",
       "unrs-resolver"
     ]
-  },
-  "registry": "https://registry.npmjs.org/",
-  "dependencies": {}
+  }
 }
