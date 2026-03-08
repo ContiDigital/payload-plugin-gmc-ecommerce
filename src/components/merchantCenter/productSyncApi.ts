@@ -1,7 +1,5 @@
 import type { ProductAnalytics } from './types.js'
 
-import { MC_FIELD_GROUP_NAME } from '../../constants.js'
-
 export type ProductStatusEntry = {
   context: string
   status: string
@@ -10,6 +8,7 @@ export type ProductStatusEntry = {
 export type ProductSyncActionResult = {
   error?: string
   success: boolean
+  warning?: string
 }
 
 type FetchLike = typeof fetch
@@ -50,7 +49,13 @@ export const fetchProductAnalytics = async (args: {
   })
 
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`)
+    const errorText = await response.text()
+    try {
+      const parsed = JSON.parse(errorText) as { error?: string }
+      throw new Error(parsed.error || `HTTP ${response.status}`)
+    } catch {
+      throw new Error(errorText || `HTTP ${response.status}`)
+    }
   }
 
   return response.json()
@@ -79,7 +84,13 @@ export const executeProductSyncAction = async (args: {
   })
 
   if (!response.ok) {
-    return { error: `HTTP ${response.status}`, success: false }
+    const errorText = await response.text()
+    try {
+      const parsed = JSON.parse(errorText) as { error?: string }
+      return { error: parsed.error || `HTTP ${response.status}`, success: false }
+    } catch {
+      return { error: errorText || `HTTP ${response.status}`, success: false }
+    }
   }
 
   const data = await response.json()
@@ -88,6 +99,7 @@ export const executeProductSyncAction = async (args: {
   return {
     error: data.error ?? (data.success === false ? 'Operation failed' : undefined),
     success,
+    warning: typeof data.warning === 'string' ? data.warning : undefined,
   }
 }
 
@@ -113,6 +125,5 @@ export const fetchMerchantCenterState = async (args: {
     return undefined
   }
 
-  const doc = await response.json()
-  return doc[MC_FIELD_GROUP_NAME] ?? undefined
+  return response.json()
 }

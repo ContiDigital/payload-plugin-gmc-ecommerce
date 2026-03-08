@@ -15,10 +15,11 @@ import {
 } from '../../constants.js'
 import { createPluginLogger } from '../utilities/logger.js'
 import { asProductDoc } from '../utilities/recordUtils.js'
-import { checkPullConflict } from './conflictResolver.js'
+import { checkPullConflict, extractMCProductLastModified } from './conflictResolver.js'
+import { deepMerge } from './fieldMapping.js'
 import { buildInternalSyncContext } from './hookContext.js'
 import { resolveIdentity } from './identityResolver.js'
-import { reverseTransformProduct } from './transformers.js'
+import { productAttributesContainRemoteSubset, reverseTransformProduct } from './transformers.js'
 
 // ---------------------------------------------------------------------------
 // Pull single product from Merchant Center
@@ -66,12 +67,20 @@ export const pullProduct = async (args: {
     )
 
     const mcProduct = response.data
+    const reverseTransformed = reverseTransformProduct(mcProduct)
+    const localAttrs =
+      product[MC_FIELD_GROUP_NAME]?.[MC_PRODUCT_ATTRIBUTES_FIELD_NAME] as Record<string, unknown> | undefined
+    const remoteMatchesLocal = productAttributesContainRemoteSubset(
+      localAttrs,
+      reverseTransformed.productAttributes,
+    )
 
     // Check conflict strategy before overwriting local data
     const mcState = product[MC_FIELD_GROUP_NAME]
     const conflictResult = checkPullConflict({
       localSyncMeta: mcState?.syncMeta,
-      mcLastModified: typeof mcProduct.updateTime === 'string' ? mcProduct.updateTime : undefined,
+      mcLastModified: extractMCProductLastModified(mcProduct),
+      remoteMatchesLocal,
       strategy: options.sync.conflictStrategy,
     })
 
@@ -81,11 +90,14 @@ export const pullProduct = async (args: {
         action: 'pull',
         populatedFields: [],
         productId,
-        success: false,
+        skipped: true,
+        success: true,
+        warning: conflictResult.reason,
       }
     }
 
-    const { customAttributes, productAttributes } = reverseTransformProduct(mcProduct)
+    const { customAttributes, productAttributes } = reverseTransformed
+    const mergedProductAttributes = deepMerge(localAttrs ?? {}, productAttributes)
     const populatedFields = Object.keys(productAttributes)
 
     await payload.update({
@@ -101,12 +113,12 @@ export const pullProduct = async (args: {
             feedLabel: identity.feedLabel,
             offerId: identity.offerId,
           },
-          [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: productAttributes,
+          [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: mergedProductAttributes,
           snapshot: mcProduct,
           syncMeta: {
             dirty: false,
             lastAction: 'pullSync',
-            lastError: undefined,
+            lastError: null,
             lastSyncedAt: new Date().toISOString(),
             state: 'success',
             syncSource: 'pull',
@@ -241,7 +253,7 @@ export const pullAll = async (args: {
           const localMcState = payloadProduct[MC_FIELD_GROUP_NAME]
           const conflictResult = checkPullConflict({
             localSyncMeta: localMcState?.syncMeta,
-            mcLastModified: typeof fullProduct.updateTime === 'string' ? fullProduct.updateTime : undefined,
+            mcLastModified: extractMCProductLastModified(fullProduct),
             strategy: options.sync.conflictStrategy,
           })
 
@@ -271,7 +283,7 @@ export const pullAll = async (args: {
                 syncMeta: {
                   dirty: false,
                   lastAction: 'pullSync',
-                  lastError: undefined,
+                  lastError: null,
                   lastSyncedAt: new Date().toISOString(),
                   state: 'success',
                   syncSource: 'pull',

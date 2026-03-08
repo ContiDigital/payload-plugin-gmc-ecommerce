@@ -95,7 +95,7 @@ const normalizeConflictStrategy = (value: string | undefined): ConflictStrategy 
   if (value === 'mc-wins' || value === 'payload-wins' || value === 'newest-wins') {
     return value
   }
-  return 'mc-wins'
+  return 'newest-wins'
 }
 
 const normalizeCategories = (

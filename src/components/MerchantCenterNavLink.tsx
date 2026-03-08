@@ -1,25 +1,28 @@
 'use client'
 
-import { useConfig } from '@payloadcms/ui'
 import React from 'react'
 
-import { resolveMerchantCenterApiConfig } from './merchantCenter/apiConfig.js'
+type MerchantCenterNavLinkProps = {
+  href?: string
+  label?: string
+}
 
-export const MerchantCenterNavLink: React.FC = () => {
-  const { config } = useConfig()
-  const { adminRoute, gmcAdminRoute } = resolveMerchantCenterApiConfig(config)
-
+export const MerchantCenterNavLink: React.FC<MerchantCenterNavLinkProps> = ({
+  href = '/merchant-center',
+  label = 'Merchant Center',
+}) => {
   return (
     <a
-      href={`${adminRoute}${gmcAdminRoute}`}
+      href={href}
       style={{
         color: 'inherit',
         display: 'block',
-        padding: '8px 16px',
+        fontSize: '0.95rem',
+        padding: '0.35rem 0',
         textDecoration: 'none',
       }}
     >
-      Merchant Center
+      {label}
     </a>
   )
 }

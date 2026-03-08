@@ -156,7 +156,12 @@ export const runInitialSync = async (args: {
 
       report.skipped += docsSkipped
 
-      void onProgress?.(report)
+      if (onProgress) {
+        await onProgress({
+          ...report,
+          errors: [...report.errors],
+        })
+      }
 
       hasMore = result.hasNextPage ?? false
       page++
@@ -297,7 +302,7 @@ const processInitialSyncProduct = async (args: {
           snapshot,
           syncMeta: {
             lastAction: 'initialSync',
-            lastError: undefined,
+            lastError: null,
             lastSyncedAt: new Date().toISOString(),
             state: 'success',
             syncSource: 'initial',

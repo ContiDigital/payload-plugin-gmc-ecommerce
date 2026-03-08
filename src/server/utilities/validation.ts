@@ -25,6 +25,17 @@ export const requireString = (
   return value.trim()
 }
 
+export const requireIdentifierString = (
+  value: unknown,
+  fieldName: string,
+): string => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value)
+  }
+
+  return requireString(value, fieldName)
+}
+
 export const requirePositiveInteger = (
   value: unknown,
   fieldName: string,
@@ -66,7 +77,7 @@ export const requireNonNegativeInteger = (
 }
 
 export const parseSyncProductInput = (body: Record<string, unknown>): { productId: string } => {
-  return { productId: requireString(body.productId, 'productId') }
+  return { productId: requireIdentifierString(body.productId, 'productId') }
 }
 
 export const parseDeleteProductInput = (
@@ -107,18 +118,19 @@ export const parseBatchInput = (body: Record<string, unknown>): {
   filter?: Record<string, unknown>
   productIds?: string[]
 } => {
-  const productIds = body.productIds as string[] | undefined
+  const rawProductIds = body.productIds
   const filter = body.filter as Record<string, unknown> | undefined
 
-  if (productIds !== undefined) {
-    if (!Array.isArray(productIds)) {
+  let productIds: string[] | undefined
+
+  if (rawProductIds !== undefined) {
+    if (!Array.isArray(rawProductIds)) {
       throw new ValidationError('productIds must be an array of strings')
     }
-    for (let i = 0; i < productIds.length; i++) {
-      if (typeof productIds[i] !== 'string' || productIds[i].trim().length === 0) {
-        throw new ValidationError(`productIds[${i}] must be a non-empty string`)
-      }
-    }
+
+    productIds = rawProductIds.map((productId, index) =>
+      requireIdentifierString(productId, `productIds[${index}]`),
+    )
   }
 
   if (filter !== undefined) {
@@ -155,7 +167,7 @@ export const parseAnalyticsInput = (body: Record<string, unknown>): {
   rangeDays: number
 } => {
   return {
-    productId: requireString(body.productId, 'productId'),
+    productId: requireIdentifierString(body.productId, 'productId'),
     rangeDays: requirePositiveInteger(body.rangeDays, 'rangeDays', 30),
   }
 }

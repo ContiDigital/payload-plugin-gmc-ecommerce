@@ -140,6 +140,11 @@ export const productSyncStyles = {
     color: 'var(--theme-elevation-500)',
     fontSize: '12px',
   } satisfies React.CSSProperties,
+  note: {
+    color: 'var(--theme-elevation-500)',
+    fontSize: '12px',
+    lineHeight: 1.5,
+  } satisfies React.CSSProperties,
   section: {
     borderTop: '1px solid var(--theme-elevation-150)',
     display: 'flex',
@@ -164,5 +169,12 @@ export const productSyncStyles = {
   } satisfies React.CSSProperties,
   value: {
     fontSize: '13px',
+  } satisfies React.CSSProperties,
+  warning: {
+    backgroundColor: '#fffbeb',
+    borderRadius: '4px',
+    color: '#92400e',
+    fontSize: '13px',
+    padding: '8px 12px',
   } satisfies React.CSSProperties,
 }

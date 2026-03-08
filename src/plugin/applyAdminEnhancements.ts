@@ -4,61 +4,148 @@ import type { NormalizedPluginOptions } from '../types/index.js'
 
 import { PLUGIN_SLUG } from '../constants.js'
 
+type AdminComponents = NonNullable<NonNullable<Config['admin']>['components']>
+type AdminView = NonNullable<AdminComponents['views']>[string]
+type CustomComponentArray = NonNullable<AdminComponents['beforeDashboard']>
+type DashboardComponent = NonNullable<AdminComponents['beforeDashboard']>[number]
+type NavComponent = NonNullable<AdminComponents['beforeNavLinks']>[number]
+
+const withUniqueComponent = (
+  components: AdminComponents['beforeNavLinks'],
+  component: NavComponent,
+): NonNullable<AdminComponents['beforeNavLinks']> => {
+  const next = [...(components ?? [])]
+
+  const exists = next.some((candidate) => {
+    if (candidate === false || component === false) {
+      return false
+    }
+
+    if (typeof candidate === 'string' || typeof component === 'string') {
+      return candidate === component
+    }
+
+    return candidate.path === component.path && candidate.exportName === component.exportName
+  })
+
+  if (!exists) {
+    next.push(component)
+  }
+
+  return next
+}
+
+const withUniqueDashboardComponent = (
+  components: CustomComponentArray | undefined,
+  component: DashboardComponent,
+): CustomComponentArray => {
+  const next = [...(components ?? [])]
+
+  const exists = next.some((candidate) => {
+    if (candidate === false || component === false) {
+      return false
+    }
+
+    if (typeof candidate === 'string' || typeof component === 'string') {
+      return candidate === component
+    }
+
+    return candidate.path === component.path && candidate.exportName === component.exportName
+  })
+
+  if (!exists) {
+    next.push(component)
+  }
+
+  return next
+}
+
+const normalizeRoutePrefix = (value: string): string => {
+  if (value === '/') {
+    return ''
+  }
+
+  return value.endsWith('/') ? value.slice(0, -1) : value
+}
+
+const toAdminHref = (adminBasePath: string, routePath: string): string =>
+  `${normalizeRoutePrefix(adminBasePath)}${routePath}`
+
 export const applyAdminEnhancements = (
   config: Config,
   options: NormalizedPluginOptions,
 ): Config => {
-  if (!config.admin) {
-    config.admin = {}
+  if (options.admin.mode === 'headless') {
+    return config
   }
 
-  if (!config.admin.components) {
-    config.admin.components = {}
+  const adminBasePath = config.routes?.admin ?? '/admin'
+  const apiBasePath = config.routes?.api ?? '/api'
+
+  const nextConfig: Config = {
+    ...config,
+    admin: {
+      ...(config.admin ?? {}),
+      components: {
+        ...(config.admin?.components ?? {}),
+      },
+    },
   }
 
-  // Store plugin paths in config.custom so client components can read them
-  if (!config.custom) {
-    config.custom = {}
+  if (!nextConfig.custom) {
+    nextConfig.custom = {}
   }
-  ;(config.custom as Record<string, unknown>).gmcAdminRoute = options.admin.route
-  ;(config.custom as Record<string, unknown>).gmcApiBasePath = options.api.basePath
 
-  const mode = options.admin.mode
+  ;(nextConfig.custom as Record<string, unknown>).gmcAdminRoute = options.admin.route
+  ;(nextConfig.custom as Record<string, unknown>).gmcApiBasePath = options.api.basePath
 
-  // --- Sidebar navigation link ---
-  if (mode === 'route' || mode === 'both') {
-    if (!config.admin.components.beforeNavLinks) {
-      config.admin.components.beforeNavLinks = []
-    }
+  if (options.admin.mode === 'route' || options.admin.mode === 'both') {
+    const navLinkComponent = {
+      clientProps: {
+        href: toAdminHref(adminBasePath, options.admin.route),
+        label: options.admin.navLabel,
+      },
+      exportName: 'MerchantCenterNavLink',
+      path: `${PLUGIN_SLUG}/client`,
+    } as NavComponent
 
-    ;(config.admin.components.beforeNavLinks as unknown[]).push(
-      `${PLUGIN_SLUG}/client#MerchantCenterNavLink`,
+    nextConfig.admin!.components!.beforeNavLinks = withUniqueComponent(
+      nextConfig.admin!.components!.beforeNavLinks,
+      navLinkComponent,
     )
-  }
 
-  // --- Custom admin view (route) ---
-  if (mode === 'route' || mode === 'both') {
-    if (!config.admin.components.views) {
-      config.admin.components.views = {}
-    }
-
-    const views = config.admin.components.views as Record<string, unknown>
-    views.merchantCenter = {
-      Component: `${PLUGIN_SLUG}/rsc#MerchantCenterAdminView`,
+    const merchantCenterView = {
+      Component: {
+        exportName: 'MerchantCenterAdminView',
+        path: `${PLUGIN_SLUG}/rsc`,
+        serverProps: {
+          apiRoute: apiBasePath,
+          endpointBasePath: options.api.basePath,
+          title: options.admin.navLabel,
+        },
+      },
       path: options.admin.route,
+    } as unknown as AdminView
+
+    nextConfig.admin!.components!.views = {
+      ...(nextConfig.admin!.components!.views ?? {}),
+      merchantCenter: {
+        ...merchantCenterView,
+      },
     }
   }
 
-  // --- Dashboard widget ---
-  if (mode === 'dashboard' || mode === 'both') {
-    if (!config.admin.components.beforeDashboard) {
-      config.admin.components.beforeDashboard = []
-    }
+  if (options.admin.mode === 'dashboard' || options.admin.mode === 'both') {
+    const dashboardComponent = {
+      exportName: 'MerchantCenterDashboardWidget',
+      path: `${PLUGIN_SLUG}/rsc`,
+    } as DashboardComponent
 
-    ;(config.admin.components.beforeDashboard as unknown[]).push(
-      `${PLUGIN_SLUG}/rsc#MerchantCenterDashboardWidget`,
+    nextConfig.admin!.components!.beforeDashboard = withUniqueDashboardComponent(
+      nextConfig.admin!.components!.beforeDashboard,
+      dashboardComponent,
     )
   }
 
-  return config
+  return nextConfig
 }

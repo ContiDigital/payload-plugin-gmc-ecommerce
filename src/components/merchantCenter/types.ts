@@ -7,7 +7,7 @@ export type DashboardHealthData = {
     workerBasePath: string
     workerEndpointsEnabled: boolean
   }
-  merchant: { accountId: string; dataSourceId: string }
+  merchant?: { accountId: string; dataSourceId: string }
   rateLimit: { distributed?: boolean; enabled: boolean }
   status: string
   sync: { mode: string }
@@ -32,7 +32,7 @@ export type ProductSyncState = 'error' | 'idle' | 'success' | 'syncing'
 
 export type ProductSyncMeta = {
   lastAction?: string
-  lastError?: string
+  lastError?: null | string
   lastSyncedAt?: string
   state: ProductSyncState
   syncSource?: string
@@ -63,5 +63,6 @@ export type SyncLog = {
   status: string
   succeeded: number
   total: number
+  triggeredBy?: string
   type: string
 }

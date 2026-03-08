@@ -1,8 +1,51 @@
 import type { ConflictStrategy, MCSyncMeta } from '../../types/index.js'
 
+import { asRecord } from '../utilities/recordUtils.js'
+
 export type ConflictCheckResult =
   | { action: 'proceed' }
   | { action: 'skip'; reason: string }
+
+const toTimestamp = (value: string | undefined): number | undefined => {
+  if (!value) {
+    return undefined
+  }
+
+  const timestamp = new Date(value).getTime()
+  return Number.isNaN(timestamp) ? undefined : timestamp
+}
+
+export const extractMCProductLastModified = (
+  mcProduct: Record<string, unknown>,
+): string | undefined => {
+  if (typeof mcProduct.updateTime === 'string' && mcProduct.updateTime) {
+    return mcProduct.updateTime
+  }
+
+  const productStatus = asRecord(mcProduct.productStatus)
+  if (
+    typeof productStatus.lastUpdateDate === 'string' &&
+    productStatus.lastUpdateDate
+  ) {
+    return productStatus.lastUpdateDate
+  }
+
+  return undefined
+}
+
+export const isRemoteNewerThanLocal = (args: {
+  localLastSyncedAt?: string
+  mcLastModified?: string
+}): boolean | undefined => {
+  const localTimestamp = toTimestamp(args.localLastSyncedAt)
+  const remoteTimestamp = toTimestamp(args.mcLastModified)
+
+  if (localTimestamp === undefined || remoteTimestamp === undefined) {
+    return undefined
+  }
+
+  return remoteTimestamp > localTimestamp
+}
 
 /**
  * Determines whether a pull operation should proceed based on the
@@ -13,9 +56,10 @@ export type ConflictCheckResult =
 export const checkPullConflict = (args: {
   localSyncMeta?: MCSyncMeta
   mcLastModified?: string
+  remoteMatchesLocal?: boolean
   strategy: ConflictStrategy
 }): ConflictCheckResult => {
-  const { localSyncMeta, mcLastModified, strategy } = args
+  const { localSyncMeta, mcLastModified, remoteMatchesLocal, strategy } = args
 
   switch (strategy) {
     case 'mc-wins':
@@ -23,32 +67,35 @@ export const checkPullConflict = (args: {
       return { action: 'proceed' }
 
     case 'newest-wins': {
-      // Compare lastSyncedAt with mcLastModified; proceed only if MC is newer
-      if (!mcLastModified) {
-        // Cannot determine MC modification time — proceed to be safe
+      // Protect local unsynced edits first, then compare modification times.
+      if (localSyncMeta?.dirty) {
+        return {
+          action: 'skip',
+          reason: 'Local document has unsynced Merchant Center changes (dirty=true); newest-wins skips pull to protect local overrides',
+        }
+      }
+
+      const remoteIsNewer = isRemoteNewerThanLocal({
+        localLastSyncedAt: localSyncMeta?.lastSyncedAt,
+        mcLastModified,
+      })
+
+      if (remoteMatchesLocal) {
         return { action: 'proceed' }
       }
 
-      if (!localSyncMeta?.lastSyncedAt) {
-        // Never synced before — proceed
+      if (remoteIsNewer === undefined) {
+        // Cannot determine recency reliably — proceed.
         return { action: 'proceed' }
       }
 
-      const mcDate = new Date(mcLastModified).getTime()
-      const localDate = new Date(localSyncMeta.lastSyncedAt).getTime()
-
-      if (Number.isNaN(mcDate) || Number.isNaN(localDate)) {
-        // Invalid dates — proceed to be safe
-        return { action: 'proceed' }
-      }
-
-      if (mcDate > localDate) {
+      if (remoteIsNewer) {
         return { action: 'proceed' }
       }
 
       return {
         action: 'skip',
-        reason: `MC product is not newer than last sync (mc=${mcLastModified}, lastSync=${localSyncMeta.lastSyncedAt}); newest-wins strategy skips pull`,
+        reason: `MC product is not newer than last sync (mc=${mcLastModified}, lastSync=${localSyncMeta?.lastSyncedAt ?? 'unknown'}); newest-wins strategy skips pull`,
       }
     }
 

@@ -125,13 +125,17 @@ export const ProductMerchantStatusSection = (props: {
   return (
     <div style={productSyncStyles.section}>
       <h5 style={productSyncStyles.sectionTitle}>Merchant Center Status</h5>
+      <span style={productSyncStyles.lastSync}>
+        Status data comes from Google&apos;s reporting view and may update before the full processed
+        product snapshot below.
+      </span>
       {analyticsLoading && (
         <span style={productSyncStyles.lastSync}>Loading MC status...</span>
       )}
       {analyticsError && (
-        <span style={{ color: 'var(--theme-elevation-500)', fontSize: '12px' }}>
-          Unable to load MC status
-        </span>
+        <div style={productSyncStyles.error}>
+          Unable to load MC status: {analyticsError}
+        </div>
       )}
       {analytics && (
         <>
@@ -178,7 +182,7 @@ export const ProductSnapshotSection = (props: {
   return (
     <div style={productSyncStyles.section}>
       <div style={productSyncStyles.statusRow}>
-        <h5 style={productSyncStyles.sectionTitle}>Last Snapshot</h5>
+        <h5 style={productSyncStyles.sectionTitle}>Processed Product Snapshot</h5>
         <button
           onClick={onToggle}
           style={{
@@ -195,6 +199,10 @@ export const ProductSnapshotSection = (props: {
           {showSnapshot ? 'Hide Snapshot' : 'Show Snapshot'}
         </button>
       </div>
+      <span style={productSyncStyles.lastSync}>
+        This snapshot comes from Google&apos;s Products API and can lag a successful push by a few
+        minutes while Merchant Center reprocesses the product.
+      </span>
       {showSnapshot && (
         <pre
           style={{

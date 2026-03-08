@@ -194,12 +194,16 @@ export const useMerchantCenterDashboard = (
   const activeJobLog = activeJob
     ? logs.find((entry) => entry.jobId === activeJob) ?? runningJob
     : runningJob
+  const latestScheduledSyncLog = logs.find(
+    (entry) => entry.type === 'batch' && entry.triggeredBy === 'cron',
+  ) ?? null
 
   return {
     activeJob,
     activeJobLog,
     expandedRows,
     health,
+    latestScheduledSyncLog,
     loadMore,
     logLimit,
     logs,

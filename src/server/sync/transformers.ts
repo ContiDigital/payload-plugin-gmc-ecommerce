@@ -26,6 +26,35 @@ export const fromMicros = (value: string): number => {
   return Number.isFinite(num) ? num / 1_000_000 : 0
 }
 
+const normalizePriceField = (
+  value: unknown,
+  currencyCode: string,
+): MCProductAttributes['price'] | undefined => {
+  if (value === undefined || value === null || value === '') {
+    return undefined
+  }
+
+  if (typeof value === 'string') {
+    return {
+      amountMicros: value,
+      currencyCode,
+    }
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return {
+      amountMicros: String(value),
+      currencyCode,
+    }
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    return value as MCProductAttributes['price']
+  }
+
+  return undefined
+}
+
 // ---------------------------------------------------------------------------
 // Custom attribute sanitization
 // ---------------------------------------------------------------------------
@@ -144,6 +173,15 @@ export const buildProductInput = (
     productAttributes.condition = options.defaults.condition
   }
 
+  productAttributes.price = normalizePriceField(
+    productAttributes.price,
+    options.defaults.currency,
+  )
+  productAttributes.salePrice = normalizePriceField(
+    productAttributes.salePrice,
+    options.defaults.currency,
+  )
+
   // Ensure price currency defaults
   if (productAttributes.price && !productAttributes.price.currencyCode) {
     productAttributes.price.currencyCode = options.defaults.currency
@@ -182,6 +220,105 @@ const STRING_ARRAY_FIELDS = new Set([
   'promotionIds',
 ])
 
+const normalizeComparisonValue = (value: unknown): unknown => {
+  if (value === undefined || value === null || value === '') {
+    return undefined
+  }
+
+  if (typeof value === 'string') {
+    return value.trim().replace(/\s+/g, ' ')
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return value
+  }
+
+  if (Array.isArray(value)) {
+    const normalized = value
+      .map((item) => normalizeComparisonValue(item))
+      .filter((item) => item !== undefined)
+
+    return normalized.length > 0 ? normalized : undefined
+  }
+
+  if (typeof value === 'object') {
+    const normalizedEntries = Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => key !== 'id')
+      .map(([key, entryValue]) => [key, normalizeComparisonValue(entryValue)] as const)
+      .filter(([, entryValue]) => entryValue !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+
+    if (normalizedEntries.length === 0) {
+      return undefined
+    }
+
+    return Object.fromEntries(normalizedEntries)
+  }
+
+  return value
+}
+
+const deepEqual = (left: unknown, right: unknown): boolean => {
+  if (left === right) {
+    return true
+  }
+
+  if (Array.isArray(left) && Array.isArray(right)) {
+    if (left.length !== right.length) {
+      return false
+    }
+
+    return left.every((item, index) => deepEqual(item, right[index]))
+  }
+
+  if (
+    typeof left === 'object' &&
+    left !== null &&
+    typeof right === 'object' &&
+    right !== null
+  ) {
+    const leftEntries = Object.entries(left as Record<string, unknown>)
+    const rightEntries = Object.entries(right as Record<string, unknown>)
+
+    if (leftEntries.length !== rightEntries.length) {
+      return false
+    }
+
+    return leftEntries.every(([key, value]) => deepEqual(value, (right as Record<string, unknown>)[key]))
+  }
+
+  return false
+}
+
+const deepContains = (target: unknown, subset: unknown): boolean => {
+  if (subset === undefined) {
+    return true
+  }
+
+  if (Array.isArray(subset)) {
+    if (!Array.isArray(target) || target.length !== subset.length) {
+      return false
+    }
+
+    return subset.every((item, index) => deepContains(target[index], item))
+  }
+
+  if (
+    typeof subset === 'object' &&
+    subset !== null
+  ) {
+    if (typeof target !== 'object' || target === null) {
+      return false
+    }
+
+    return Object.entries(subset as Record<string, unknown>).every(([key, value]) =>
+      deepContains((target as Record<string, unknown>)[key], value),
+    )
+  }
+
+  return target === subset
+}
+
 export const reverseTransformProduct = (
   mcProduct: Record<string, unknown>,
 ): {
@@ -215,4 +352,24 @@ export const reverseTransformProduct = (
     customAttributes: sanitizeCustomAttributes(customAttributes),
     productAttributes: stripEmpty(productAttributes),
   }
+}
+
+export const productAttributesEquivalent = (
+  left: Record<string, unknown> | undefined,
+  right: Record<string, unknown> | undefined,
+): boolean => {
+  const normalizedLeft = normalizeComparisonValue(left ?? {})
+  const normalizedRight = normalizeComparisonValue(right ?? {})
+
+  return deepEqual(normalizedLeft, normalizedRight)
+}
+
+export const productAttributesContainRemoteSubset = (
+  local: Record<string, unknown> | undefined,
+  remote: Record<string, unknown> | undefined,
+): boolean => {
+  const normalizedLocal = normalizeComparisonValue(local ?? {})
+  const normalizedRemote = normalizeComparisonValue(remote ?? {})
+
+  return deepContains(normalizedLocal, normalizedRemote)
 }

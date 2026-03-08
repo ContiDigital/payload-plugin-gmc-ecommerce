@@ -66,6 +66,12 @@ export const MerchantCenterSyncControls: React.FC = () => {
       <ProductActionButtons loading={loading} onAction={(action) => { void executeAction(action) }} />
 
       {lastResult?.error && <div style={productSyncStyles.error}>{lastResult.error}</div>}
+      {lastResult?.warning && <div style={productSyncStyles.warning}>{lastResult.warning}</div>}
+      <div style={productSyncStyles.note}>
+        Push writes the Merchant Center product input immediately. Refresh Snapshot and Pull from MC
+        read Google&apos;s processed product, which can lag a fresh push by a few minutes. The
+        status panel can update sooner because it comes from Google&apos;s reporting view.
+      </div>
 
       <ProductSyncStatusSection syncMeta={syncMeta} />
       <ProductMerchantStatusSection

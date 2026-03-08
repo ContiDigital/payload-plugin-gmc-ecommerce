@@ -4,13 +4,18 @@ import type { NormalizedPluginOptions, ResolvedMCIdentity, SyncResult } from '..
 import type { GoogleApiClient } from '../services/sub-services/googleApiClient.js'
 import type { RetryService } from '../services/sub-services/retryService.js'
 
-import { MC_FIELD_GROUP_NAME } from '../../constants.js'
+import {
+  MC_FIELD_GROUP_NAME,
+  MC_PRODUCT_ATTRIBUTES_FIELD_NAME,
+} from '../../constants.js'
 import { GoogleApiError } from '../services/sub-services/googleApiClient.js'
 import { createPluginLogger } from '../utilities/logger.js'
 import { asProductDoc } from '../utilities/recordUtils.js'
+import { extractMCProductLastModified, isRemoteNewerThanLocal } from './conflictResolver.js'
 import { buildInternalSyncContext } from './hookContext.js'
 import { resolveIdentity } from './identityResolver.js'
 import { prepareProductForSync, validateRequiredProductInput } from './productPreparation.js'
+import { productAttributesContainRemoteSubset, reverseTransformProduct } from './transformers.js'
 
 // ---------------------------------------------------------------------------
 // Single product push
@@ -43,6 +48,8 @@ export const pushProduct = async (args: {
   })
 
   try {
+    const pushStartedAt = new Date().toISOString()
+
     // 3. Resolve identity
     const identityResult = resolveIdentity(product, options)
     if (!identityResult.ok) {
@@ -55,7 +62,7 @@ export const pushProduct = async (args: {
     }
 
     const identity = identityResult.value
-    const { action, input } = await prepareProductForSync({
+    const { action, input, product: preparedProduct } = await prepareProductForSync({
       identity,
       options,
       payload,
@@ -94,6 +101,7 @@ export const pushProduct = async (args: {
 
     // 7. Fetch processed snapshot
     let snapshot: Record<string, unknown> | undefined
+    let warning: string | undefined
     try {
       const snapshotResponse = await retryService.execute(
         () => apiClient.getProduct(identity.productName, payload),
@@ -103,7 +111,30 @@ export const pushProduct = async (args: {
           productId,
         },
       )
-      snapshot = snapshotResponse.data
+      const fetchedSnapshot = snapshotResponse.data
+      const remoteProductAttributes = reverseTransformProduct(fetchedSnapshot).productAttributes
+      const remoteLastModified = extractMCProductLastModified(fetchedSnapshot)
+      const pushReachedProcessedProduct = isRemoteNewerThanLocal({
+        localLastSyncedAt: pushStartedAt,
+        mcLastModified: remoteLastModified,
+      })
+      const preparedProductAttributes = reverseTransformProduct({
+        ...(input.customAttributes ? { customAttributes: input.customAttributes } : {}),
+        productAttributes: input.productAttributes ?? {},
+      }).productAttributes
+
+      if (
+        pushReachedProcessedProduct === false &&
+        !productAttributesContainRemoteSubset(
+          preparedProductAttributes,
+          remoteProductAttributes,
+        )
+      ) {
+        warning =
+          'Push succeeded, but Merchant Center is still serving an older processed product. Snapshot and pull may lag this push for a few minutes.'
+      } else {
+        snapshot = fetchedSnapshot
+      }
     } catch (snapshotError) {
       // Snapshot fetch is non-critical — product was still synced
       log.warn('Failed to fetch snapshot after sync', {
@@ -112,15 +143,59 @@ export const pushProduct = async (args: {
       })
     }
 
-    // 8. Update success state and clear dirty flag
-    await updateSyncMeta(payload, collectionSlug, productId, {
-      dirty: false,
-      lastError: undefined,
-      lastSyncedAt: new Date().toISOString(),
-      state: 'success',
-    }, snapshot)
+    const {
+      customAttributes: storedCustomAttributes,
+      productAttributes: storedProductAttributes,
+    } = reverseTransformProduct({
+      ...(input.customAttributes ? { customAttributes: input.customAttributes } : {}),
+      productAttributes: input.productAttributes ?? {},
+    })
 
-    return { action, productId, snapshot, success: true }
+    const preparedMCState = preparedProduct[MC_FIELD_GROUP_NAME]
+    const persistedMCState = {
+      ...(typeof preparedMCState === 'object' && preparedMCState ? preparedMCState : {}),
+      ...(storedCustomAttributes ? { customAttributes: storedCustomAttributes } : {}),
+      identity: {
+        ...(typeof preparedMCState?.identity === 'object' && preparedMCState.identity
+          ? preparedMCState.identity
+          : {}),
+        contentLanguage: input.contentLanguage,
+        feedLabel: input.feedLabel,
+        offerId: input.offerId,
+      },
+      [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: storedProductAttributes,
+      snapshot: snapshot ?? preparedMCState?.snapshot,
+      syncMeta: {
+        ...(typeof preparedMCState?.syncMeta === 'object' && preparedMCState.syncMeta
+          ? preparedMCState.syncMeta
+          : {}),
+        dirty: false,
+        lastAction: 'saveSync',
+        lastError: null,
+        lastSyncedAt: new Date().toISOString(),
+        state: 'success',
+        syncSource: 'push',
+      },
+    }
+
+    await payload.update({
+      id: productId,
+      collection: collectionSlug as never,
+      context: buildInternalSyncContext(),
+      data: {
+        [MC_FIELD_GROUP_NAME]: persistedMCState,
+      } as never,
+      depth: 0,
+      overrideAccess: true,
+    })
+
+    return {
+      action,
+      productId,
+      snapshot: snapshot ?? preparedMCState?.snapshot,
+      success: true,
+      ...(warning ? { warning } : {}),
+    }
   } catch (error) {
     let message = error instanceof Error ? error.message : String(error)
     if (error instanceof GoogleApiError && error.responseBody) {
@@ -273,6 +348,7 @@ export const refreshSnapshot = async (args: {
     collection: collectionSlug,
     depth: 0,
   }).then(asProductDoc)
+  const localSyncMeta = product[MC_FIELD_GROUP_NAME]?.syncMeta
 
   const identityResult = resolveIdentity(product, options)
   if (!identityResult.ok) {
@@ -291,14 +367,40 @@ export const refreshSnapshot = async (args: {
       },
     )
 
+    const remoteProductAttributes = reverseTransformProduct(response.data).productAttributes
+    const localProductAttributes =
+      product[MC_FIELD_GROUP_NAME]?.[MC_PRODUCT_ATTRIBUTES_FIELD_NAME] as Record<string, unknown> | undefined
+    const remoteLastModified = extractMCProductLastModified(response.data)
+    const remoteIsNewer = isRemoteNewerThanLocal({
+      localLastSyncedAt: localSyncMeta?.lastSyncedAt,
+      mcLastModified: remoteLastModified,
+    })
+    const remoteMatchesLocal = productAttributesContainRemoteSubset(
+      localProductAttributes,
+      remoteProductAttributes,
+    )
+
+    const warning = remoteIsNewer === false && !remoteMatchesLocal
+      ? 'Merchant Center is still serving an older processed product than the latest local sync. Snapshot was left unchanged; try again in a few minutes.'
+      : undefined
+
     await updateSyncMeta(payload, collectionSlug, productId, {
       lastAction: 'refresh',
       lastError: undefined,
-      lastSyncedAt: new Date().toISOString(),
       state: 'success',
-    }, response.data)
+      syncSource: 'pull',
+    }, remoteIsNewer === false && !remoteMatchesLocal ? undefined : response.data)
 
-    return { action: 'update', productId, snapshot: response.data, success: true }
+    return {
+      action: 'update',
+      productId,
+      snapshot:
+        remoteIsNewer === false && !remoteMatchesLocal
+          ? product[MC_FIELD_GROUP_NAME]?.snapshot
+          : response.data,
+      success: true,
+      ...(warning ? { warning } : {}),
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     await updateSyncMeta(payload, collectionSlug, productId, {
@@ -324,7 +426,8 @@ const updateSyncMeta = async (
   const updateData: Record<string, unknown> = {}
 
   for (const [key, value] of Object.entries(meta)) {
-    updateData[`${MC_FIELD_GROUP_NAME}.syncMeta.${key}`] = value
+    updateData[`${MC_FIELD_GROUP_NAME}.syncMeta.${key}`] =
+      key === 'lastError' && value === undefined ? null : value
   }
 
   if (snapshot !== undefined) {

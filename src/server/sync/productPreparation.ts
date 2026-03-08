@@ -93,12 +93,21 @@ export const prepareProductForSync = async (args: {
 }> => {
   const { identity, options, payload, product } = args
   const preparedProduct = cloneProduct(product as PayloadProductDoc)
+  const existingMCState: MCProductState | undefined = preparedProduct[MC_FIELD_GROUP_NAME]
+  const hasSnapshot =
+    existingMCState?.snapshot &&
+    typeof existingMCState.snapshot === 'object' &&
+    Object.keys(existingMCState.snapshot).length > 0
+  const action: 'insert' | 'update' = hasSnapshot ? 'update' : 'insert'
   const allMappings = await loadMergedFieldMappings(payload, options)
+  const activeMappings = allMappings.filter((mapping) =>
+    mapping.syncMode === 'permanent' || (mapping.syncMode === 'initialOnly' && action === 'insert'),
+  )
 
-  if (allMappings.length > 0) {
+  if (activeMappings.length > 0) {
     const mappedValues = applyFieldMappings(
       preparedProduct as Record<string, unknown>,
-      allMappings,
+      activeMappings,
       undefined,
       { siteUrl: options.siteUrl },
     )
@@ -141,13 +150,6 @@ export const prepareProductForSync = async (args: {
       },
     }
   }
-
-  const mcState: MCProductState | undefined = preparedProduct[MC_FIELD_GROUP_NAME]
-  const hasSnapshot =
-    mcState?.snapshot &&
-    typeof mcState.snapshot === 'object' &&
-    Object.keys(mcState.snapshot).length > 0
-  const action: 'insert' | 'update' = hasSnapshot ? 'update' : 'insert'
 
   let input = buildProductInput(preparedProduct, identity, options)
 

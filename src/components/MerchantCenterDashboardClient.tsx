@@ -12,7 +12,13 @@ import {
 } from './merchantCenter/DashboardSections.js'
 import { useMerchantCenterDashboard } from './merchantCenter/useMerchantCenterDashboard.js'
 
-export const MerchantCenterDashboardClient: React.FC = () => {
+type MerchantCenterDashboardClientProps = {
+  title?: string
+}
+
+export const MerchantCenterDashboardClient: React.FC<MerchantCenterDashboardClientProps> = ({
+  title = 'Merchant Center',
+}) => {
   const { config } = useConfig()
   const { apiRoute, gmcEndpointBase } = resolveMerchantCenterApiConfig(config)
   const {
@@ -20,6 +26,7 @@ export const MerchantCenterDashboardClient: React.FC = () => {
     activeJobLog,
     expandedRows,
     health,
+    latestScheduledSyncLog,
     loadMore,
     logLimit,
     logs,
@@ -34,12 +41,15 @@ export const MerchantCenterDashboardClient: React.FC = () => {
   })
 
   return (
-    <div style={{ margin: '0 auto', maxWidth: '1200px', padding: '24px' }}>
+    <div style={{ margin: '0 auto', maxWidth: '1200px' }}>
       <h1 style={{ fontSize: '24px', fontWeight: 700, marginBottom: '24px' }}>
-        Merchant Center
+        {title}
       </h1>
 
-      <MerchantCenterConnectionStatus health={health} />
+      <MerchantCenterConnectionStatus
+        health={health}
+        latestScheduledSyncLog={latestScheduledSyncLog}
+      />
       <MerchantCenterBulkOperations
         activeJob={activeJob}
         activeJobLog={activeJobLog}

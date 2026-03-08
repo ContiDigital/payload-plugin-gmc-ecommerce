@@ -1,5 +1,6 @@
 'use client'
 
+import { useDocumentInfo, useForm, useServerFunctions } from '@payloadcms/ui'
 import { useEffect, useMemo, useState } from 'react'
 
 import type { ProductAnalytics } from './types.js'
@@ -26,6 +27,13 @@ export const useMerchantCenterProductSync = (
   args: UseMerchantCenterProductSyncArgs,
 ) => {
   const { apiRoute, collectionSlug, gmcBasePath, initialData, productId } = args
+  const {
+    docPermissions,
+    getDocPreferences,
+    updateSavedDocumentData,
+  } = useDocumentInfo()
+  const { replaceState } = useForm()
+  const { getFormState } = useServerFunctions()
   const [loading, setLoading] = useState<null | string>(null)
   const [lastResult, setLastResult] = useState<null | ProductSyncActionResult>(null)
   const [analytics, setAnalytics] = useState<null | ProductAnalytics>(null)
@@ -81,6 +89,65 @@ export const useMerchantCenterProductSync = (
     return buildProductStatusEntries(analytics?.status)
   }, [analytics])
 
+  const refreshAnalytics = async (): Promise<void> => {
+    if (!productId) {
+      return
+    }
+
+    setAnalyticsLoading(true)
+    setAnalyticsError(null)
+
+    try {
+      const data = await fetchProductAnalytics({
+        apiRoute,
+        gmcBasePath,
+        productId,
+      })
+      setAnalytics(data)
+    } catch (error) {
+      setAnalyticsError(error instanceof Error ? error.message : 'Failed to load analytics')
+    } finally {
+      setAnalyticsLoading(false)
+    }
+  }
+
+  const refreshDocumentState = async (): Promise<void> => {
+    if (!productId || !collectionSlug) {
+      return
+    }
+
+    const updatedDoc = await fetchMerchantCenterState({
+      apiRoute,
+      collectionSlug,
+      productId,
+    })
+
+    if (!updatedDoc) {
+      return
+    }
+
+    setMcData(asClientRecord(updatedDoc[MC_FIELD_GROUP_NAME]))
+    updateSavedDocumentData(updatedDoc)
+
+    const docPreferences = await getDocPreferences()
+
+    const result = await getFormState({
+      id: productId,
+      collectionSlug,
+      data: updatedDoc,
+      docPermissions,
+      docPreferences,
+      operation: 'update',
+      renderAllFields: true,
+      schemaPath: collectionSlug,
+      skipValidation: true,
+    })
+
+    if ('state' in result && result.state) {
+      replaceState(result.state)
+    }
+  }
+
   const executeAction = async (action: string): Promise<void> => {
     if (!productId || loading) {
       return
@@ -100,11 +167,8 @@ export const useMerchantCenterProductSync = (
 
       if (actionResult.success && collectionSlug) {
         try {
-          setMcData(await fetchMerchantCenterState({
-            apiRoute,
-            collectionSlug,
-            productId,
-          }))
+          await refreshDocumentState()
+          await refreshAnalytics()
         } catch {
           // Best-effort refresh
         }

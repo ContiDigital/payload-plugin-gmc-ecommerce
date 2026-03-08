@@ -248,7 +248,7 @@ export type MCProductInput = {
 export type MCSyncMeta = {
   dirty?: boolean
   lastAction?: SyncAction
-  lastError?: string
+  lastError?: null | string
   lastSyncedAt?: string
   state: SyncState
   syncSource?: SyncSource
@@ -297,15 +297,19 @@ export type FieldMapping = {
 export type SyncResult = {
   action: 'delete' | 'insert' | 'update'
   productId: string
+  skipped?: boolean
   snapshot?: Record<string, unknown>
   success: boolean
+  warning?: string
 }
 
 export type PullResult = {
   action: 'pull'
   populatedFields: string[]
   productId: string
+  skipped?: boolean
   success: boolean
+  warning?: string
 }
 
 export type BatchSyncReport = {
