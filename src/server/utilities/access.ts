@@ -11,6 +11,18 @@ export class AccessDeniedError extends Error {
   }
 }
 
+export const hasDefaultPluginAccess = (user: unknown): boolean => {
+  if (!user || typeof user !== 'object') {
+    return false
+  }
+
+  return (
+    (user as Record<string, unknown>).isAdmin === true ||
+    (Array.isArray((user as Record<string, unknown>).roles) &&
+      ((user as Record<string, unknown>).roles as string[]).includes('admin'))
+  )
+}
+
 export const assertAccess = async (
   req: PayloadRequest,
   options: NormalizedPluginOptions,
@@ -30,12 +42,7 @@ export const assertAccess = async (
   }
 
   // Default: require admin role
-  const isAdmin =
-    (user as Record<string, unknown>).isAdmin === true ||
-    (Array.isArray((user as Record<string, unknown>).roles) &&
-      ((user as Record<string, unknown>).roles as string[]).includes('admin'))
-
-  if (!isAdmin) {
+  if (!hasDefaultPluginAccess(user)) {
     throw new AccessDeniedError('Admin role required')
   }
 }

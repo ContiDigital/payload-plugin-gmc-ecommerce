@@ -1,35 +1,77 @@
 import type { CollectionBeforeChangeHook } from 'payload'
 
-import type { NormalizedPluginOptions } from '../types/index.js'
+import type {
+  MCProductAttributes,
+  MCProductState,
+  MCSyncMeta,
+  NormalizedPluginOptions,
+  PayloadProductDoc,
+} from '../types/index.js'
 
 import { MC_FIELD_GROUP_NAME } from '../constants.js'
-import { getMerchantServiceInstance } from '../plugin/applyEndpointEnhancements.js'
 import { applyFieldMappings, deepMerge } from '../server/sync/fieldMapping.js'
-import { resolveIdentity } from '../server/sync/identityResolver.js'
-import { createPluginLogger } from '../server/utilities/logger.js'
+import { shouldSkipSyncHooks } from '../server/sync/hookContext.js'
+
+const resolveEnabledState = (
+  data: PayloadProductDoc,
+  originalDoc?: PayloadProductDoc,
+): boolean => {
+  const incoming = data[MC_FIELD_GROUP_NAME]
+  if (typeof incoming?.enabled === 'boolean') {
+    return incoming.enabled
+  }
+
+  const existing = originalDoc?.[MC_FIELD_GROUP_NAME]
+  return existing?.enabled === true
+}
+
+const ensureMCState = (data: PayloadProductDoc): MCProductState => {
+  if (!data[MC_FIELD_GROUP_NAME] || typeof data[MC_FIELD_GROUP_NAME] !== 'object') {
+    data[MC_FIELD_GROUP_NAME] = {}
+  }
+
+  return data[MC_FIELD_GROUP_NAME]
+}
+
+const normalizeIdentityFieldValue = (value: unknown): null | string => {
+  if (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') {
+    return String(value)
+  }
+
+  return null
+}
 
 export const createBeforeChangeHook = (
   options: NormalizedPluginOptions,
 ): CollectionBeforeChangeHook => {
-  return ({ data, operation, originalDoc, req }) => {
-    const mcState = data[MC_FIELD_GROUP_NAME] as Record<string, unknown> | undefined
-    if (!mcState?.enabled) {
+  return ({ context, data, originalDoc }) => {
+    if (shouldSkipSyncHooks(context)) {
       return data
     }
 
+    const original = (originalDoc ?? {}) as PayloadProductDoc
+    if (!resolveEnabledState(data as PayloadProductDoc, original)) {
+      return data
+    }
+
+    const mergedDoc = deepMerge(
+      original as Record<string, unknown>,
+      data as Record<string, unknown>,
+    ) as PayloadProductDoc
+    const mcState: MCProductState = mergedDoc[MC_FIELD_GROUP_NAME] ?? {}
+    const incomingMCState = ensureMCState(data as PayloadProductDoc)
+
     // 1. Auto-populate offerId from identity field if not set
-    const identity = (mcState.identity ?? {}) as Record<string, unknown>
-    if (!identity.offerId || (identity.offerId as string).trim().length === 0) {
-      const identityFieldValue = data[options.collections.products.identityField]
+    const identity = mcState.identity ?? {}
+    if (!identity.offerId || identity.offerId.trim().length === 0) {
+      const identityFieldValue = normalizeIdentityFieldValue(
+        mergedDoc[options.collections.products.identityField],
+      )
       if (identityFieldValue) {
-        if (!data[MC_FIELD_GROUP_NAME]) {
-          data[MC_FIELD_GROUP_NAME] = {}
+        if (!incomingMCState.identity || typeof incomingMCState.identity !== 'object') {
+          incomingMCState.identity = {}
         }
-        const mc = data[MC_FIELD_GROUP_NAME] as Record<string, unknown>
-        if (!mc.identity) {
-          mc.identity = {}
-        }
-        ;(mc.identity as Record<string, unknown>).offerId = String(identityFieldValue)
+        incomingMCState.identity.offerId = identityFieldValue
       }
     }
 
@@ -39,47 +81,30 @@ export const createBeforeChangeHook = (
     )
 
     if (permanentMappings.length > 0 && options.sync.permanentSync) {
-      const mappedValues = applyFieldMappings(data, permanentMappings, 'permanent', { siteUrl: options.siteUrl })
-      const currentAttrs = (mcState.productAttributes ?? {}) as Record<string, unknown>
+      const mappedValues = applyFieldMappings(
+        mergedDoc as Record<string, unknown>,
+        permanentMappings,
+        'permanent',
+        { siteUrl: options.siteUrl },
+      )
+      const currentAttrs: MCProductAttributes = mcState.productAttributes ?? {}
       const mappedAttrs = (mappedValues.productAttributes ?? mappedValues) as Record<string, unknown>
-
-      const mc = data[MC_FIELD_GROUP_NAME] as Record<string, unknown>
-      mc.productAttributes = deepMerge(currentAttrs, mappedAttrs)
-
-      // Mark product as dirty so delta sync knows it needs re-syncing
-      if (!mc.syncMeta) {
-        mc.syncMeta = {}
-      }
-      ;(mc.syncMeta as Record<string, unknown>).dirty = true
+      incomingMCState.productAttributes = deepMerge(
+        currentAttrs as Record<string, unknown>,
+        mappedAttrs,
+      ) as MCProductAttributes
     }
 
-    // 3. If sync mode is 'onChange', trigger push after this save completes
-    if (options.sync.mode === 'onChange' && operation === 'update') {
-      const service = getMerchantServiceInstance(options.merchantId)
-      if (service) {
-        const doc = { ...originalDoc, ...data }
-        const identityResult = resolveIdentity(doc as Record<string, unknown>, options)
+    // 3. Mark enabled products as dirty on create and update so onChange and
+    // scheduled flows both see the same state transition.
+    const incomingSyncMeta: MCSyncMeta = (incomingMCState.syncMeta ?? {}) as MCSyncMeta
+    incomingSyncMeta.dirty = true
 
-        if (identityResult.ok) {
-          // Fire-and-forget: queue push after save completes
-          // We don't await this — the save should not be blocked by the sync
-          const productId = (originalDoc as Record<string, unknown>)?.id as string
-          if (productId) {
-            const log = createPluginLogger(req.payload?.logger, { operation: 'onChange', productId })
-            const payloadInstance = req.payload
-            setImmediate(() => {
-              service
-                .pushProduct({ payload: payloadInstance, productId })
-                .catch((err) => {
-                  log.error('onChange sync failed', {
-                    error: err instanceof Error ? err.message : String(err),
-                  })
-                })
-            })
-          }
-        }
-      }
-    }
+    const existingSyncMeta: MCSyncMeta = mcState.syncMeta ?? { state: 'idle' }
+    incomingMCState.syncMeta = deepMerge(
+      existingSyncMeta as Record<string, unknown>,
+      incomingSyncMeta as Record<string, unknown>,
+    ) as MCSyncMeta
 
     return data
   }

@@ -17,8 +17,13 @@ export default defineConfig(() => {
       }),
     ],
     test: {
+      coverage: {
+        exclude: ['dev/**', 'dist/**', 'node_modules/**', '**/*.spec.*', '**/__tests__/**'],
+        include: ['src/**/*.ts'],
+        provider: 'v8',
+      },
       environment: 'node',
-      exclude: ['**/e2e.spec.*', '**/node_modules/**'],
+      exclude: ['**/e2e.spec.*', '**/live.spec.*', '**/node_modules/**'],
       hookTimeout: 30_000,
       testTimeout: 30_000,
     },

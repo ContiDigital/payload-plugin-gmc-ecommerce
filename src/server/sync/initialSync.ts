@@ -3,6 +3,7 @@ import type { Payload } from 'payload'
 import type {
   InitialSyncReport,
   NormalizedPluginOptions,
+  PayloadProductDoc,
 } from '../../types/index.js'
 import type { GoogleApiClient } from '../services/sub-services/googleApiClient.js'
 import type { RateLimiterService } from '../services/sub-services/rateLimiterService.js'
@@ -10,9 +11,10 @@ import type { RetryService } from '../services/sub-services/retryService.js'
 
 import { MC_FIELD_GROUP_NAME } from '../../constants.js'
 import { GoogleApiError } from '../services/sub-services/googleApiClient.js'
-import { applyFieldMappings } from './fieldMapping.js'
+import { asProductDoc } from '../utilities/recordUtils.js'
+import { buildInternalSyncContext } from './hookContext.js'
 import { resolveIdentity } from './identityResolver.js'
-import { buildProductInput } from './transformers.js'
+import { prepareProductForSync, validateRequiredProductInput } from './productPreparation.js'
 
 type InitialSyncOptions = {
   batchSize: number
@@ -68,7 +70,7 @@ export const runInitialSync = async (args: {
     while (hasMore) {
       const result = await payload.find({
         collection: collectionSlug as never,
-        depth: 0,
+        depth: options.collections.products.fetchDepth,
         limit: syncOptions.batchSize,
         page,
         where: {
@@ -78,7 +80,7 @@ export const runInitialSync = async (args: {
         },
       })
 
-      const docs = result.docs as unknown as Array<{ id: string } & Record<string, unknown>>
+      const docs = result.docs.map((doc) => asProductDoc(doc))
       if (report.total === 0) {
         report.total = syncOptions.limit
           ? Math.min(result.totalDocs, syncOptions.limit)
@@ -186,7 +188,7 @@ export const runInitialSync = async (args: {
 const processInitialSyncProduct = async (args: {
   apiClient: GoogleApiClient
   collectionSlug: string
-  doc: { id: string } & Record<string, unknown>
+  doc: PayloadProductDoc
   dryRun: boolean
   onlyIfRemoteMissing: boolean
   options: NormalizedPluginOptions
@@ -194,6 +196,7 @@ const processInitialSyncProduct = async (args: {
   retryService: RetryService
 }): Promise<ProductSyncOutcome> => {
   const { apiClient, collectionSlug, doc, dryRun, onlyIfRemoteMissing, options, payload, retryService } = args
+  const productId = String(doc.id)
 
   // Resolve identity
   const identityResult = resolveIdentity(doc, options)
@@ -202,7 +205,7 @@ const processInitialSyncProduct = async (args: {
       error: {
         message: `Identity resolution failed: ${identityResult.errors.join('; ')}`,
         offerId: undefined,
-        productId: doc.id,
+        productId,
       },
       result: 'skipped',
     }
@@ -222,7 +225,7 @@ const processInitialSyncProduct = async (args: {
           error: {
             message: error instanceof Error ? error.message : String(error),
             offerId: identity.offerId,
-            productId: doc.id,
+            productId,
           },
           result: 'failed',
         }
@@ -231,28 +234,31 @@ const processInitialSyncProduct = async (args: {
     }
   }
 
-  if (dryRun) {
-    return { result: 'succeeded' }
-  }
-
   try {
-    // Apply field mappings to populate MC fields from product data
-    const fieldMappings = options.collections.products.fieldMappings
-    if (fieldMappings.length > 0) {
-      const mappedValues = applyFieldMappings(doc, fieldMappings, undefined, { siteUrl: options.siteUrl })
+    const { input } = await prepareProductForSync({
+      identity,
+      options,
+      payload,
+      product: doc,
+    })
 
-      // Merge mapped values into the product's MC state before building input
-      const currentMC = (doc.merchantCenter ?? {}) as Record<string, unknown>
-      const currentAttrs = (currentMC.productAttributes ?? {}) as Record<string, unknown>
-      const mappedAttrs = (mappedValues.productAttributes ?? {}) as Record<string, unknown>
-
-      doc.merchantCenter = {
-        ...currentMC,
-        productAttributes: { ...currentAttrs, ...mappedAttrs },
+    // Pre-flight validation — required MC fields
+    const missing = validateRequiredProductInput(input)
+    if (missing.length > 0) {
+      return {
+        error: {
+          message: `Missing required fields: ${missing.join(', ')}`,
+          offerId: identity.offerId,
+          productId,
+        },
+        result: 'failed',
       }
     }
 
-    const input = buildProductInput(doc, identity, options)
+    // Dry run stops after validation — product was prepared and validated but not pushed
+    if (dryRun) {
+      return { result: 'succeeded' }
+    }
 
     // Insert into Merchant Center
     await retryService.execute(
@@ -267,7 +273,7 @@ const processInitialSyncProduct = async (args: {
       {
         merchantProductId: identity.merchantProductId,
         operation: 'insertProductInput (initial)',
-        productId: doc.id,
+        productId,
       },
     )
 
@@ -282,11 +288,12 @@ const processInitialSyncProduct = async (args: {
 
     // Persist MC state on the document
     await payload.update({
-      id: doc.id,
+      id: productId,
       collection: collectionSlug as never,
+      context: buildInternalSyncContext(),
       data: {
         [MC_FIELD_GROUP_NAME]: {
-          ...(doc.merchantCenter as Record<string, unknown>),
+          ...doc.merchantCenter,
           snapshot,
           syncMeta: {
             lastAction: 'initialSync',
@@ -298,6 +305,7 @@ const processInitialSyncProduct = async (args: {
         },
       } as never,
       depth: 0,
+      overrideAccess: true,
     })
 
     return { result: 'succeeded' }
@@ -306,7 +314,7 @@ const processInitialSyncProduct = async (args: {
       error: {
         message: error instanceof Error ? error.message : String(error),
         offerId: identity.offerId,
-        productId: doc.id,
+        productId,
       },
       result: 'failed',
     }

@@ -9,18 +9,20 @@ import type {
   NormalizedPluginOptions,
   PullAllReport,
   PullResult,
+  ResolvedMCIdentity,
   SyncResult,
 } from '../../types/index.js'
 import type { GoogleApiClient } from './sub-services/googleApiClient.js'
 import type { RateLimiterService } from './sub-services/rateLimiterService.js'
 import type { RetryService } from './sub-services/retryService.js'
 
-import { MC_FIELD_GROUP_NAME } from '../../constants.js'
+import { GMC_SYNC_QUEUE_NAME, MC_FIELD_GROUP_NAME } from '../../constants.js'
 import { resolveIdentity } from '../sync/identityResolver.js'
 import { runInitialSync } from '../sync/initialSync.js'
 import { pullAll, pullProduct } from '../sync/pullSync.js'
-import { deleteFromMC, pushProduct, refreshSnapshot } from '../sync/pushSync.js'
+import { deleteFromMC, deleteFromMCByIdentity, pushProduct, refreshSnapshot } from '../sync/pushSync.js'
 import { createPluginLogger } from '../utilities/logger.js'
+import { asProductDoc, getRecordID } from '../utilities/recordUtils.js'
 import { createGoogleApiClient } from './sub-services/googleApiClient.js'
 import { createRateLimiterService } from './sub-services/rateLimiterService.js'
 import { createRetryService } from './sub-services/retryService.js'
@@ -28,6 +30,11 @@ import { createRetryService } from './sub-services/retryService.js'
 export type MerchantService = {
   cleanupSyncLogs: (args: { payload: Payload; ttlDays?: number }) => Promise<void>
   deleteProduct: (args: { payload: Payload; productId: string }) => Promise<SyncResult>
+  deleteProductByIdentity: (args: {
+    identity: ResolvedMCIdentity
+    payload: Payload
+    productId: string
+  }) => Promise<SyncResult>
   destroy: () => void
   getHealth: () => HealthResult
   getHealthDeep: (args: { payload: Payload }) => Promise<DeepHealthResult>
@@ -95,8 +102,12 @@ export const createMerchantService = (
   )
 
   const rateLimiter: RateLimiterService = createRateLimiterService({
+    enabled: options.rateLimit.enabled,
     maxConcurrency: options.rateLimit.maxConcurrency,
     maxQueueSize: options.rateLimit.maxQueueSize,
+    maxRequestsPerMinute: options.rateLimit.maxRequestsPerMinute,
+    scopeKey: `merchant:${options.merchantId}`,
+    store: options.rateLimit.store,
   })
 
   const service: MerchantService = {
@@ -130,14 +141,9 @@ export const createMerchantService = (
           where = { [`${MC_FIELD_GROUP_NAME}.enabled`]: { equals: true } }
         }
 
-        // Count total
-        const countResult = await payload.count({
-          collection: collectionSlug as never,
-          where,
-        })
-        report.total = countResult.totalDocs
-
-        // Paginate and process
+        // Collect all matching IDs upfront to avoid pagination drift when
+        // the filter (e.g. dirty=true) changes as products are processed
+        const allIds: string[] = []
         let page = 1
         let hasMore = true
 
@@ -145,22 +151,36 @@ export const createMerchantService = (
           const result = await payload.find({
             collection: collectionSlug as never,
             depth: 0,
-            limit: 100,
+            limit: 500,
             page,
+            select: {},
             where,
           })
-
           const docs = result.docs as unknown as Array<{ id: string }>
+          for (const doc of docs) {
+            allIds.push(doc.id)
+          }
+          hasMore = result.hasNextPage ?? false
+          page++
+        }
+
+        report.total = allIds.length
+
+        // Process in chunks
+        const CHUNK_SIZE = 100
+        for (let i = 0; i < allIds.length; i += CHUNK_SIZE) {
+          const chunk = allIds.slice(i, i + CHUNK_SIZE)
 
           const results = await Promise.allSettled(
-            docs.map((doc) =>
+            chunk.map((id) =>
               rateLimiter.execute(() =>
-                pushProduct({ apiClient, options, payload, productId: doc.id, retryService }),
+                pushProduct({ apiClient, options, payload, productId: id, retryService }),
               ),
             ),
           )
 
-          for (const result of results) {
+          for (let j = 0; j < results.length; j++) {
+            const result = results[j]
             report.processed++
             if (result.status === 'fulfilled' && result.value.success) {
               report.succeeded++
@@ -169,13 +189,11 @@ export const createMerchantService = (
               const message = result.status === 'rejected'
                 ? (result.reason instanceof Error ? result.reason.message : String(result.reason))
                 : 'Sync failed'
-              report.errors.push({ message, productId: 'unknown' })
+              report.errors.push({ message, productId: chunk[j] ?? 'unknown' })
             }
           }
 
           void onProgress?.(report)
-          hasMore = result.hasNextPage ?? false
-          page++
         }
 
         report.status = report.failed > 0 && report.succeeded === 0 ? 'failed' : 'completed'
@@ -195,6 +213,11 @@ export const createMerchantService = (
     deleteProduct: async ({ payload, productId }) =>
       rateLimiter.execute(() =>
         deleteFromMC({ apiClient, options, payload, productId, retryService }),
+      ),
+
+    deleteProductByIdentity: async ({ identity, payload, productId }) =>
+      rateLimiter.execute(() =>
+        deleteFromMCByIdentity({ apiClient, identity, options, payload, productId, retryService }),
       ),
 
     refreshSnapshot: async ({ payload, productId }) =>
@@ -228,7 +251,7 @@ export const createMerchantService = (
         id: productId,
         collection: collectionSlug as never,
         depth: 0,
-      }) as unknown as Record<string, unknown>
+      }).then(asProductDoc)
 
       const identityResult = resolveIdentity(product, options)
 
@@ -243,13 +266,19 @@ export const createMerchantService = (
 
       const formatDate = (d: Date) => d.toISOString().split('T')[0]
 
-      // Sanitize values interpolated into MC report queries to prevent injection
-      const sanitize = (val: string): string => val.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
+      // Validate values interpolated into MC report queries to prevent injection.
+      // Only allow alphanumerics, hyphens, underscores, tildes, and dots.
+      const assertSafeQueryValue = (val: string, label: string): string => {
+        if (!/^[\w.~-]+$/.test(val)) {
+          throw new Error(`Unsafe value for ${label}: ${val}`)
+        }
+        return val
+      }
 
-      const safeProductId = sanitize(identity.merchantProductId)
-      const safeOfferId = sanitize(identity.offerId)
-      const safeStartDate = sanitize(formatDate(startDate))
-      const safeEndDate = sanitize(formatDate(endDate))
+      const safeProductId = assertSafeQueryValue(identity.merchantProductId, 'merchantProductId')
+      const safeOfferId = assertSafeQueryValue(identity.offerId, 'offerId')
+      const safeStartDate = assertSafeQueryValue(formatDate(startDate), 'startDate')
+      const safeEndDate = assertSafeQueryValue(formatDate(endDate), 'endDate')
 
       // Product status query
       const statusQuery = `SELECT product_view.id, product_view.offer_id, product_view.title, product_view.aggregated_reporting_context_status FROM product_view WHERE product_view.id = '${safeProductId}'`
@@ -291,11 +320,21 @@ export const createMerchantService = (
 
     getHealth: () => ({
       admin: { mode: options.admin.mode },
+      jobs: {
+        queueName: GMC_SYNC_QUEUE_NAME,
+        runnerRequired: options.sync.schedule.strategy === 'payload-jobs',
+        strategy: options.sync.schedule.strategy,
+        workerBasePath: `${options.api.basePath}/worker`,
+        workerEndpointsEnabled: Boolean(options.sync.schedule.apiKey),
+      },
       merchant: {
         accountId: options.merchantId,
         dataSourceId: options.dataSourceId,
       },
-      rateLimit: { enabled: options.rateLimit.enabled },
+      rateLimit: {
+        distributed: Boolean(options.rateLimit.store),
+        enabled: options.rateLimit.enabled,
+      },
       status: 'ok',
       sync: { mode: options.sync.mode },
       timestamp: new Date().toISOString(),
@@ -341,7 +380,9 @@ export const createMerchantService = (
             overrideAccess: true,
             sort: 'startedAt',
           })
-          const ids = excess.docs.map((d) => (d as unknown as Record<string, unknown>).id as string)
+          const ids = excess.docs.map((doc) => getRecordID(doc)).filter((id): id is string => {
+            return typeof id === 'string'
+          })
           if (ids.length > 0) {
             await payload.delete({
               collection: 'gmc-sync-log' as never,

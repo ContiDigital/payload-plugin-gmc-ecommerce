@@ -7,14 +7,14 @@ import { buildGMCSyncLogCollection } from '../collections/gmcSyncLog.js'
 
 export const applySyncCollections = (
   config: Config,
-  _options: NormalizedPluginOptions,
+  options: NormalizedPluginOptions,
 ): Config => {
   if (!config.collections) {
     config.collections = []
   }
 
-  config.collections.push(buildGMCFieldMappingsCollection())
-  config.collections.push(buildGMCSyncLogCollection())
+  config.collections.push(buildGMCFieldMappingsCollection(options.access))
+  config.collections.push(buildGMCSyncLogCollection(options.access))
 
   return config
 }

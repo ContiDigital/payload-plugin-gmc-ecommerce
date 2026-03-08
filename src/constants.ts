@@ -25,13 +25,20 @@ export const GOOGLE_AUTH_SCOPES = ['https://www.googleapis.com/auth/content']
 
 export const GMC_FIELD_MAPPINGS_SLUG = 'gmc-field-mappings'
 export const GMC_SYNC_LOG_SLUG = 'gmc-sync-log'
+export const GMC_SYNC_QUEUE_NAME = 'gmc-sync'
+export const GMC_PUSH_PRODUCT_TASK_SLUG = 'gmcPushProduct'
+export const GMC_DELETE_PRODUCT_TASK_SLUG = 'gmcDeleteProduct'
+export const GMC_SYNC_DIRTY_TASK_SLUG = 'gmcSyncDirty'
+export const GMC_BATCH_PUSH_TASK_SLUG = 'gmcBatchPush'
+export const GMC_INITIAL_SYNC_TASK_SLUG = 'gmcInitialSync'
+export const GMC_PULL_ALL_TASK_SLUG = 'gmcPullAll'
 
 // ---------------------------------------------------------------------------
 // Product defaults
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_CONTENT_LANGUAGE = 'en'
-export const DEFAULT_FEED_LABEL = 'US'
+export const DEFAULT_FEED_LABEL = 'PRODUCTS'
 export const DEFAULT_CURRENCY = 'USD'
 export const DEFAULT_CONDITION = 'NEW'
 

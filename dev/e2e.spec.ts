@@ -1,15 +1,34 @@
 import { expect, test } from '@playwright/test'
 
-// this is an example Playwright e2e test
-test('should render admin panel logo', async ({ page }) => {
+test('admin dashboard loads and shows Merchant Center widget', async ({ page }) => {
   await page.goto('/admin')
 
-  // login
+  // Login
   await page.fill('#field-email', 'dev@payloadcms.com')
   await page.fill('#field-password', 'test')
   await page.click('.form-submit button')
 
-  // should show dashboard
+  // Dashboard should load
   await expect(page).toHaveTitle(/Dashboard/)
-  await expect(page.locator('.graphic-icon')).toBeVisible()
+
+  // Merchant Center nav link should be visible
+  await expect(page.getByText('Merchant Center')).toBeVisible()
+})
+
+test('merchant center admin view loads', async ({ page }) => {
+  await page.goto('/admin')
+
+  // Login
+  await page.fill('#field-email', 'dev@payloadcms.com')
+  await page.fill('#field-password', 'test')
+  await page.click('.form-submit button')
+
+  // Navigate to Merchant Center
+  await page.getByText('Merchant Center').first().click()
+
+  // Should show the Merchant Center heading
+  await expect(page.getByRole('heading', { name: 'Merchant Center' })).toBeVisible()
+
+  // Should show Connection Status section
+  await expect(page.getByText('Connection Status')).toBeVisible()
 })

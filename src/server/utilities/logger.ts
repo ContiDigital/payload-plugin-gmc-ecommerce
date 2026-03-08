@@ -1,13 +1,16 @@
 const PREFIX = '[GMC]'
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type LogMethod = (...args: any[]) => void
+type LogMethod = (
+  messageOrMeta: Record<string, unknown> | string,
+  message?: string,
+  ...args: unknown[]
+) => void
 
 type PayloadLogger = {
-  debug: LogMethod
-  error: LogMethod
-  info: LogMethod
-  warn: LogMethod
+  debug?: LogMethod
+  error?: LogMethod
+  info?: LogMethod
+  warn?: LogMethod
 }
 
 export type PluginLogger = {
@@ -43,10 +46,14 @@ export const createPluginLogger = (
     }
   }
 
+  const bindOrNoop = (method: LogMethod | undefined): LogMethod => {
+    return method ? method.bind(payloadLogger) : noop
+  }
+
   return {
-    debug: wrap(payloadLogger.debug.bind(payloadLogger)),
-    error: wrap(payloadLogger.error.bind(payloadLogger)),
-    info: wrap(payloadLogger.info.bind(payloadLogger)),
-    warn: wrap(payloadLogger.warn.bind(payloadLogger)),
+    debug: wrap(bindOrNoop(payloadLogger.debug)),
+    error: wrap(bindOrNoop(payloadLogger.error)),
+    info: wrap(bindOrNoop(payloadLogger.info)),
+    warn: wrap(bindOrNoop(payloadLogger.warn)),
   }
 }

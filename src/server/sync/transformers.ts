@@ -2,7 +2,9 @@ import type {
   MCCustomAttribute,
   MCProductAttributes,
   MCProductInput,
+  MCProductState,
   NormalizedPluginOptions,
+  PayloadProductDoc,
   ResolvedMCIdentity,
 } from '../../types/index.js'
 
@@ -75,19 +77,60 @@ const stripEmpty = <T extends Record<string, unknown>>(obj: T): T => {
 }
 
 // ---------------------------------------------------------------------------
+// Forward transform: convert Payload row-object arrays back to plain string
+// arrays expected by the MC API.
+//
+// Payload stores these as [{value: "foo"}, ...] or [{url: "..."}] but the
+// MC API expects plain ["foo", ...] arrays.
+// ---------------------------------------------------------------------------
+
+const STRING_VALUE_ARRAY_FIELDS = new Set([
+  'excludedDestinations',
+  'gtins',
+  'includedDestinations',
+  'productTypes',
+  'promotionIds',
+])
+
+const normalizeArrayFields = (attrs: MCProductAttributes): MCProductAttributes => {
+  const result = { ...attrs }
+
+  for (const field of STRING_VALUE_ARRAY_FIELDS) {
+    const value = (result as Record<string, unknown>)[field]
+    if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'object' && value[0] !== null) {
+      ;(result as Record<string, unknown>)[field] = (value as Array<Record<string, unknown>>)
+        .map((item) => (typeof item.value === 'string' ? item.value : ''))
+        .filter((v) => v.length > 0)
+    }
+  }
+
+  // additionalImageLinks uses {url: "..."} instead of {value: "..."}
+  if (Array.isArray(result.additionalImageLinks) && result.additionalImageLinks.length > 0) {
+    const first = result.additionalImageLinks[0]
+    if (typeof first === 'object' && first !== null && 'url' in first) {
+      result.additionalImageLinks = (result.additionalImageLinks as unknown as Array<Record<string, unknown>>)
+        .map((item) => (typeof item.url === 'string' ? item.url : ''))
+        .filter((v) => v.length > 0)
+    }
+  }
+
+  return result
+}
+
+// ---------------------------------------------------------------------------
 // Build ProductInput from Payload document's MC fields
 // ---------------------------------------------------------------------------
 
 export const buildProductInput = (
-  product: Record<string, unknown>,
+  product: PayloadProductDoc | Record<string, unknown>,
   identity: ResolvedMCIdentity,
   options: NormalizedPluginOptions,
 ): MCProductInput => {
-  const mcState = product.merchantCenter as Record<string, unknown> | undefined
-  const storedAttributes = (mcState?.productAttributes ?? {}) as MCProductAttributes
-  const storedCustomAttributes = mcState?.customAttributes as MCCustomAttribute[] | undefined
+  const mcState: MCProductState | undefined = (product as PayloadProductDoc).merchantCenter
+  const storedAttributes: MCProductAttributes = mcState?.productAttributes ?? {}
+  const storedCustomAttributes: MCCustomAttribute[] | undefined = mcState?.customAttributes
 
-  const productAttributes = stripEmpty({ ...storedAttributes })
+  const productAttributes = stripEmpty(normalizeArrayFields({ ...storedAttributes }))
   const customAttributes = sanitizeCustomAttributes(storedCustomAttributes)
 
   // Apply default condition if not set

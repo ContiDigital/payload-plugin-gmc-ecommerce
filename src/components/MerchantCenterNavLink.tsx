@@ -3,14 +3,15 @@
 import { useConfig } from '@payloadcms/ui'
 import React from 'react'
 
+import { resolveMerchantCenterApiConfig } from './merchantCenter/apiConfig.js'
+
 export const MerchantCenterNavLink: React.FC = () => {
   const { config } = useConfig()
-  const routes = config.routes as { admin?: string } | undefined
-  const adminRoute = routes?.admin ?? '/admin'
+  const { adminRoute, gmcAdminRoute } = resolveMerchantCenterApiConfig(config)
 
   return (
     <a
-      href={`${adminRoute}/merchant-center`}
+      href={`${adminRoute}${gmcAdminRoute}`}
       style={{
         color: 'inherit',
         display: 'block',

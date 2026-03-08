@@ -1,14 +1,16 @@
 import type { Payload } from 'payload'
 
-import type { MCProductState, NormalizedPluginOptions, SyncResult } from '../../types/index.js'
+import type { NormalizedPluginOptions, ResolvedMCIdentity, SyncResult } from '../../types/index.js'
 import type { GoogleApiClient } from '../services/sub-services/googleApiClient.js'
 import type { RetryService } from '../services/sub-services/retryService.js'
 
 import { MC_FIELD_GROUP_NAME } from '../../constants.js'
 import { GoogleApiError } from '../services/sub-services/googleApiClient.js'
 import { createPluginLogger } from '../utilities/logger.js'
+import { asProductDoc } from '../utilities/recordUtils.js'
+import { buildInternalSyncContext } from './hookContext.js'
 import { resolveIdentity } from './identityResolver.js'
-import { buildProductInput } from './transformers.js'
+import { prepareProductForSync, validateRequiredProductInput } from './productPreparation.js'
 
 // ---------------------------------------------------------------------------
 // Single product push
@@ -25,12 +27,12 @@ export const pushProduct = async (args: {
   const log = createPluginLogger(payload.logger, { operation: 'push', productId })
   const collectionSlug = options.collections.products.slug
 
-  // 1. Fetch the product document
+  // 1. Fetch the product document (depth hydrates relationships for field mappings)
   const product = await payload.findByID({
     id: productId,
     collection: collectionSlug,
-    depth: 0,
-  }) as unknown as Record<string, unknown>
+    depth: options.collections.products.fetchDepth,
+  }).then(asProductDoc)
 
   // 2. Set syncing state
   await updateSyncMeta(payload, collectionSlug, productId, {
@@ -53,12 +55,26 @@ export const pushProduct = async (args: {
     }
 
     const identity = identityResult.value
-    const input = buildProductInput(product, identity, options)
+    const { action, input } = await prepareProductForSync({
+      identity,
+      options,
+      payload,
+      product,
+    })
 
-    // 4. Insert product input (MC v1 insert is an upsert — creates or replaces)
-    const mcState = product.merchantCenter as MCProductState | undefined
-    const hasSnapshot = mcState?.snapshot && Object.keys(mcState.snapshot).length > 0
-    const action: 'insert' | 'update' = hasSnapshot ? 'update' : 'insert'
+    // 5. Pre-flight validation — required MC fields
+    const validationErrors = validateRequiredProductInput(input)
+    if (validationErrors.length > 0) {
+      const errorMsg = `Missing required fields: ${validationErrors.join(', ')}`
+      log.error('Pre-flight validation failed', { errors: validationErrors })
+      await updateSyncMeta(payload, collectionSlug, productId, {
+        lastError: errorMsg,
+        state: 'error',
+      })
+      return { action, productId, success: false }
+    }
+
+    // 6. Insert product input (MC v1 insert is an upsert — creates or replaces)
 
     await retryService.execute(
       () =>
@@ -76,7 +92,7 @@ export const pushProduct = async (args: {
       },
     )
 
-    // 5. Fetch processed snapshot
+    // 7. Fetch processed snapshot
     let snapshot: Record<string, unknown> | undefined
     try {
       const snapshotResponse = await retryService.execute(
@@ -96,7 +112,7 @@ export const pushProduct = async (args: {
       })
     }
 
-    // 6. Update success state and clear dirty flag
+    // 8. Update success state and clear dirty flag
     await updateSyncMeta(payload, collectionSlug, productId, {
       dirty: false,
       lastError: undefined,
@@ -137,7 +153,7 @@ export const deleteFromMC = async (args: {
     id: productId,
     collection: collectionSlug,
     depth: 0,
-  }) as unknown as Record<string, unknown>
+  }).then(asProductDoc)
 
   const identityResult = resolveIdentity(product, options)
   if (!identityResult.ok) {
@@ -198,6 +214,47 @@ export const deleteFromMC = async (args: {
 }
 
 // ---------------------------------------------------------------------------
+// Delete from MC by pre-resolved identity (used by afterDelete hook where
+// the Payload document has already been deleted and cannot be re-fetched)
+// ---------------------------------------------------------------------------
+
+export const deleteFromMCByIdentity = async (args: {
+  apiClient: GoogleApiClient
+  identity: ResolvedMCIdentity
+  options: NormalizedPluginOptions
+  payload: Payload
+  productId: string
+  retryService: RetryService
+}): Promise<SyncResult> => {
+  const { apiClient, identity, options, payload, productId, retryService } = args
+
+  try {
+    await retryService.execute(
+      () =>
+        apiClient.deleteProductInput(
+          identity.productInputName,
+          payload,
+          identity.dataSourceOverride
+            ? `accounts/${options.merchantId}/dataSources/${identity.dataSourceOverride}`
+            : undefined,
+        ),
+      {
+        merchantProductId: identity.merchantProductId,
+        operation: 'deleteProductInput (afterDelete)',
+        productId,
+      },
+    )
+
+    return { action: 'delete', productId, success: true }
+  } catch (error) {
+    if (error instanceof GoogleApiError && error.statusCode === 404) {
+      return { action: 'delete', productId, success: true }
+    }
+    throw error
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Refresh snapshot (read-only)
 // ---------------------------------------------------------------------------
 
@@ -215,7 +272,7 @@ export const refreshSnapshot = async (args: {
     id: productId,
     collection: collectionSlug,
     depth: 0,
-  }) as unknown as Record<string, unknown>
+  }).then(asProductDoc)
 
   const identityResult = resolveIdentity(product, options)
   if (!identityResult.ok) {
@@ -280,12 +337,17 @@ const updateSyncMeta = async (
     await payload.update({
       id: productId,
       collection: collectionSlug as never,
+      context: buildInternalSyncContext(),
       data: unflatten(updateData),
       depth: 0,
+      overrideAccess: true,
     })
   } catch (error) {
-    log.error('Failed to update sync metadata', {
+    log.error('Failed to update sync metadata — product state may be stale in admin UI', {
+      collection: collectionSlug,
       error: error instanceof Error ? error.message : String(error),
+      meta,
+      productId,
     })
   }
 }

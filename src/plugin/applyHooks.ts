@@ -2,6 +2,7 @@ import type { CollectionConfig, Config } from 'payload'
 
 import type { NormalizedPluginOptions } from '../types/index.js'
 
+import { createAfterChangeHook } from '../hooks/afterChange.js'
 import { createAfterDeleteHook } from '../hooks/afterDelete.js'
 import { createBeforeChangeHook } from '../hooks/beforeChange.js'
 
@@ -30,12 +31,17 @@ export const applyHooks = (
     productCollection.hooks.beforeChange = []
   }
 
+  if (!productCollection.hooks.afterChange) {
+    productCollection.hooks.afterChange = []
+  }
+
   if (!productCollection.hooks.afterDelete) {
     productCollection.hooks.afterDelete = []
   }
 
   // Add our hooks
   productCollection.hooks.beforeChange.push(createBeforeChangeHook(options))
+  productCollection.hooks.afterChange.push(createAfterChangeHook(options))
   productCollection.hooks.afterDelete.push(createAfterDeleteHook(options))
 
   return config

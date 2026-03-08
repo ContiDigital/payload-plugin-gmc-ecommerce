@@ -1,57 +1,25 @@
 # payload-plugin-gmc-ecommerce
 
-A production-grade [Payload CMS](https://payloadcms.com) plugin for bi-directional product synchronization with [Google Merchant Center](https://merchants.google.com/) via the Merchant API (v1). Push products from Payload to Google Shopping, pull MC data back into Payload, manage field mappings, track sync state per-product, and monitor performance analytics — all from the Payload admin panel.
+Google Merchant Center sync for [Payload CMS](https://payloadcms.com) v3.
 
-Built for Payload 3.x. Uses the Merchant Center REST API directly (no SDK dependency) with service account authentication, automatic retry with exponential backoff, rate limiting, and structured logging.
+Push products to Google Merchant Center, pull processed data back, manage field mappings, run batch operations, and monitor sync state — all from inside Payload's admin panel.
 
-## Features
+## Requirements
 
-- **Bi-directional sync** — Push product data to MC and pull MC state back into Payload
-- **Three sync modes** — Manual, onChange (auto-push on save), and scheduled (cron)
-- **Field mappings** — Declarative source-to-target mappings with transform presets (`toMicros`, `extractAbsoluteUrl`, `toArray`, etc.)
-- **Per-product controls** — Enable/disable sync, override identity fields, per-product data source overrides
-- **Admin dashboard** — Dedicated Merchant Center dashboard with sync controls, sync log viewer, and field mapping editor
-- **Auto-injected tab** — Merchant Center tab injected into your products collection with identity, attributes, sync state, and MC snapshot
-- **Initial sync** — Bulk-push all products to MC on first setup (supports dry run)
-- **Pull all** — Import all products from MC back into Payload with conflict resolution
-- **Batch operations** — Push dirty products, push by filter, push by product IDs
-- **Conflict resolution** — Three strategies: `mc-wins`, `payload-wins`, `newest-wins`
-- **Product analytics** — Per-product impressions, clicks, CTR, and conversions from MC Reports API
-- **Rate limiting** — Token bucket with configurable concurrency, queue size, and requests/minute
-- **Retry with backoff** — Exponential backoff with jitter for 429/5xx responses
-- **Scheduled sync** — Two strategies: Payload Jobs (`autoRun` cron) or external scheduler (API key-authenticated endpoint)
-- **Structured logging** — `[GMC]` prefixed logs with operation context via Payload's pino logger
-- **Health checks** — Shallow and deep health endpoints (deep validates API connectivity)
-- **Sync log collection** — Automatic tracking of all sync operations with TTL cleanup
-- **Dirty tracking** — Products marked dirty on save, cleared after successful sync
-- **Graceful shutdown** — Active services drain queues and reset token caches on SIGTERM/SIGINT
-
-## Installation
+- Payload CMS `^3.37.0`
+- Node.js `^18.20.2 || >=20.9.0`
 
 ```bash
 pnpm add payload-plugin-gmc-ecommerce
-# or
-npm install payload-plugin-gmc-ecommerce
-# or
-yarn add payload-plugin-gmc-ecommerce
 ```
 
-### Requirements
-
-| Dependency | Version |
-|---|---|
-| Payload CMS | `^3.37.0` |
-| Node.js | `^18.20.2` or `>=20.9.0` |
-
-## Quick Start
+## Minimal Setup
 
 ```ts
-// payload.config.ts
 import { buildConfig } from 'payload'
 import { payloadGmcEcommerce } from 'payload-plugin-gmc-ecommerce'
 
 export default buildConfig({
-  // ...your config
   plugins: [
     payloadGmcEcommerce({
       merchantId: process.env.GMC_MERCHANT_ID!,
@@ -60,7 +28,7 @@ export default buildConfig({
         type: 'json',
         credentials: {
           client_email: process.env.GMC_CLIENT_EMAIL!,
-          private_key: process.env.GMC_PRIVATE_KEY!,
+          private_key: process.env.GMC_PRIVATE_KEY!.replace(/\\n/g, '\n'),
         },
       }),
       collections: {
@@ -74,251 +42,172 @@ export default buildConfig({
 })
 ```
 
-This minimal configuration will:
+This mounts API endpoints under `/api/gmc/*`, injects a Merchant Center tab into your products collection, registers hidden utility collections, and adds an admin dashboard route at `/admin/merchant-center`.
 
-1. Inject a **Merchant Center** tab into your `products` collection
-2. Register API endpoints under `/api/gmc/*`
-3. Add a **Merchant Center** route in the admin nav
-4. Create `gmc-field-mappings` and `gmc-sync-log` utility collections
-5. Set sync mode to `manual` (default)
+Sync mode defaults to `manual` — nothing syncs until you trigger it.
 
-## Production Configuration
+For the complete integration walkthrough, see [docs/setup-guide.md](./docs/setup-guide.md).
+
+## What the Plugin Does
+
+When enabled, the plugin:
+
+1. Injects a `merchantCenter` field group into your products collection with identity fields, all Merchant Center product attributes, a read-only API snapshot, and sync metadata.
+2. Adds a **Merchant Center** tab to each product's edit view with push/pull/delete/refresh controls and analytics.
+3. Mounts REST endpoints for single-product and batch operations, health checks, field mapping management, and worker/cron scheduling.
+4. Creates two hidden collections: `gmc-field-mappings` (runtime field mapping rules) and `gmc-sync-log` (operation history).
+5. Adds an admin dashboard (or dashboard widget, or both) showing connection health, bulk operations, field mappings, and sync history.
+6. Optionally registers Payload job task definitions when using the `payload-jobs` scheduling strategy.
+
+## Configuration Reference
+
+### Required Options
+
+| Option | Type | Description |
+|---|---|---|
+| `merchantId` | `string` | Your Google Merchant Center account ID |
+| `dataSourceId` | `string` | The data source ID products will sync through |
+| `getCredentials` | `function` | Returns Google service account credentials |
+| `collections.products.slug` | `CollectionSlug` | Your products collection slug |
+| `collections.products.identityField` | `string` | Field used to derive `offerId` (e.g., `'sku'`) |
+
+### All Options
 
 ```ts
 payloadGmcEcommerce({
-  merchantId: process.env.GMC_MERCHANT_ID!,
-  dataSourceId: process.env.GMC_DATA_SOURCE_ID!,
-  siteUrl: process.env.SITE_URL!, // e.g. 'https://example.com'
-  getCredentials: async () => ({
-    type: 'json',
-    credentials: {
-      client_email: process.env.GMC_CLIENT_EMAIL!,
-      private_key: process.env.GMC_PRIVATE_KEY!.replace(/\\n/g, '\n'),
-    },
-  }),
+  // --- Required ---
+  merchantId: string,
+  dataSourceId: string,
+  getCredentials: async ({ payload }) => CredentialResolution,
   collections: {
     products: {
-      slug: 'products',
-      identityField: 'sku',
-      fieldMappings: [
-        { source: 'title', target: 'productAttributes.title', syncMode: 'permanent' },
-        { source: 'description', target: 'productAttributes.description', syncMode: 'permanent' },
-        { source: 'price', target: 'productAttributes.price.amountMicros', syncMode: 'permanent', transformPreset: 'toMicros' },
-        { source: 'featuredImage', target: 'productAttributes.imageLink', syncMode: 'permanent', transformPreset: 'extractAbsoluteUrl' },
-        { source: 'slug', target: 'productAttributes.link', syncMode: 'initialOnly' },
-      ],
+      slug: CollectionSlug,
+      identityField: string,
+      autoInjectTab?: boolean,       // default: true
+      tabPosition?: 'append' | 'before-last' | number,  // default: 'append'
+      fetchDepth?: number,             // default: 1 — depth for fetching product docs during push
+      fieldMappings?: FieldMapping[], // default: []
+    },
+    categories?: {
+      slug: CollectionSlug,
+      nameField: string,
+      googleCategoryIdField?: string,
+      parentField?: string,
+      productCategoryField?: string,  // relationship field on products
+      productTypeField?: string,      // field used for MC productTypes
     },
   },
-  defaults: {
-    contentLanguage: 'en',
-    feedLabel: 'US',
-    currency: 'USD',
-    condition: 'NEW',
+
+  // --- Credentials ---
+  // getCredentials returns one of:
+  //   { type: 'json', credentials: { client_email, private_key } }
+  //   { type: 'keyFilename', path: '/path/to/service-account.json' }
+
+  // --- Defaults ---
+  defaults?: {
+    contentLanguage?: string,  // default: 'en'
+    feedLabel?: string,        // default: 'PRODUCTS'
+    currency?: string,         // default: 'USD'
+    condition?: string,        // default: 'NEW'
   },
-  sync: {
-    mode: 'onChange',
-    permanentSync: true,
-    conflictStrategy: 'mc-wins',
-    initialSync: {
-      enabled: true,
-      dryRun: false,
-      batchSize: 50,
-      onlyIfRemoteMissing: true,
+
+  // --- Admin UI ---
+  admin?: {
+    mode?: 'route' | 'dashboard' | 'both' | 'headless',  // default: 'route'
+    route?: string,       // default: '/merchant-center'
+    navLabel?: string,    // default: 'Merchant Center'
+  },
+
+  // --- API ---
+  api?: {
+    basePath?: string,    // default: '/gmc'
+  },
+
+  // --- Site URL ---
+  siteUrl?: string,
+    // Base URL for resolving relative paths (e.g., 'https://example.com')
+    // Required if using the 'extractAbsoluteUrl' transform preset
+
+  // --- Sync ---
+  sync?: {
+    mode?: 'manual' | 'onChange' | 'scheduled',  // default: 'manual'
+    permanentSync?: boolean,        // default: false
+    conflictStrategy?: 'mc-wins' | 'payload-wins' | 'newest-wins',  // default: 'mc-wins'
+    initialSync?: {
+      enabled?: boolean,            // default: true
+      dryRun?: boolean,             // default: true
+      batchSize?: number,           // default: 100
+      onlyIfRemoteMissing?: boolean, // default: true
     },
+    schedule?: {
+      strategy?: 'external' | 'payload-jobs',  // default: 'external'
+      apiKey?: string,              // required for external strategy
+      cron?: string,                // default: '0 4 * * *'
+    },
+    scheduleCron?: string,            // shorthand for schedule.cron (same default)
   },
-  rateLimit: {
-    enabled: true,
-    maxConcurrency: 4,
-    maxRequestsPerMinute: 120,
-    maxRetries: 4,
+
+  // --- Rate Limiting ---
+  rateLimit?: {
+    enabled?: boolean,              // default: true
+    maxConcurrency?: number,        // default: 4
+    maxQueueSize?: number,          // default: 200
+    maxRequestsPerMinute?: number,  // default: 120
+    maxRetries?: number,            // default: 4
+    baseRetryDelayMs?: number,      // default: 300
+    maxRetryDelayMs?: number,       // default: 4000
+    jitterFactor?: number,          // default: 0.2
+    requestTimeoutMs?: number,      // default: 15000
+    store?: DistributedRateLimitStore,  // for multi-instance deployments
   },
-  admin: {
-    mode: 'both',
-  },
-  access: async ({ req }) => {
-    return req.user?.role === 'admin'
-  },
+
+  // --- Access Control ---
+  access?: async ({ req, payload, user }) => boolean,
+    // Default: user.isAdmin === true || user.roles includes 'admin'
+
+  // --- Lifecycle Hook ---
+  beforePush?: async ({ doc, operation, payload, productInput }) => MCProductInput,
+    // Called before each product is sent to the MC API.
+    // Return the modified productInput.
+
+  // --- Disable ---
+  disabled?: boolean,  // default: false
 })
 ```
 
-## Google Merchant Center Setup
+## Merchant Center Product Identity
 
-### 1. Create a Service Account
+Product identity in Google Merchant Center is derived from three values:
 
-1. Go to the [Google Cloud Console](https://console.cloud.google.com/)
-2. Select or create a project
-3. Navigate to **IAM & Admin > Service Accounts**
-4. Click **Create Service Account**
-5. Grant it no project-level roles (MC access is managed separately)
-6. Under the service account, go to **Keys > Add Key > Create new key > JSON**
-7. Download the JSON key file — you need `client_email` and `private_key`
-
-### 2. Enable the Merchant API
-
-1. In the Cloud Console, go to **APIs & Services > Library**
-2. Search for **Merchant API** and enable it
-3. Also enable **Google Shopping Content API** if you plan to use Reports
-
-### 3. Grant Merchant Center Access
-
-1. Go to [Google Merchant Center](https://merchants.google.com/)
-2. Navigate to **Settings > Account access**
-3. Add the service account email (`client_email` from step 1) as a user
-4. Grant it **Standard** or **Admin** access
-
-### 4. Find Your Merchant ID and Data Source ID
-
-- **Merchant ID**: Visible in the top-right of Merchant Center, or in the URL (`merchants.google.com/mc/overview?a=MERCHANT_ID`)
-- **Data Source ID**: Go to **Products > Feeds**, click on your primary feed — the ID is in the URL or feed details
-
-### 5. Environment Variables
-
-```env
-GMC_MERCHANT_ID=123456789
-GMC_DATA_SOURCE_ID=987654321
-GMC_CLIENT_EMAIL=my-service-account@my-project.iam.gserviceaccount.com
-GMC_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----\n"
-SITE_URL=https://example.com
+```
+contentLanguage~feedLabel~offerId
 ```
 
-### Credential Resolution
+For example: `en~PRODUCTS~SKU-123`
 
-The `getCredentials` function supports two resolution types:
+These three values together form a unique product in Merchant Center. Changing any of them creates a **new** Merchant Center product rather than updating the existing one.
 
-```ts
-// Inline JSON credentials (recommended for most deployments)
-getCredentials: async () => ({
-  type: 'json',
-  credentials: {
-    client_email: process.env.GMC_CLIENT_EMAIL!,
-    private_key: process.env.GMC_PRIVATE_KEY!,
-  },
-})
+If you are connecting to an existing live Merchant Center data source, your `defaults.contentLanguage`, `defaults.feedLabel`, and identity field values **must match your current production identity exactly**. If your live catalog uses `PRODUCTS` as the feed label and you configure the plugin with `US`, you will create duplicate products.
 
-// File path (for environments with mounted secrets)
-getCredentials: async () => ({
-  type: 'keyFilename',
-  path: '/run/secrets/gmc-service-account.json',
-})
-```
-
-## Admin Integration
-
-### Admin Modes
-
-| Mode | Description |
-|---|---|
-| `route` | Dedicated route at `/admin/merchant-center` (default) |
-| `dashboard` | Widget embedded in the Payload dashboard |
-| `both` | Both route and dashboard widget |
-| `headless` | API endpoints only, no admin UI |
-
-### Merchant Center Dashboard
-
-The admin dashboard provides:
-
-- **Connection status** with deep health check (validates API connectivity)
-- **Quick actions**: Push all, push dirty, pull all, initial sync
-- **Sync log viewer** with real-time progress tracking
-- **Field mapping editor** — create, edit, and delete mappings from the UI
-
-### Per-Product Tab
-
-When `autoInjectTab` is `true` (default), a **Merchant Center** tab is added to your products collection with:
-
-- **Enable toggle** — Opt products in/out of sync
-- **Identity fields** — offerId (auto-populated from `identityField`), contentLanguage, feedLabel, dataSourceOverride
-- **Product attributes** — All MC product attributes (title, description, price, availability, images, shipping, etc.)
-- **Custom attributes** — Key-value pairs for MC custom attributes
-- **Sync metadata** — State, last action, last error, last synced timestamp, dirty flag
-- **MC snapshot** — Raw JSON response from the last MC API call
+Per-product identity overrides are available in the Merchant Center tab if specific products need different values.
 
 ## Sync Modes
 
-### Manual (`mode: 'manual'`)
+| Mode | Behavior |
+|---|---|
+| `manual` | Nothing syncs automatically. Use the admin UI or API endpoints to trigger operations. |
+| `onChange` | Products auto-sync to Merchant Center on every successful save (create or update). |
+| `scheduled` | Products are marked dirty on save. A scheduled job pushes all dirty products in batch. |
 
-Default mode. Products are only synced when explicitly triggered via API endpoints or admin UI actions.
-
-### On Change (`mode: 'onChange'`)
-
-Products are automatically pushed to MC after every save (update operation). The push is fire-and-forget — it does not block the save operation. The push is deferred via `setImmediate` to ensure the document is fully persisted before the push begins.
-
-```ts
-sync: {
-  mode: 'onChange',
-  permanentSync: true, // Re-apply field mappings on every save
-}
-```
-
-### Scheduled (`mode: 'scheduled'`)
-
-Products marked as dirty are pushed on a cron schedule. Two strategies are available:
-
-#### Payload Jobs Strategy
-
-Uses Payload's built-in Jobs/Queue system with `autoRun`. Best for long-running server environments (VPS, containers, dedicated servers).
-
-> **Warning**: Do not use `payload-jobs` strategy on serverless platforms (Vercel, AWS Lambda). The `autoRun` scheduler requires a persistent process.
-
-```ts
-sync: {
-  mode: 'scheduled',
-  permanentSync: true,
-  schedule: {
-    strategy: 'payload-jobs',
-    cron: '0 4 * * *', // 4am daily
-  },
-}
-```
-
-#### External Strategy
-
-Exposes an API key-authenticated endpoint for external schedulers (AWS EventBridge, GitHub Actions, cron jobs, etc.). Works on any platform including serverless.
-
-```ts
-sync: {
-  mode: 'scheduled',
-  permanentSync: true,
-  schedule: {
-    strategy: 'external',
-    apiKey: process.env.GMC_CRON_API_KEY!,
-    cron: '0 4 * * *', // Used as documentation; actual schedule configured externally
-  },
-}
-```
-
-Trigger from an external scheduler:
-
-```bash
-# Via query parameter
-curl -X POST "https://example.com/api/gmc/cron/sync?key=YOUR_API_KEY"
-
-# Via header
-curl -X POST https://example.com/api/gmc/cron/sync \
-  -H "x-gmc-api-key: YOUR_API_KEY"
-```
-
-**GitHub Actions example:**
-
-```yaml
-name: GMC Scheduled Sync
-on:
-  schedule:
-    - cron: '0 4 * * *'
-jobs:
-  sync:
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          curl -X POST "${{ secrets.SITE_URL }}/api/gmc/cron/sync" \
-            -H "x-gmc-api-key: ${{ secrets.GMC_CRON_API_KEY }}"
-```
+Start with `manual`. Move to `onChange` or `scheduled` only after you have verified identity alignment and pushed a few products successfully.
 
 ## Field Mappings
 
-Field mappings declaratively map Payload document fields to MC product attributes. They support dot-notation paths, array indexing, and transform presets.
+Field mappings copy values from your Payload document fields into Merchant Center product attributes. There are two sources of field mappings, and they are merged at push time:
 
-### Configuration
+### Config-Time Mappings
+
+Defined in your plugin config. These are static and version-controlled:
 
 ```ts
 collections: {
@@ -326,586 +215,393 @@ collections: {
     slug: 'products',
     identityField: 'sku',
     fieldMappings: [
-      {
-        source: 'title',                              // Payload field path
-        target: 'productAttributes.title',             // MC attribute path
-        syncMode: 'permanent',                         // Applied on every save
-        transformPreset: 'none',                       // Optional transform
-        order: 0,                                      // Execution order
-      },
-      {
-        source: 'price',
-        target: 'productAttributes.price.amountMicros',
-        syncMode: 'permanent',
-        transformPreset: 'toMicros',                   // Converts dollars to micros
-      },
-      {
-        source: 'featuredImage',
-        target: 'productAttributes.imageLink',
-        syncMode: 'permanent',
-        transformPreset: 'extractAbsoluteUrl',         // Extracts .url and prepends siteUrl
-      },
-      {
-        source: 'slug',
-        target: 'productAttributes.link',
-        syncMode: 'initialOnly',                       // Only applied on first sync
-      },
+      { source: 'title', target: 'productAttributes.title', syncMode: 'permanent' },
+      { source: 'description', target: 'productAttributes.description', syncMode: 'permanent' },
+      { source: 'price', target: 'productAttributes.price.amountMicros', syncMode: 'permanent', transformPreset: 'toMicrosString' },
+      { source: 'featuredImage', target: 'productAttributes.imageLink', syncMode: 'permanent', transformPreset: 'extractAbsoluteUrl' },
     ],
   },
 },
-```
 
-### Sync Modes
-
-| Mode | Behavior |
-|---|---|
-| `permanent` | Applied on every save when `permanentSync` is `true`. Re-maps source fields to MC attributes before each push. |
-| `initialOnly` | Applied only during initial sync. Useful for fields like `link` that shouldn't change after first push. |
-
-### Transform Presets
-
-| Preset | Description |
-|---|---|
-| `none` | Pass-through (default) |
-| `toMicros` | Multiplies a number by 1,000,000 (e.g., `19.99` -> `19990000`). Used for MC price fields. |
-| `toMicrosString` | Like `toMicros` but also handles string input (parses to number first) |
-| `extractUrl` | Extracts `.url`, `.src`, or `.href` from an object. Useful for Payload media/upload fields. |
-| `extractAbsoluteUrl` | Like `extractUrl`, but prepends `siteUrl` to relative paths (e.g., `/media/image.jpg` -> `https://example.com/media/image.jpg`). Requires `siteUrl` to be configured. |
-| `toArray` | Wraps a single value in an array, or returns as-is if already an array |
-| `toString` | Converts value to string |
-| `toBoolean` | Converts value to boolean |
-
-### Dot-Notation and Array Indexing
-
-Source paths support dot-notation and array indexing:
-
-```ts
-{ source: 'variants[0].price', target: 'productAttributes.price.amountMicros', ... }
-{ source: 'meta.seo.title', target: 'productAttributes.title', ... }
-{ source: 'categories[0].name', target: 'productAttributes.googleProductCategory', ... }
-```
-
-### Runtime Field Mapping Editor
-
-Field mappings can also be managed from the admin dashboard UI at runtime. Mappings saved via the UI are stored in the `gmc-field-mappings` collection and merged with config-defined mappings.
-
-## Conflict Resolution
-
-When pulling data from MC into Payload, conflict resolution determines whether to overwrite local data.
-
-| Strategy | Behavior |
-|---|---|
-| `mc-wins` | Always overwrite local data with MC data (default) |
-| `payload-wins` | Skip pull if the local document has been modified since last sync (`dirty=true`) |
-| `newest-wins` | Compare MC's `updateTime` with local `lastSyncedAt`; only overwrite if MC is newer |
-
-```ts
-sync: {
-  conflictStrategy: 'payload-wins',
-}
-```
-
-## Dirty Tracking
-
-Products are marked as `dirty` when:
-
-1. The `beforeChange` hook runs with `permanentSync: true` and permanent field mappings exist
-2. Any product attribute is modified in the admin
-
-The dirty flag is cleared when:
-
-1. A push operation completes successfully
-2. A pull operation overwrites local data
-
-Dirty tracking enables efficient scheduled sync — only modified products are pushed instead of the entire catalog.
-
-## API Endpoints
-
-All endpoints are registered under the configured `basePath` (default: `/gmc`). Endpoints require authentication via Payload session (except the cron endpoint which uses API key auth).
-
-### Product Operations
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/gmc/product/push` | Push a single product to MC |
-| `POST` | `/gmc/product/pull` | Pull a single product from MC |
-| `POST` | `/gmc/product/delete` | Delete a product from MC |
-| `POST` | `/gmc/product/refresh` | Refresh MC snapshot without pushing |
-| `POST` | `/gmc/product/analytics` | Get product performance analytics |
-
-**Request body** (push/pull/delete/refresh):
-```json
-{ "productId": "64a1b2c3d4e5f6a7b8c9d0e1" }
-```
-
-**Request body** (analytics):
-```json
-{ "productId": "64a1b2c3d4e5f6a7b8c9d0e1", "rangeDays": 30 }
-```
-
-### Batch Operations
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/gmc/batch/push` | Batch push products (by IDs or filter) |
-| `POST` | `/gmc/batch/push-dirty` | Push all dirty products |
-| `POST` | `/gmc/batch/pull-all` | Pull all products from MC |
-| `POST` | `/gmc/batch/initial-sync` | Run initial sync |
-
-**Batch push request body:**
-```json
-{
-  "productIds": ["id1", "id2"],
-  "filter": { "category": { "equals": "electronics" } }
-}
-```
-
-**Initial sync request body:**
-```json
-{
-  "dryRun": true,
-  "batchSize": 50,
-  "limit": 100,
-  "onlyIfRemoteMissing": true
-}
-```
-
-All batch operations return immediately with a `jobId` and run asynchronously. Progress is tracked in the `gmc-sync-log` collection.
-
-### Field Mappings
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/gmc/mappings` | List all field mappings |
-| `POST` | `/gmc/mappings` | Save field mappings (replaces all) |
-
-### Health and Scheduling
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/gmc/health` | Health check (add `?deep=true` for API validation) |
-| `POST` | `/gmc/cron/sync` | External cron trigger (API key auth) |
-
-**Health response:**
-```json
-{
-  "status": "ok",
-  "timestamp": "2025-01-15T04:00:00.000Z",
-  "merchant": { "accountId": "123456789", "dataSourceId": "987654321" },
-  "sync": { "mode": "onChange" },
-  "admin": { "mode": "both" },
-  "rateLimit": { "enabled": true }
-}
-```
-
-**Deep health** adds `apiConnection: "ok" | "error"` and optional `apiError` string.
-
-## Rate Limiting and Retry
-
-The plugin includes a multi-layer rate limiting and retry system designed for the MC API's quotas.
-
-### Rate Limiter
-
-Controls concurrent API calls and queue depth:
-
-```ts
-rateLimit: {
-  enabled: true,             // Enable/disable rate limiting (default: true)
-  maxConcurrency: 4,         // Max concurrent API requests (default: 4)
-  maxQueueSize: 200,         // Max queued requests before rejection (default: 200)
-  maxRequestsPerMinute: 120, // Requests per minute cap (default: 120)
-}
-```
-
-### Retry with Exponential Backoff
-
-Automatically retries on 429 (Too Many Requests) and 5xx server errors:
-
-```ts
-rateLimit: {
-  maxRetries: 4,             // Max retry attempts (default: 4)
-  baseRetryDelayMs: 300,     // Initial retry delay (default: 300ms)
-  maxRetryDelayMs: 4000,     // Maximum retry delay (default: 4000ms)
-  jitterFactor: 0.2,         // Random jitter factor 0-1 (default: 0.2)
-  requestTimeoutMs: 15000,   // Per-request timeout (default: 15000ms)
-}
-```
-
-Retryable status codes: `429`, `500`, `502`, `503`, `504`.
-
-## Access Control
-
-The `access` function gates all API endpoints and admin UI actions:
-
-```ts
-access: async ({ req, user }) => {
-  // Only admins can interact with MC
-  return user?.role === 'admin'
+// Use beforePush to build product URLs from slugs:
+beforePush: async ({ doc, productInput }) => {
+  const slug = (doc as any).slug
+  if (slug) {
+    productInput.productAttributes ??= {}
+    productInput.productAttributes.link = `${process.env.SITE_URL}/products/${slug}`
+  }
+  return productInput
 },
 ```
 
-When not provided, all authenticated users have access.
+### Runtime Mappings (Admin UI)
 
-## Initial Sync
+Defined in the Merchant Center admin dashboard. These are stored in the `gmc-field-mappings` collection. Useful for non-developer users who need to adjust mappings without code changes.
 
-Initial sync bulk-pushes all Payload products to MC. It's designed for first-time setup or catalog migration.
+Runtime mappings are additive — they are appended to config-time mappings, not replacing them.
+
+### Sync Modes for Mappings
+
+| Mode | Behavior |
+|---|---|
+| `permanent` | Applied on every push. If `sync.permanentSync` is `true`, also applied in the `beforeChange` hook on every document save. |
+| `initialOnly` | Applied only when a product has no existing snapshot (first sync). |
+
+### Transform Presets
+
+| Preset | What It Does |
+|---|---|
+| `none` | Pass value through unchanged |
+| `toMicros` | Convert a number to micros string (15.99 becomes `"15990000"`) |
+| `toMicrosString` | Same as `toMicros` (accepts both number and numeric string input) |
+| `extractUrl` | Extract `.url`, `.src`, or `.href` from an object (e.g., Payload media field) |
+| `extractAbsoluteUrl` | Same as `extractUrl`, but prepends `siteUrl` for paths starting with `/`. Bare strings (e.g., slugs) pass through unchanged. |
+| `toArray` | Wrap a scalar value in an array |
+| `toString` | Convert value to string |
+| `toBoolean` | Convert value to boolean |
+
+## Category Resolution
+
+If you configure a `categories` collection, the plugin resolves `googleProductCategory` and `productTypes` from your product's category relationships during push.
 
 ```ts
-sync: {
-  initialSync: {
-    enabled: true,               // Enable initial sync endpoint (default: true)
-    dryRun: true,                // Simulate without pushing (default: true)
-    batchSize: 100,              // Products per batch (default: 100)
-    onlyIfRemoteMissing: true,   // Skip products that already exist in MC (default: true)
+collections: {
+  categories: {
+    slug: 'categories',
+    nameField: 'title',
+    googleCategoryIdField: 'googleCategoryId',  // Google taxonomy ID field
+    parentField: 'parent',                       // self-referencing relationship
+    productCategoryField: 'category',            // relationship field on products
+    productTypeField: 'fullTitle',               // field used for MC productTypes breadcrumb
   },
 },
 ```
 
-When `dryRun` is `true`, the sync runs through all products and applies field mappings but does not call the MC API. This is useful for validating mappings before a real sync.
+- `googleProductCategory`: Set to the Google taxonomy ID from the most specific category that has one.
+- `productTypes`: Built from the category chain using `productTypeField` (falls back to `nameField`).
+- Both are only set if not already manually populated on the product.
 
-The `onlyIfRemoteMissing` flag checks MC for each product before pushing — if a product with the same `offerId` already exists, it is skipped.
+## The `beforePush` Hook
 
-## Product Identity
+For custom logic that field mappings cannot handle, use `beforePush`. It receives the prepared `MCProductInput` and the source document, and must return the (potentially modified) input:
 
-Each product's MC identity is resolved from:
-
-1. **offerId** — From `merchantCenter.identity.offerId` on the product, or auto-populated from the configured `identityField` (e.g., `sku`)
-2. **contentLanguage** — From `merchantCenter.identity.contentLanguage` or `defaults.contentLanguage` (default: `en`)
-3. **feedLabel** — From `merchantCenter.identity.feedLabel` or `defaults.feedLabel` (default: `US`)
-
-These combine into the MC product identifier: `{contentLanguage}~{feedLabel}~{offerId}`
-
-The full MC resource names are derived as:
-- **Product**: `accounts/{merchantId}/products/{contentLanguage}~{feedLabel}~{offerId}`
-- **ProductInput**: `accounts/{merchantId}/productInputs/{contentLanguage}~{feedLabel}~{offerId}`
-
-### Per-Product Data Source Override
-
-Individual products can target a different data source:
-
-```
-merchantCenter.identity.dataSourceOverride = "ALTERNATE_DATA_SOURCE_ID"
+```ts
+payloadGmcEcommerce({
+  // ...
+  beforePush: async ({ doc, operation, payload, productInput }) => {
+    // Example: set availability based on inventory count
+    const inventory = doc.inventory as number
+    productInput.productAttributes ??= {}
+    productInput.productAttributes.availability =
+      inventory > 0 ? 'IN_STOCK' : 'OUT_OF_STOCK'
+    return productInput
+  },
+})
 ```
 
-This is useful for multi-feed setups (e.g., separate feeds for different countries).
+## Admin UI Modes
 
-## Utility Collections
+| Mode | What You Get |
+|---|---|
+| `route` | Dedicated admin page at `/admin/merchant-center` with nav link |
+| `dashboard` | Widget on the Payload dashboard linking to a full-page view |
+| `both` | Both the dedicated route and the dashboard widget |
+| `headless` | No admin UI. Endpoints and sync logic only. |
 
-The plugin creates two internal collections:
+All modes include the per-product Merchant Center tab with sync controls (unless `autoInjectTab` is `false`).
 
-### `gmc-sync-log`
+## Scheduling Strategies
 
-Tracks all sync operations (push, pull, batch, initial sync, cron). Each log entry includes:
+### External Strategy (default)
 
-- `jobId`, `type`, `status`, `triggeredBy`
-- `total`, `processed`, `succeeded`, `failed`
-- `errors` (last 50)
-- `startedAt`, `completedAt`
-- `metadata` (additional context like `dryRun`, `matched`, `orphaned`)
+Use when you already have cron, queues, or a CI/CD system. Set up your external system to POST to the cron endpoint:
 
-Logs are automatically cleaned up: entries older than 30 days are deleted, and total count is capped at 500.
+```bash
+curl -X POST https://your-site.com/api/gmc/cron/sync \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
 
-### `gmc-field-mappings`
+Configure:
 
-Stores runtime-managed field mappings (created via the admin UI). Fields: `source`, `target`, `syncMode`, `transformPreset`, `order`.
+```ts
+sync: {
+  mode: 'scheduled',
+  schedule: {
+    strategy: 'external',
+    apiKey: process.env.GMC_WORKER_API_KEY,
+    cron: '0 * * * *',  // informational — your cron system uses this
+  },
+},
+```
+
+The plugin also exposes worker endpoints for more granular external job orchestration:
+
+- `POST /api/gmc/worker/product/push` — Push single product
+- `POST /api/gmc/worker/product/delete` — Delete single product
+- `POST /api/gmc/worker/batch/push-dirty` — Push all dirty products
+- `POST /api/gmc/worker/batch/initial-sync` — Run initial sync
+- `POST /api/gmc/worker/batch/pull-all` — Pull all from MC
+
+Worker endpoints authenticate via `Authorization: Bearer {apiKey}` or `x-gmc-api-key` header.
+
+### Payload Jobs Strategy
+
+Use when you want Payload to own job queueing:
+
+```ts
+sync: {
+  mode: 'scheduled',
+  schedule: {
+    strategy: 'payload-jobs',
+  },
+},
+```
+
+This registers six task definitions on the `gmc-sync` queue:
+
+| Task | Description |
+|---|---|
+| `gmcPushProduct` | Push a single product (used by onChange) |
+| `gmcDeleteProduct` | Delete a single product from MC (used by afterDelete hook) |
+| `gmcSyncDirty` | Push all dirty products (used by scheduled sync) |
+| `gmcBatchPush` | Push a batch of products by IDs or filter |
+| `gmcInitialSync` | Run initial sync across all products |
+| `gmcPullAll` | Pull all products from MC back into Payload |
+
+**You must run a Payload jobs worker** for the `gmc-sync` queue. The plugin does not process jobs inside the web process.
+
+## API Endpoints
+
+Default base path: `/api/gmc`
+
+There are two auth boundaries:
+
+- **User endpoints** (product actions, batch actions, mappings) — require a Payload-authenticated user (`req.user`). Authenticate via session cookie, or [Payload API key](https://payloadcms.com/docs/authentication/api-keys) (`Authorization: {slug} API-Key {key}`). Access is controlled by the plugin `access` function.
+- **Worker endpoints** (`/cron/*`, `/worker/*`) — use the plugin's own API key (set via `sync.schedule.apiKey`). Pass it via `Authorization: Bearer {key}` or `x-gmc-api-key` header. Designed for server-to-server calls, scripts, and cron.
+
+### Product Actions (user auth)
+
+| Method | Path | Body | Description |
+|---|---|---|---|
+| `POST` | `/product/push` | `{ productId }` | Push product to MC |
+| `POST` | `/product/pull` | `{ productId }` | Pull product data from MC |
+| `POST` | `/product/delete` | `{ productId }` | Delete product from MC |
+| `POST` | `/product/refresh` | `{ productId }` | Refresh snapshot from MC |
+| `POST` | `/product/analytics` | `{ productId, rangeDays? }` | Get performance analytics |
+
+### Batch Actions (user auth)
+
+| Method | Path | Body | Description |
+|---|---|---|---|
+| `POST` | `/batch/push` | `{ productIds?, filter? }` | Push multiple products |
+| `POST` | `/batch/push-dirty` | — | Push all dirty products |
+| `POST` | `/batch/initial-sync` | `{ dryRun?, batchSize?, limit?, onlyIfRemoteMissing? }` | Run initial sync |
+| `POST` | `/batch/pull-all` | — | Pull all products from MC |
+
+Batch operations return a `jobId` and run asynchronously. Progress is tracked in the sync log.
+
+### Health & Mappings
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/health` | Basic health check (public; `?deep=true` requires user auth) |
+| `GET` | `/mappings` | List current field mappings (user auth) |
+| `POST` | `/mappings` | Replace all field mappings (user auth) |
+
+### Scheduling & Workers (API key auth)
+
+| Method | Path | Body | Description |
+|---|---|---|---|
+| `POST` | `/cron/sync` | — | Trigger scheduled sync |
+| `POST` | `/worker/product/push` | `{ productId }` | Push single product |
+| `POST` | `/worker/product/delete` | `{ productId, identity }` | Delete product from MC (identity: `{ offerId, contentLanguage, feedLabel, ... }`) |
+| `POST` | `/worker/batch/push-dirty` | — | Push all dirty products |
+| `POST` | `/worker/batch/initial-sync` | `{ dryRun?, batchSize?, limit?, onlyIfRemoteMissing? }` | Run initial sync |
+| `POST` | `/worker/batch/pull-all` | — | Pull all products from MC |
+
+## Access Control
+
+If you do not provide `access`, the plugin checks:
+
+- `user.isAdmin === true`, or
+- `user.roles` contains `'admin'`
+
+For production apps with a different role model, provide `access` explicitly:
+
+```ts
+access: async ({ req }) => {
+  return req.user?.role === 'admin' || req.user?.role === 'seo'
+},
+```
+
+## Manual UI Placement
+
+By default, the plugin auto-injects the Merchant Center tab into your products collection. To control placement manually:
+
+1. Set `autoInjectTab: false`
+2. Use the exported helpers:
+
+```ts
+import { getMerchantCenterTab, MerchantCenterUIPlaceholder } from 'payload-plugin-gmc-ecommerce'
+```
+
+- `getMerchantCenterTab(options)` — Returns a complete tab config to place in your collection's tabs
+- `getMerchantCenterField(options)` — Returns the field group without the tab wrapper
+- `MerchantCenterUIPlaceholder` — A placeholder field; if placed inside an existing tab, the plugin replaces it with the full Merchant Center tab during initialization
+
+## Distributed Rate Limiting
+
+For multi-instance deployments, provide a `rateLimit.store` to coordinate API budget across processes:
+
+```ts
+rateLimit: {
+  maxRequestsPerMinute: 120,
+  store: {
+    async claimSlot({ key, limit, scope, windowMs }) {
+      // Implement with Redis, DynamoDB, etc.
+      return { allowed: true, count: 1, resetAt: Date.now() + windowMs }
+    },
+  },
+},
+```
+
+The store coordinates per-minute budget windows. It does not replace a queue.
+
+## Compatibility
+
+### Payload Ecommerce Template
+
+This plugin works with the [official Payload ecommerce template](https://github.com/payloadcms/payload/tree/main/templates/ecommerce). Set `identityField` to whatever field holds your product SKU or unique identifier. The plugin injects its own tab alongside existing ones.
+
+### payload-ai Plugin
+
+Compatible with [payload-ai](https://github.com/ashbuilds/payload-ai). The two plugins do not conflict — they operate on different concerns. payload-ai adds AI content generation to your collection fields (titles, descriptions, rich text), while this plugin syncs product data to Merchant Center. The typical workflow: payload-ai generates or refines content in your product fields, then field mappings push that content to Merchant Center attributes. No special configuration is needed to make them work together — just enable both plugins on your products collection.
 
 ## Exports
 
-The plugin exports utilities for advanced use cases:
+### Main Entry Point (`payload-plugin-gmc-ecommerce`)
 
 ```ts
-// Plugin function
+// Plugin
+export { payloadGmcEcommerce }
+
+// Manual UI placement
+export { getMerchantCenterField, getMerchantCenterTab, MerchantCenterUIPlaceholder }
+
+// Service (for programmatic use outside endpoints)
+export { createMerchantService }
+
+// Utilities
+export { applyFieldMappings, buildUpdateMask, deepMerge, fromMicros, resolveIdentity, toMicros }
+
+// All types
+export type { ... }
+```
+
+### Client Entry Point (`payload-plugin-gmc-ecommerce/client`)
+
+```ts
+export { MerchantCenterDashboardClient }
+export { MerchantCenterNavLink }
+export { MerchantCenterSyncControls }
+```
+
+### RSC Entry Point (`payload-plugin-gmc-ecommerce/rsc`)
+
+```ts
+export { MerchantCenterAdminView }
+export { MerchantCenterDashboardWidget }
+```
+
+## Production Configuration Example
+
+```ts
+import { buildConfig } from 'payload'
 import { payloadGmcEcommerce } from 'payload-plugin-gmc-ecommerce'
 
-// Service factory (for custom server-side logic)
-import { createMerchantService } from 'payload-plugin-gmc-ecommerce'
-import type { MerchantService } from 'payload-plugin-gmc-ecommerce'
+export default buildConfig({
+  plugins: [
+    payloadGmcEcommerce({
+      merchantId: process.env.GMC_MERCHANT_ID!,
+      dataSourceId: process.env.GMC_DATA_SOURCE_ID!,
+      siteUrl: process.env.SITE_URL!,
 
-// Sync utilities
-import { toMicros, fromMicros } from 'payload-plugin-gmc-ecommerce'
-import { resolveIdentity } from 'payload-plugin-gmc-ecommerce'
-import { applyFieldMappings, deepMerge } from 'payload-plugin-gmc-ecommerce'
-import { buildUpdateMask } from 'payload-plugin-gmc-ecommerce'
+      getCredentials: async () => ({
+        type: 'json',
+        credentials: {
+          client_email: process.env.GMC_CLIENT_EMAIL!,
+          private_key: process.env.GMC_PRIVATE_KEY!.replace(/\\n/g, '\n'),
+        },
+      }),
 
-// UI components (client entry point)
-import { MerchantCenterUIPlaceholder } from 'payload-plugin-gmc-ecommerce'
+      access: async ({ req }) => {
+        return req.user?.role === 'admin' || req.user?.role === 'seo'
+      },
 
-// Types
-import type {
-  PayloadGMCEcommercePluginOptions,
-  FieldMapping,
-  MCProductAttributes,
-  MCProductInput,
-  MCProductState,
-  SyncResult,
-  BatchSyncReport,
-  ConflictStrategy,
-  ScheduleConfig,
-  // ... and more
-} from 'payload-plugin-gmc-ecommerce'
+      admin: {
+        mode: 'both',
+      },
+
+      collections: {
+        products: {
+          slug: 'products',
+          identityField: 'sku',
+          fieldMappings: [
+            { source: 'title', target: 'productAttributes.title', syncMode: 'permanent' },
+            { source: 'description', target: 'productAttributes.description', syncMode: 'permanent' },
+            { source: 'price', target: 'productAttributes.price.amountMicros', syncMode: 'permanent', transformPreset: 'toMicrosString' },
+            { source: 'featuredImage', target: 'productAttributes.imageLink', syncMode: 'permanent', transformPreset: 'extractAbsoluteUrl' },
+          ],
+        },
+        categories: {
+          slug: 'categories',
+          nameField: 'title',
+          googleCategoryIdField: 'googleCategoryId',
+          parentField: 'parent',
+          productCategoryField: 'category',
+          productTypeField: 'breadcrumbLabel',
+        },
+      },
+
+      defaults: {
+        contentLanguage: 'en',
+        feedLabel: 'PRODUCTS',
+        currency: 'USD',
+      },
+
+      // Build product link from slug (extractAbsoluteUrl only works on paths starting with /)
+      beforePush: async ({ doc, productInput }) => {
+        const slug = (doc as any).slug
+        if (slug) {
+          productInput.productAttributes ??= {}
+          productInput.productAttributes.link = `${process.env.SITE_URL}/products/${slug}`
+        }
+        return productInput
+      },
+
+      sync: {
+        mode: 'scheduled',
+        permanentSync: true,
+        conflictStrategy: 'mc-wins',
+        schedule: {
+          strategy: 'external',
+          apiKey: process.env.GMC_WORKER_API_KEY!,
+          cron: '0 * * * *',
+        },
+      },
+
+      rateLimit: {
+        maxConcurrency: 4,
+        maxRequestsPerMinute: 120,
+      },
+    }),
+  ],
+})
 ```
 
-## Full Configuration Reference
+## Documentation
 
-```ts
-type PayloadGMCEcommercePluginOptions = {
-  /** Google Merchant Center account ID */
-  merchantId: string
-
-  /** Primary data source (feed) ID */
-  dataSourceId: string
-
-  /**
-   * Base URL of your site (e.g. 'https://example.com').
-   * Used by extractAbsoluteUrl transform to resolve relative media URLs.
-   */
-  siteUrl?: string
-
-  /**
-   * Credential resolver function. Called on each API request.
-   * Return inline JSON credentials or a path to a key file.
-   */
-  getCredentials: (args: {
-    payload: Payload | null
-    req?: PayloadRequest
-  }) => Promise<
-    | { type: 'json'; credentials: { client_email: string; private_key: string; project_id?: string } }
-    | { type: 'keyFilename'; path: string }
-  >
-
-  /** Disable the plugin without removing it from config */
-  disabled?: boolean
-
-  collections: {
-    products: {
-      /** Payload collection slug */
-      slug: CollectionSlug
-
-      /** Field used as the MC offerId (e.g. 'sku', 'slug', 'id') */
-      identityField: string
-
-      /** Auto-inject the Merchant Center tab into the collection (default: true) */
-      autoInjectTab?: boolean
-
-      /** Tab insertion position: 'append', 'before-last', or a numeric index (default: 'append') */
-      tabPosition?: 'append' | 'before-last' | number
-
-      /** Declarative field mappings from Payload fields to MC attributes */
-      fieldMappings?: FieldMapping[]
-    }
-
-    /** Optional category collection for Google Product Category mapping */
-    categories?: {
-      slug: CollectionSlug
-      nameField: string
-      parentField?: string
-      googleCategoryIdField?: string
-    }
-  }
-
-  /** Default values for product identity and attributes */
-  defaults?: {
-    contentLanguage?: string  // default: 'en'
-    feedLabel?: string        // default: 'US'
-    currency?: string         // default: 'USD'
-    condition?: string        // default: 'NEW'
-  }
-
-  /** Sync configuration */
-  sync?: {
-    /** Sync mode: 'manual' | 'onChange' | 'scheduled' (default: 'manual') */
-    mode?: SyncMode
-
-    /** Re-apply permanent field mappings on every save (default: false) */
-    permanentSync?: boolean
-
-    /** Conflict resolution strategy for pull operations (default: 'mc-wins') */
-    conflictStrategy?: ConflictStrategy
-
-    /** Initial sync configuration */
-    initialSync?: {
-      enabled?: boolean              // default: true
-      dryRun?: boolean               // default: true
-      batchSize?: number             // default: 100
-      onlyIfRemoteMissing?: boolean  // default: true
-    }
-
-    /** Scheduled sync configuration (only used when mode is 'scheduled') */
-    schedule?: {
-      /** 'payload-jobs' for Payload autoRun, 'external' for API endpoint (default: 'external') */
-      strategy?: 'payload-jobs' | 'external'
-
-      /** Cron expression (default: '0 4 * * *' = 4am daily) */
-      cron?: string
-
-      /** API key for external scheduler authentication (required for 'external' strategy) */
-      apiKey?: string
-    }
-  }
-
-  /** Rate limiting and retry configuration */
-  rateLimit?: {
-    enabled?: boolean              // default: true
-    maxConcurrency?: number        // default: 4
-    maxQueueSize?: number          // default: 200
-    maxRequestsPerMinute?: number  // default: 120
-    maxRetries?: number            // default: 4
-    baseRetryDelayMs?: number      // default: 300
-    maxRetryDelayMs?: number       // default: 4000
-    jitterFactor?: number          // default: 0.2
-    requestTimeoutMs?: number      // default: 15000
-  }
-
-  /** Admin panel configuration */
-  admin?: {
-    /** Admin UI mode (default: 'route') */
-    mode?: 'route' | 'dashboard' | 'both' | 'headless'
-
-    /** Navigation label (default: 'Merchant Center') */
-    navLabel?: string
-
-    /** Admin route path (default: '/merchant-center') */
-    route?: `/${string}`
-  }
-
-  /** API configuration */
-  api?: {
-    /** Base path for all endpoints (default: '/gmc') */
-    basePath?: `/${string}`
-  }
-
-  /** Access control function — gates all endpoints and admin actions */
-  access?: (args: {
-    payload: Payload
-    req: PayloadRequest
-    user: PayloadRequest['user']
-  }) => boolean | Promise<boolean>
-}
-```
-
-### FieldMapping Type
-
-```ts
-type FieldMapping = {
-  /** Dot-notation path to the source field on the Payload document */
-  source: string
-
-  /** Dot-notation path to the target field on the MC product input */
-  target: string
-
-  /** When this mapping is applied: 'permanent' (every save) or 'initialOnly' (first sync) */
-  syncMode: 'permanent' | 'initialOnly'
-
-  /** Transform preset to apply to the source value (default: 'none') */
-  transformPreset?: 'none' | 'toMicros' | 'toMicrosString' | 'extractUrl'
-    | 'extractAbsoluteUrl' | 'toArray' | 'toString' | 'toBoolean'
-
-  /** Execution order (lower runs first, default: 0) */
-  order?: number
-}
-```
-
-## Architecture
-
-```
-src/
-  index.ts                          # Plugin entry point, public exports
-  constants.ts                      # All default values and constants
-  types/index.ts                    # Full type definitions
-
-  plugin/
-    normalizeOptions.ts             # Options validation and defaults
-    applyCollectionEnhancements.ts  # Injects MC tab into products collection
-    applyEndpointEnhancements.ts    # Registers all API endpoints
-    applyAdminEnhancements.ts       # Admin UI (route/dashboard)
-    applyHooks.ts                   # beforeChange hook wiring
-    applySyncCollections.ts         # Creates utility collections
-    applyScheduledSync.ts           # Payload Jobs task + autoRun
-
-  hooks/
-    beforeChange.ts                 # Auto-populates offerId, applies field
-                                    # mappings, triggers onChange sync
-
-  server/
-    services/
-      merchantService.ts            # High-level service facade
-      sub-services/
-        googleApiClient.ts          # MC REST API client (JWT auth)
-        rateLimiterService.ts       # Token bucket rate limiter
-        retryService.ts             # Exponential backoff retry
-    sync/
-      pushSync.ts                   # Push/delete/refresh operations
-      pullSync.ts                   # Pull single/pull all operations
-      initialSync.ts                # Bulk initial sync
-      fieldMapping.ts               # Field mapping engine with transforms
-      identityResolver.ts           # MC identity resolution
-      conflictResolver.ts           # Pull conflict strategies
-      transformers.ts               # Price conversion, product transforms
-      updateMask.ts                 # Update mask generation
-    utilities/
-      logger.ts                     # Structured logging wrapper
-      access.ts                     # Access control enforcement
-      http.ts                       # HTTP response helpers
-      validation.ts                 # Request body validation
-      inboundRateLimit.ts           # Per-endpoint rate limiting
-
-  components/
-    MerchantCenterDashboardClient.tsx  # Admin dashboard React component
-
-  exports/
-    client.ts                       # Client-side exports
-    rsc.ts                          # React Server Component exports
-```
-
-## Local Development
-
-```bash
-# Clone and install
-git clone <repo-url>
-cd payload-plugin-gmc-ecommerce
-pnpm install
-
-# Set up dev environment
-cp dev/.env.example dev/.env
-# Edit dev/.env with your database URL and MC credentials
-
-# Generate types
-pnpm dev:generate-types
-
-# Start dev server
-pnpm dev
-
-# Run tests
-pnpm test:int
-
-# Lint
-pnpm lint
-pnpm lint:fix
-
-# Build
-pnpm build
-```
-
-## Testing
-
-The plugin includes unit tests covering core sync logic:
-
-```bash
-# Run all unit tests
-pnpm test:int
-
-# Run specific test files
-npx vitest src/server/sync/__tests__/transformers.test.ts
-npx vitest src/server/sync/__tests__/fieldMapping.test.ts
-npx vitest src/server/sync/__tests__/identityResolver.test.ts
-npx vitest src/server/sync/__tests__/updateMask.test.ts
-```
-
-Test suites cover:
-- **Transformers** — `toMicros`, `fromMicros`, `buildProductInput`, `reverseTransformProduct`, `sanitizeCustomAttributes`
-- **Field mapping** — `applyFieldMappings` with all transform presets, `deepMerge`
-- **Identity resolver** — `resolveIdentity` with valid/invalid configurations
-- **Update mask** — `buildUpdateMask` with camelCase to snake_case conversion
+- [Setup Guide](./docs/setup-guide.md) — Step-by-step integration walkthrough for new and existing Merchant Center setups
 
 ## License
 

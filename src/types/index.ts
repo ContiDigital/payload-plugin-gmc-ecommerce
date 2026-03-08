@@ -146,12 +146,23 @@ export type MCTax = {
   taxShip?: boolean
 }
 
+export type MCAttributeValueRow = {
+  value: string
+}
+
+export type MCAttributeUrlRow = {
+  url: string
+}
+
+export type MCArrayField = MCAttributeValueRow[] | string[]
+export type MCUrlArrayField = MCAttributeUrlRow[] | string[]
+
 // ---------------------------------------------------------------------------
 // Merchant Center product attributes
 // ---------------------------------------------------------------------------
 
 export type MCProductAttributes = {
-  additionalImageLinks?: string[]
+  additionalImageLinks?: MCUrlArrayField
   adult?: boolean
   ageGroup?: string
   availability?: string
@@ -168,15 +179,15 @@ export type MCProductAttributes = {
   customLabel4?: string
   description?: string
   energyEfficiencyClass?: string
-  excludedDestinations?: string[]
+  excludedDestinations?: MCArrayField
   externalSellerId?: string
   freeShippingThreshold?: MCFreeShippingThreshold[]
   gender?: string
   googleProductCategory?: string
-  gtins?: string[]
+  gtins?: MCArrayField
   identifierExists?: boolean
   imageLink?: string
-  includedDestinations?: string[]
+  includedDestinations?: MCArrayField
   isBundle?: boolean
   itemGroupId?: string
   link?: string
@@ -191,10 +202,10 @@ export type MCProductAttributes = {
   price?: MCPrice
   productHeight?: MCShippingDimension
   productLength?: MCShippingDimension
-  productTypes?: string[]
+  productTypes?: MCArrayField
   productWeight?: MCShippingDimension
   productWidth?: MCShippingDimension
-  promotionIds?: string[]
+  promotionIds?: MCArrayField
   salePrice?: MCPrice
   salePriceEffectiveDate?: { endDate?: string; startDate?: string }
   shipping?: MCShipping[]
@@ -255,6 +266,17 @@ export type MCProductState = {
   snapshot?: Record<string, unknown>
   syncMeta?: MCSyncMeta
 }
+
+// ---------------------------------------------------------------------------
+// Payload product document with MC fields injected by the plugin.
+// Used internally to avoid casting through Record<string, unknown> when
+// accessing the merchant center group on Payload documents.
+// ---------------------------------------------------------------------------
+
+export type PayloadProductDoc = {
+  id: number | string
+  merchantCenter?: MCProductState
+} & Record<string, unknown>
 
 // ---------------------------------------------------------------------------
 // Field mapping
@@ -333,8 +355,15 @@ export type MCProductAnalytics = {
 
 export type HealthResult = {
   admin: { mode: AdminMode }
+  jobs?: {
+    queueName: string
+    runnerRequired: boolean
+    strategy: 'external' | 'payload-jobs'
+    workerBasePath: string
+    workerEndpointsEnabled: boolean
+  }
   merchant: { accountId: string; dataSourceId: string }
-  rateLimit: { enabled: boolean }
+  rateLimit: { distributed?: boolean; enabled: boolean }
   status: 'ok'
   sync: { mode: SyncMode }
   timestamp: string
@@ -351,6 +380,8 @@ export type DeepHealthResult = {
 
 export type ProductsCollectionConfig = {
   autoInjectTab?: boolean
+  /** Depth used when fetching product documents for push/sync operations. Higher values hydrate more relationship levels (uploads, brands, etc.). Default: 1 */
+  fetchDepth?: number
   fieldMappings?: FieldMapping[]
   identityField: string
   slug: CollectionSlug
@@ -361,6 +392,10 @@ export type CategoriesCollectionConfig = {
   googleCategoryIdField?: string
   nameField: string
   parentField?: string
+  /** The field on the *product* document that holds the relationship to this categories collection */
+  productCategoryField?: string
+  /** Category field to use for MC `productTypes` (breadcrumb paths). Defaults to `nameField` if not set. */
+  productTypeField?: string
   slug: CollectionSlug
 }
 
@@ -398,6 +433,40 @@ export type APIConfig = {
   basePath?: `/${string}`
 }
 
+// ---------------------------------------------------------------------------
+// Lifecycle hooks
+// ---------------------------------------------------------------------------
+
+export type BeforePushHookArgs = {
+  doc: Record<string, unknown>
+  operation: 'delete' | 'insert' | 'update'
+  payload: Payload
+  productInput: MCProductInput
+}
+
+export type BeforePushHook = (
+  args: BeforePushHookArgs,
+) => MCProductInput | Promise<MCProductInput>
+
+// ---------------------------------------------------------------------------
+
+export type DistributedRateLimitScope = 'inbound' | 'outbound'
+
+export type DistributedRateLimitReservation = {
+  allowed: boolean
+  count: number
+  resetAt: number
+}
+
+export type DistributedRateLimitStore = {
+  claimSlot: (args: {
+    key: string
+    limit: number
+    scope: DistributedRateLimitScope
+    windowMs: number
+  }) => Promise<DistributedRateLimitReservation>
+}
+
 export type RateLimitConfig = {
   baseRetryDelayMs?: number
   enabled?: boolean
@@ -408,12 +477,15 @@ export type RateLimitConfig = {
   maxRetries?: number
   maxRetryDelayMs?: number
   requestTimeoutMs?: number
+  store?: DistributedRateLimitStore
 }
 
 export type PayloadGMCEcommercePluginOptions = {
   access?: AccessFn
   admin?: AdminConfig
   api?: APIConfig
+  /** Called before each product is pushed to Merchant Center. Return a modified MCProductInput to customise what gets sent. */
+  beforePush?: BeforePushHook
   collections: {
     categories?: CategoriesCollectionConfig
     products: ProductsCollectionConfig
@@ -448,6 +520,7 @@ export type NormalizedPluginOptions = {
   api: {
     basePath: `/${string}`
   }
+  beforePush?: BeforePushHook
   collections: {
     categories?: Required<CategoriesCollectionConfig>
     products: Required<ProductsCollectionConfig>
@@ -473,6 +546,7 @@ export type NormalizedPluginOptions = {
     maxRetries: number
     maxRetryDelayMs: number
     requestTimeoutMs: number
+    store?: DistributedRateLimitStore
   }
   siteUrl: string
   sync: {

@@ -1,25 +1,47 @@
-import type { MCProductIdentity, NormalizedPluginOptions, ResolvedMCIdentity } from '../../types/index.js'
+import type {
+  MCProductIdentity,
+  MCProductState,
+  NormalizedPluginOptions,
+  PayloadProductDoc,
+  ResolvedMCIdentity,
+} from '../../types/index.js'
 
+import { MC_FIELD_GROUP_NAME } from '../../constants.js'
 import { getByPath } from '../utilities/pathUtils.js'
+
+/**
+ * Coerce a value to string only if it is a primitive (string, number, boolean).
+ * Returns empty string for objects/arrays to prevent "[object Object]" IDs.
+ */
+const coercePrimitiveToString = (value: unknown): string => {
+  if (typeof value === 'string') {
+    return value
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value)
+  }
+  return ''
+}
 
 type IdentityResult =
   | { errors: string[]; ok: false }
   | { ok: true; value: ResolvedMCIdentity }
 
 export const resolveIdentity = (
-  product: Record<string, unknown>,
+  product: PayloadProductDoc | Record<string, unknown>,
   options: NormalizedPluginOptions,
 ): IdentityResult => {
-  const mcState = product.merchantCenter as Record<string, unknown> | undefined
-  const identity = mcState?.identity as Partial<MCProductIdentity> | undefined
+  const mcState = product[MC_FIELD_GROUP_NAME] as MCProductState | undefined
+  const identity: Partial<MCProductIdentity> | undefined = mcState?.identity
 
-  const offerId = (identity?.offerId as string)
-    ?? String(getByPath(product, options.collections.products.identityField) as string ?? '')
+  const rawIdentityFieldValue = getByPath(product as Record<string, unknown>, options.collections.products.identityField)
+  const offerId = identity?.offerId
+    ?? coercePrimitiveToString(rawIdentityFieldValue)
 
-  const contentLanguage = (identity?.contentLanguage as string)
+  const contentLanguage = identity?.contentLanguage
     ?? options.defaults.contentLanguage
 
-  const feedLabel = (identity?.feedLabel as string)
+  const feedLabel = identity?.feedLabel
     ?? options.defaults.feedLabel
 
   const dataSourceOverride = identity?.dataSourceOverride

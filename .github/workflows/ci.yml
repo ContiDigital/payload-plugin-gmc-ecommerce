@@ -50,8 +50,60 @@ jobs:
       - name: Run Unit and Integration Tests
         run: pnpm test:int
 
+      - name: Coverage
+        if: matrix.node-version == 20
+        run: pnpm test:coverage
+
       - name: Build
         run: pnpm build
 
       - name: Pack Install Smoke Test
         run: pnpm pack:smoke
+
+  gmc-live-smoke:
+    name: GMC Live Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          cache: pnpm
+          node-version: 20
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check required secrets
+        id: secret-check
+        run: |
+          if [ -n "${GOOGLE_MERCHANT_ID}" ] && [ -n "${GOOGLE_MERCHANT_DATA_SOURCE_ID}" ] && [ -n "${GOOGLE_SERVICE_ACCOUNT_EMAIL}" ] && [ -n "${GOOGLE_SERVICE_ACCOUNT_KEY}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GOOGLE_MERCHANT_DATA_SOURCE_ID: ${{ secrets.GOOGLE_MERCHANT_DATA_SOURCE_ID }}
+          GOOGLE_MERCHANT_ID: ${{ secrets.GOOGLE_MERCHANT_ID }}
+          GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+          GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+
+      - name: Skip GMC live smoke (secrets missing)
+        if: steps.secret-check.outputs.enabled != 'true'
+        run: echo "GMC live smoke skipped — secrets are not configured."
+
+      - name: Run GMC Live Smoke
+        if: steps.secret-check.outputs.enabled == 'true'
+        run: pnpm test:live
+        env:
+          GOOGLE_MERCHANT_DATA_SOURCE_ID: ${{ secrets.GOOGLE_MERCHANT_DATA_SOURCE_ID }}
+          GOOGLE_MERCHANT_ID: ${{ secrets.GOOGLE_MERCHANT_ID }}
+          GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+          GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}

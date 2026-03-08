@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { parseBatchInput } from '../validation.js'
+import { parseBatchInput, parseMappingsInput } from '../validation.js'
 
 describe('parseBatchInput', () => {
   test('valid productIds', () => {
@@ -38,5 +38,58 @@ describe('parseBatchInput', () => {
     const result = parseBatchInput({})
     expect(result.productIds).toBeUndefined()
     expect(result.filter).toBeUndefined()
+  })
+})
+
+describe('parseMappingsInput', () => {
+  test('accepts valid mappings and defaults transform preset', () => {
+    const result = parseMappingsInput({
+      mappings: [
+        {
+          source: 'title',
+          syncMode: 'permanent',
+          target: 'productAttributes.title',
+        },
+      ],
+    })
+
+    expect(result.mappings).toEqual([
+      {
+        order: 0,
+        source: 'title',
+        syncMode: 'permanent',
+        target: 'productAttributes.title',
+        transformPreset: 'none',
+      },
+    ])
+  })
+
+  test('rejects invalid sync modes', () => {
+    expect(() =>
+      parseMappingsInput({
+        mappings: [
+          {
+            source: 'title',
+            syncMode: 'bad-mode',
+            target: 'productAttributes.title',
+          },
+        ],
+      }),
+    ).toThrow()
+  })
+
+  test('rejects invalid transform presets', () => {
+    expect(() =>
+      parseMappingsInput({
+        mappings: [
+          {
+            source: 'title',
+            syncMode: 'permanent',
+            target: 'productAttributes.title',
+            transformPreset: 'bad-transform',
+          },
+        ],
+      }),
+    ).toThrow()
   })
 })

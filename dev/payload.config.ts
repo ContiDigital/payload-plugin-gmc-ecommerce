@@ -1,3 +1,4 @@
+import fs from 'fs'
 import { sqliteAdapter } from '@payloadcms/db-sqlite'
 import { lexicalEditor } from '@payloadcms/richtext-lexical'
 import path from 'path'
@@ -14,6 +15,22 @@ const dirname = path.dirname(filename)
 
 if (!process.env.ROOT_DIR) {
   process.env.ROOT_DIR = dirname
+}
+
+const buildDatabaseUrl = (): string => {
+  if (process.env.DATABASE_URL) {
+    return process.env.DATABASE_URL
+  }
+
+  if (process.env.VITEST) {
+    const tmpDir = path.resolve(dirname, '.tmp')
+    fs.mkdirSync(tmpDir, { recursive: true })
+
+    const workerId = process.env.VITEST_WORKER_ID ?? process.pid.toString()
+    return `file:${path.resolve(tmpDir, `vitest-${workerId}.db`)}`
+  }
+
+  return 'file:./dev/dev-database.db'
 }
 
 export default buildConfig({
@@ -59,7 +76,7 @@ export default buildConfig({
   ],
   db: sqliteAdapter({
     client: {
-      url: process.env.DATABASE_URL || 'file:./dev/dev-database.db',
+      url: buildDatabaseUrl(),
     },
   }),
   editor: lexicalEditor(),

@@ -118,6 +118,8 @@ const normalizeCategories = (
     googleCategoryIdField: config.googleCategoryIdField ?? '',
     nameField: config.nameField,
     parentField: config.parentField ?? '',
+    productCategoryField: config.productCategoryField ?? '',
+    productTypeField: config.productTypeField ?? '',
   }
 }
 
@@ -178,11 +180,13 @@ const buildNormalizedOptions = (
     api: {
       basePath: normalizePath(options.api?.basePath ?? DEFAULT_API_BASE_PATH),
     },
+    beforePush: options.beforePush,
     collections: {
       categories: normalizeCategories(options.collections?.categories),
       products: {
         slug: options.collections?.products?.slug ?? ('products' as never),
         autoInjectTab: options.collections?.products?.autoInjectTab ?? true,
+        fetchDepth: options.collections?.products?.fetchDepth ?? 1,
         fieldMappings: options.collections?.products?.fieldMappings ?? [],
         identityField: options.collections?.products?.identityField ?? 'id',
         tabPosition: options.collections?.products?.tabPosition ?? 'append',
@@ -238,6 +242,7 @@ const buildNormalizedOptions = (
         options.rateLimit?.requestTimeoutMs,
         DEFAULT_REQUEST_TIMEOUT_MS,
       ),
+      store: options.rateLimit?.store,
     },
     siteUrl: (options.siteUrl ?? '').trim().replace(/\/+$/, ''),
     sync: {

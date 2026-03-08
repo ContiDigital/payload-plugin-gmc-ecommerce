@@ -41,17 +41,33 @@ const pruneExpired = (now: number): void => {
   }
 }
 
-export const assertInboundRateLimit = (
+export const assertInboundRateLimit = async (
   req: PayloadRequest,
   options: NormalizedPluginOptions,
   routeKey: string,
-): void => {
+): Promise<void> => {
   if (!options.rateLimit.enabled) {
     return
   }
 
   const clientId = resolveClientId(req)
   const key = `${routeKey}:${clientId}`
+
+  if (options.rateLimit.store) {
+    const reservation = await options.rateLimit.store.claimSlot({
+      key,
+      limit: options.rateLimit.maxRequestsPerMinute,
+      scope: 'inbound',
+      windowMs: WINDOW_MS,
+    })
+
+    if (!reservation.allowed) {
+      throw new InboundRateLimitExceededError(options.rateLimit.maxRequestsPerMinute)
+    }
+
+    return
+  }
+
   const now = Date.now()
 
   let bucket = buckets.get(key)

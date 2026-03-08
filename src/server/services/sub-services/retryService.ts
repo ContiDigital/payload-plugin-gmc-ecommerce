@@ -19,8 +19,32 @@ type Logger = {
   warn: (...args: unknown[]) => void
 }
 
+const RETRYABLE_ERROR_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ENOTFOUND',
+  'EPIPE',
+  'ETIMEDOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_SOCKET',
+])
+
 const isRetryableError = (error: unknown): boolean => {
   if (error instanceof Error) {
+    // Network-level errors (Node.js / undici)
+    const code = (error as NodeJS.ErrnoException).code
+    if (code && RETRYABLE_ERROR_CODES.has(code)) {
+      return true
+    }
+
+    // AbortError from fetch timeout
+    if (error.name === 'AbortError' || error.name === 'TimeoutError') {
+      return true
+    }
+
+    // HTTP status code in error message
     const statusMatch = error.message.match(/status[:\s]+(\d{3})/i)
     if (statusMatch) {
       return RETRYABLE_STATUS_CODES.has(Number(statusMatch[1]))

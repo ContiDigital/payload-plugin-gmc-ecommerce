@@ -8,7 +8,9 @@ import { applyEndpointEnhancements } from './plugin/applyEndpointEnhancements.js
 import { applyHooks } from './plugin/applyHooks.js'
 import { applyScheduledSync } from './plugin/applyScheduledSync.js'
 import { applySyncCollections } from './plugin/applySyncCollections.js'
+import { applyJobEnhancements } from './plugin/jobTasks.js'
 import { normalizePluginOptions } from './plugin/normalizeOptions.js'
+import { initMerchantService } from './plugin/serviceRegistry.js'
 
 export const payloadGmcEcommerce =
   (incomingOptions: PayloadGMCEcommercePluginOptions) =>
@@ -19,8 +21,13 @@ export const payloadGmcEcommerce =
       return incomingConfig
     }
 
+    // Eagerly create the MerchantService so hooks and scheduled jobs
+    // can look it up immediately — not lazily on first endpoint hit
+    initMerchantService(options)
+
     let config = applySyncCollections(incomingConfig, options)
     config = applyCollectionEnhancements(config, options)
+    config = applyJobEnhancements(config, options)
     config = applyEndpointEnhancements(config, options)
     config = applyAdminEnhancements(config, options)
     config = applyHooks(config, options)
@@ -50,6 +57,8 @@ export type {
   AccessFn,
   AdminMode,
   BatchSyncReport,
+  BeforePushHook,
+  BeforePushHookArgs,
   ConflictStrategy,
   CredentialResolution,
   FieldMapping,

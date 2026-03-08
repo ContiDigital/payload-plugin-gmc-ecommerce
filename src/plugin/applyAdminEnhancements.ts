@@ -16,6 +16,13 @@ export const applyAdminEnhancements = (
     config.admin.components = {}
   }
 
+  // Store plugin paths in config.custom so client components can read them
+  if (!config.custom) {
+    config.custom = {}
+  }
+  ;(config.custom as Record<string, unknown>).gmcAdminRoute = options.admin.route
+  ;(config.custom as Record<string, unknown>).gmcApiBasePath = options.api.basePath
+
   const mode = options.admin.mode
 
   // --- Sidebar navigation link ---

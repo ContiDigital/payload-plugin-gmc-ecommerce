@@ -1,6 +1,15 @@
+'use client'
+
+import { useConfig } from '@payloadcms/ui'
 import React from 'react'
 
+import { resolveMerchantCenterApiConfig } from './merchantCenter/apiConfig.js'
+
 export const MerchantCenterDashboardWidget: React.FC = () => {
+  const { config } = useConfig()
+  const { adminRoute, gmcAdminRoute } = resolveMerchantCenterApiConfig(config)
+  const fullRoute = `${adminRoute}${gmcAdminRoute}`
+
   return (
     <div
       style={{
@@ -18,7 +27,7 @@ export const MerchantCenterDashboardWidget: React.FC = () => {
         Manage your product listings on Google Merchant Center.
       </p>
       <a
-        href="merchant-center"
+        href={fullRoute}
         style={{
           backgroundColor: '#2563eb',
           borderRadius: '4px',

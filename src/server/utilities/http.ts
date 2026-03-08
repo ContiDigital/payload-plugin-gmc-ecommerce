@@ -22,11 +22,26 @@ export const errorResponse = (req: PayloadRequest, error: unknown): Response => 
     req.payload?.logger?.error(`[GMC Plugin] ${message}`, error)
   }
 
-  return jsonResponse({ error: message }, statusCode)
+  // Don't leak internal details to the client for 500+ errors
+  const clientMessage = statusCode >= 500 ? 'Internal server error' : message
+
+  return jsonResponse({ error: clientMessage }, statusCode)
 }
 
 export const parseRequestBody = async (req: PayloadRequest): Promise<Record<string, unknown>> => {
-  if (req.json && typeof req.json === 'object') {
+  if (req.data && typeof req.data === 'object' && !Array.isArray(req.data)) {
+    return req.data as Record<string, unknown>
+  }
+
+  if (typeof req.json === 'function') {
+    const parsed = await req.json()
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new ValidationError('Request body must be a JSON object')
+    }
+    return parsed as Record<string, unknown>
+  }
+
+  if (req.json && typeof req.json === 'object' && !Array.isArray(req.json)) {
     return req.json as Record<string, unknown>
   }
 

@@ -1,7 +1,6 @@
 import type { Payload, Where } from 'payload'
 
 import type {
-  MCProductState,
   NormalizedPluginOptions,
   PullAllReport,
   PullResult,
@@ -11,7 +10,9 @@ import type { RetryService } from '../services/sub-services/retryService.js'
 
 import { MC_FIELD_GROUP_NAME } from '../../constants.js'
 import { createPluginLogger } from '../utilities/logger.js'
+import { asProductDoc } from '../utilities/recordUtils.js'
 import { checkPullConflict } from './conflictResolver.js'
+import { buildInternalSyncContext } from './hookContext.js'
 import { resolveIdentity } from './identityResolver.js'
 import { reverseTransformProduct } from './transformers.js'
 
@@ -34,7 +35,7 @@ export const pullProduct = async (args: {
     id: productId,
     collection: collectionSlug,
     depth: 0,
-  }) as unknown as Record<string, unknown>
+  }).then(asProductDoc)
 
   // Resolve identity to find product in MC
   const identityResult = resolveIdentity(product, options)
@@ -63,7 +64,7 @@ export const pullProduct = async (args: {
     const mcProduct = response.data
 
     // Check conflict strategy before overwriting local data
-    const mcState = (product[MC_FIELD_GROUP_NAME] as MCProductState | undefined)
+    const mcState = product[MC_FIELD_GROUP_NAME]
     const conflictResult = checkPullConflict({
       localSyncMeta: mcState?.syncMeta,
       mcLastModified: typeof mcProduct.updateTime === 'string' ? mcProduct.updateTime : undefined,
@@ -86,6 +87,7 @@ export const pullProduct = async (args: {
     await payload.update({
       id: productId,
       collection: collectionSlug as never,
+      context: buildInternalSyncContext(),
       data: {
         [MC_FIELD_GROUP_NAME]: {
           customAttributes,
@@ -108,6 +110,7 @@ export const pullProduct = async (args: {
         },
       } as never,
       depth: 0,
+      overrideAccess: true,
     })
 
     return {
@@ -198,16 +201,13 @@ export const pullAll = async (args: {
             continue
           }
 
-          // Find matching Payload product by identity field
-          const where: Where = {
-            [identityField]: { equals: offerId },
-          }
-
-          const existing = await payload.find({
-            collection: collectionSlug as never,
-            depth: 0,
-            limit: 1,
-            where,
+          const existing = await findMatchingPayloadProduct({
+            collectionSlug,
+            contentLanguage: extractContentLanguage(mcProduct),
+            feedLabel: extractFeedLabel(mcProduct),
+            identityField,
+            offerId,
+            payload,
           })
 
           if (existing.docs.length === 0) {
@@ -231,10 +231,10 @@ export const pullAll = async (args: {
             fullProduct = mcProduct
           }
 
-          const payloadProduct = existing.docs[0] as unknown as Record<string, unknown>
+          const payloadProduct = asProductDoc(existing.docs[0])
 
           // Check conflict strategy before overwriting local data
-          const localMcState = (payloadProduct[MC_FIELD_GROUP_NAME] as MCProductState | undefined)
+          const localMcState = payloadProduct[MC_FIELD_GROUP_NAME]
           const conflictResult = checkPullConflict({
             localSyncMeta: localMcState?.syncMeta,
             mcLastModified: typeof fullProduct.updateTime === 'string' ? fullProduct.updateTime : undefined,
@@ -250,8 +250,9 @@ export const pullAll = async (args: {
           const { customAttributes, productAttributes } = reverseTransformProduct(fullProduct)
 
           await payload.update({
-            id: payloadProduct.id as string,
+            id: typeof payloadProduct.id === 'string' ? payloadProduct.id : String(payloadProduct.id),
             collection: collectionSlug as never,
+            context: buildInternalSyncContext(),
             data: {
               [MC_FIELD_GROUP_NAME]: {
                 customAttributes,
@@ -274,6 +275,7 @@ export const pullAll = async (args: {
               },
             } as never,
             depth: 0,
+            overrideAccess: true,
           })
 
           report.matched++
@@ -349,7 +351,60 @@ const extractFeedLabel = (mcProduct: Record<string, unknown>): string => {
   const name = mcProduct.name as string | undefined
   if (name) {
     const productId = name.split('/').pop()
-    return productId?.split('~')[1] ?? 'US'
+    return productId?.split('~')[1] ?? 'PRODUCTS'
   }
-  return 'US'
+  return 'PRODUCTS'
+}
+
+const findMatchingPayloadProduct = async (args: {
+  collectionSlug: string
+  contentLanguage: string
+  feedLabel: string
+  identityField: string
+  offerId: string
+  payload: Payload
+}) => {
+  const { collectionSlug, contentLanguage, feedLabel, identityField, offerId, payload } = args
+
+  const byOverrideOfferId = await payload.find({
+    collection: collectionSlug as never,
+    depth: 0,
+    limit: 10,
+    where: {
+      'merchantCenter.identity.offerId': { equals: offerId },
+    },
+  })
+
+  if (byOverrideOfferId.docs.length > 0) {
+    const exactMatch = byOverrideOfferId.docs.find((doc) => {
+      const payloadProduct = asProductDoc(doc)
+      const identity = payloadProduct.merchantCenter?.identity
+
+      return (
+        identity?.contentLanguage === contentLanguage &&
+        identity?.feedLabel === feedLabel
+      )
+    })
+
+    // Only use the override match if feedLabel + contentLanguage match exactly.
+    // A mismatched override means a different feed/language product shares
+    // the same offerId — fall through to identity-field lookup instead.
+    if (exactMatch) {
+      return {
+        ...byOverrideOfferId,
+        docs: [exactMatch],
+      }
+    }
+  }
+
+  const fallbackWhere: Where = {
+    [identityField]: { equals: offerId },
+  }
+
+  return payload.find({
+    collection: collectionSlug as never,
+    depth: 0,
+    limit: 1,
+    where: fallbackWhere,
+  })
 }

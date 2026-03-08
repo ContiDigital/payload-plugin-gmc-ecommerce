@@ -1,15 +1,24 @@
 import type { CollectionConfig } from 'payload'
 
-import { GMC_FIELD_MAPPINGS_SLUG } from '../constants.js'
+import type { AccessFn } from '../types/index.js'
 
-export const buildGMCFieldMappingsCollection = (): CollectionConfig => ({
+import { GMC_FIELD_MAPPINGS_SLUG } from '../constants.js'
+import { hasDefaultPluginAccess } from '../server/utilities/access.js'
+
+export const buildGMCFieldMappingsCollection = (accessFn?: AccessFn): CollectionConfig => ({
   slug: GMC_FIELD_MAPPINGS_SLUG,
-  // Restrict direct REST/GraphQL/admin access — the plugin manages this
-  // collection internally via overrideAccess: true on its endpoints
+  // Restrict direct REST/GraphQL/admin access — plugin endpoints and internal
+  // service code use overrideAccess where necessary.
   access: {
     create: () => false,
     delete: () => false,
-    read: ({ req }) => Boolean(req.user),
+    read: async ({ req }) => {
+      if (!req.user) { return false }
+      if (accessFn) {
+        return accessFn({ payload: req.payload, req, user: req.user })
+      }
+      return hasDefaultPluginAccess(req.user)
+    },
     update: () => false,
   },
   admin: {

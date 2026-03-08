@@ -1,24 +1,41 @@
 import type { CollectionAfterDeleteHook } from 'payload'
 
-import type { NormalizedPluginOptions } from '../types/index.js'
+import type { NormalizedPluginOptions, PayloadProductDoc } from '../types/index.js'
 
 import { GMC_SYNC_LOG_SLUG, MC_FIELD_GROUP_NAME } from '../constants.js'
-import { getMerchantServiceInstance } from '../plugin/applyEndpointEnhancements.js'
+import { queueProductDeleteJob } from '../plugin/jobTasks.js'
+import { getMerchantServiceInstance } from '../plugin/serviceRegistry.js'
+import { resolveIdentity } from '../server/sync/identityResolver.js'
 
 export const createAfterDeleteHook = (
   options: NormalizedPluginOptions,
 ): CollectionAfterDeleteHook => {
-  return ({ doc, req }) => {
-    const mcState = (doc as Record<string, unknown>)[MC_FIELD_GROUP_NAME] as
-      | Record<string, unknown>
-      | undefined
+  return async ({ doc, req }) => {
+    const product = doc as PayloadProductDoc
+    const mcState = product[MC_FIELD_GROUP_NAME]
 
     if (!mcState?.enabled) {
       return
     }
 
-    const identity = mcState.identity as Record<string, unknown> | undefined
-    if (!identity?.offerId) {
+    // Resolve identity from the deleted doc — we cannot re-fetch it
+    const identityResult = resolveIdentity(product, options)
+    if (!identityResult.ok) {
+      return
+    }
+
+    const productId = typeof product.id === 'string' ? product.id : String(product.id)
+    const identity = identityResult.value
+    const payloadInstance = req.payload
+
+    if (options.sync.schedule.strategy === 'payload-jobs') {
+      await queueProductDeleteJob({
+        identity,
+        merchantId: options.merchantId,
+        payload: payloadInstance,
+        productId,
+        req,
+      })
       return
     }
 
@@ -27,12 +44,9 @@ export const createAfterDeleteHook = (
       return
     }
 
-    const productId = (doc as Record<string, unknown>).id as string
-    const payloadInstance = req.payload
-
-    // Fire-and-forget: attempt to delete from MC
+    // Fire-and-forget: attempt to delete from MC using pre-resolved identity
     service
-      .deleteProduct({ payload: payloadInstance, productId })
+      .deleteProductByIdentity({ identity, payload: payloadInstance, productId })
       .catch(async (err) => {
         const message = err instanceof Error ? err.message : String(err)
         payloadInstance?.logger?.error(

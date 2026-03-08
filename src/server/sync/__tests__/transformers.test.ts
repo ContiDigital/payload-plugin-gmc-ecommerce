@@ -25,6 +25,7 @@ const mockOptions = (overrides?: Partial<NormalizedPluginOptions>): NormalizedPl
     products: {
       slug: 'products' as never,
       autoInjectTab: true,
+      fetchDepth: 1,
       fieldMappings: [],
       identityField: 'sku',
       tabPosition: 'append',
