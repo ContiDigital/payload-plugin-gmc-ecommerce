@@ -94,7 +94,7 @@
     "eslint": "^9.23.0",
     "eslint-config-next": "15.4.11",
     "graphql": "^16.8.1",
-    "jsdom": "^28.1.0",
+    "jsdom": "26.1.0",
     "mongodb-memory-server": "10.1.4",
     "next": "15.4.11",
     "open": "^10.1.0",
