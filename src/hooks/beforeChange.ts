@@ -8,7 +8,10 @@ import type {
   PayloadProductDoc,
 } from '../types/index.js'
 
-import { MC_FIELD_GROUP_NAME } from '../constants.js'
+import {
+  MC_FIELD_GROUP_NAME,
+  MC_PRODUCT_ATTRIBUTES_FIELD_NAME,
+} from '../constants.js'
 import { applyFieldMappings, deepMerge } from '../server/sync/fieldMapping.js'
 import { shouldSkipSyncHooks } from '../server/sync/hookContext.js'
 
@@ -87,9 +90,9 @@ export const createBeforeChangeHook = (
         'permanent',
         { siteUrl: options.siteUrl },
       )
-      const currentAttrs: MCProductAttributes = mcState.productAttributes ?? {}
+      const currentAttrs: MCProductAttributes = mcState[MC_PRODUCT_ATTRIBUTES_FIELD_NAME] ?? {}
       const mappedAttrs = (mappedValues.productAttributes ?? mappedValues) as Record<string, unknown>
-      incomingMCState.productAttributes = deepMerge(
+      incomingMCState[MC_PRODUCT_ATTRIBUTES_FIELD_NAME] = deepMerge(
         currentAttrs as Record<string, unknown>,
         mappedAttrs,
       ) as MCProductAttributes

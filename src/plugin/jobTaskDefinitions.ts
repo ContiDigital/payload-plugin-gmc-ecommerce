@@ -9,6 +9,7 @@ import {
   GMC_PULL_ALL_TASK_SLUG,
   GMC_PUSH_PRODUCT_TASK_SLUG,
   GMC_SYNC_DIRTY_TASK_SLUG,
+  MC_SYNC_META_DIRTY_PATH,
 } from '../constants.js'
 import { createPluginLogger } from '../server/utilities/logger.js'
 import { getMerchantServiceInstance } from './serviceRegistry.js'
@@ -218,7 +219,7 @@ export const buildSyncDirtyTaskConfig = () => ({
 
     try {
       const report = await service.pushBatch({
-        filter: { 'merchantCenter.syncMeta.dirty': { equals: true } },
+        filter: { [MC_SYNC_META_DIRTY_PATH]: { equals: true } },
         onProgress: async (progressReport) => {
           await updateSyncLog(payload, logDocId, buildProgressUpdate(progressReport))
         },

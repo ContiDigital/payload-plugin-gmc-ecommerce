@@ -8,6 +8,11 @@ import type {
   ResolvedMCIdentity,
 } from '../../types/index.js'
 
+import {
+  MC_FIELD_GROUP_NAME,
+  MC_PRODUCT_ATTRIBUTES_FIELD_NAME,
+} from '../../constants.js'
+
 // ---------------------------------------------------------------------------
 // Price utilities
 // ---------------------------------------------------------------------------
@@ -126,8 +131,9 @@ export const buildProductInput = (
   identity: ResolvedMCIdentity,
   options: NormalizedPluginOptions,
 ): MCProductInput => {
-  const mcState: MCProductState | undefined = (product as PayloadProductDoc).merchantCenter
-  const storedAttributes: MCProductAttributes = mcState?.productAttributes ?? {}
+  const mcState: MCProductState | undefined =
+    (product as PayloadProductDoc)[MC_FIELD_GROUP_NAME]
+  const storedAttributes: MCProductAttributes = mcState?.[MC_PRODUCT_ATTRIBUTES_FIELD_NAME] ?? {}
   const storedCustomAttributes: MCCustomAttribute[] | undefined = mcState?.customAttributes
 
   const productAttributes = stripEmpty(normalizeArrayFields({ ...storedAttributes }))

@@ -10,7 +10,11 @@ import type {
   ResolvedMCIdentity,
 } from '../../types/index.js'
 
-import { GMC_FIELD_MAPPINGS_SLUG } from '../../constants.js'
+import {
+  GMC_FIELD_MAPPINGS_SLUG,
+  MC_FIELD_GROUP_NAME,
+  MC_PRODUCT_ATTRIBUTES_FIELD_NAME,
+} from '../../constants.js'
 import { asRecord } from '../utilities/recordUtils.js'
 import { resolveGoogleCategory } from './categoryResolver.js'
 import { applyFieldMappings, deepMerge } from './fieldMapping.js'
@@ -26,14 +30,14 @@ const isFieldMappingRecord = (value: unknown): value is FieldMapping => {
 }
 
 const cloneProduct = (product: PayloadProductDoc): PayloadProductDoc => {
-  const currentMC: MCProductState = product.merchantCenter ?? {}
-  const currentAttrs: MCProductAttributes = currentMC.productAttributes ?? {}
+  const currentMC: MCProductState = product[MC_FIELD_GROUP_NAME] ?? {}
+  const currentAttrs: MCProductAttributes = currentMC[MC_PRODUCT_ATTRIBUTES_FIELD_NAME] ?? {}
 
   return {
     ...product,
-    merchantCenter: {
+    [MC_FIELD_GROUP_NAME]: {
       ...currentMC,
-      productAttributes: { ...currentAttrs },
+      [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: { ...currentAttrs },
     },
   } as PayloadProductDoc
 }
@@ -98,13 +102,13 @@ export const prepareProductForSync = async (args: {
       undefined,
       { siteUrl: options.siteUrl },
     )
-    const currentMC: MCProductState = preparedProduct.merchantCenter ?? {}
-    const currentAttrs: MCProductAttributes = currentMC.productAttributes ?? {}
+    const currentMC: MCProductState = preparedProduct[MC_FIELD_GROUP_NAME] ?? {}
+    const currentAttrs: MCProductAttributes = currentMC[MC_PRODUCT_ATTRIBUTES_FIELD_NAME] ?? {}
     const mappedAttrs = (mappedValues.productAttributes ?? mappedValues) as Record<string, unknown>
 
-    preparedProduct.merchantCenter = {
+    preparedProduct[MC_FIELD_GROUP_NAME] = {
       ...currentMC,
-      productAttributes: deepMerge(
+      [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: deepMerge(
         currentAttrs as Record<string, unknown>,
         mappedAttrs,
       ) as MCProductAttributes,
@@ -117,12 +121,12 @@ export const prepareProductForSync = async (args: {
     payload,
   )
   if (resolvedCategories) {
-    const currentMC: MCProductState = preparedProduct.merchantCenter ?? {}
-    const currentAttrs: MCProductAttributes = currentMC.productAttributes ?? {}
+    const currentMC: MCProductState = preparedProduct[MC_FIELD_GROUP_NAME] ?? {}
+    const currentAttrs: MCProductAttributes = currentMC[MC_PRODUCT_ATTRIBUTES_FIELD_NAME] ?? {}
 
-    preparedProduct.merchantCenter = {
+    preparedProduct[MC_FIELD_GROUP_NAME] = {
       ...currentMC,
-      productAttributes: {
+      [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: {
         ...currentAttrs,
         ...(currentAttrs.googleProductCategory
           ? {}
@@ -138,7 +142,7 @@ export const prepareProductForSync = async (args: {
     }
   }
 
-  const mcState: MCProductState | undefined = preparedProduct.merchantCenter
+  const mcState: MCProductState | undefined = preparedProduct[MC_FIELD_GROUP_NAME]
   const hasSnapshot =
     mcState?.snapshot &&
     typeof mcState.snapshot === 'object' &&

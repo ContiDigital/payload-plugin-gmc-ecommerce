@@ -293,7 +293,7 @@ const processInitialSyncProduct = async (args: {
       context: buildInternalSyncContext(),
       data: {
         [MC_FIELD_GROUP_NAME]: {
-          ...doc.merchantCenter,
+          ...doc[MC_FIELD_GROUP_NAME],
           snapshot,
           syncMeta: {
             lastAction: 'initialSync',

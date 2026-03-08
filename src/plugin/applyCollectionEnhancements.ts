@@ -2,7 +2,11 @@ import type { CollectionConfig, Config, Field, TabsField } from 'payload'
 
 import type { NormalizedPluginOptions } from '../types/index.js'
 
-import { MC_FIELD_GROUP_NAME, PLUGIN_SLUG } from '../constants.js'
+import {
+  MC_FIELD_GROUP_NAME,
+  MC_PRODUCT_ATTRIBUTES_FIELD_NAME,
+  PLUGIN_SLUG,
+} from '../constants.js'
 
 // ---------------------------------------------------------------------------
 // Merchant Center fields that get injected into the products collection
@@ -64,7 +68,7 @@ const buildMerchantCenterFields = (options: NormalizedPluginOptions): Field => (
 
     // --- Product Attributes ---
     {
-      name: 'productAttributes',
+      name: MC_PRODUCT_ATTRIBUTES_FIELD_NAME,
       type: 'group',
       admin: {
         condition: (_, siblingData) => siblingData?.enabled,

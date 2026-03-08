@@ -3,7 +3,11 @@ import type { PayloadRequest, Where } from 'payload'
 import type { MerchantService } from '../server/services/merchantService.js'
 import type { NormalizedPluginOptions } from '../types/index.js'
 
-import { GMC_FIELD_MAPPINGS_SLUG } from '../constants.js'
+import {
+  GMC_FIELD_MAPPINGS_SLUG,
+  MC_FIELD_GROUP_NAME,
+  MC_SYNC_META_DIRTY_PATH,
+} from '../constants.js'
 import { resolveIdentity } from '../server/sync/identityResolver.js'
 import { assertApiKeyAccess } from '../server/utilities/apiKeyAuth.js'
 import { getRecordID } from '../server/utilities/recordUtils.js'
@@ -25,7 +29,7 @@ import {
 } from './syncLogs.js'
 
 export const DIRTY_SYNC_FILTER: Where = {
-  'merchantCenter.syncMeta.dirty': { equals: true },
+  [MC_SYNC_META_DIRTY_PATH]: { equals: true },
 }
 
 export const getService = (options: NormalizedPluginOptions): MerchantService => {
@@ -61,7 +65,7 @@ export const resolveDeleteIdentity = (
   }
 
   const identityResult = resolveIdentity(
-    { merchantCenter: { identity: rawIdentity } },
+    { [MC_FIELD_GROUP_NAME]: { identity: rawIdentity } },
     options,
   )
 

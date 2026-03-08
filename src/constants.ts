@@ -84,7 +84,10 @@ export const BATCH_PROGRESS_INTERVAL_MS = 2_000
 // Merchant Center field group name on product documents
 // ---------------------------------------------------------------------------
 
-export const MC_FIELD_GROUP_NAME = 'merchantCenter'
+export const MC_FIELD_GROUP_NAME = 'mc'
+export const MC_PRODUCT_ATTRIBUTES_FIELD_NAME = 'attrs'
+export const MC_SYNC_META_DIRTY_PATH = `${MC_FIELD_GROUP_NAME}.syncMeta.dirty`
+export const MC_IDENTITY_OFFER_ID_PATH = `${MC_FIELD_GROUP_NAME}.identity.offerId`
 
 // ---------------------------------------------------------------------------
 // Merchant Center product attributes field catalog

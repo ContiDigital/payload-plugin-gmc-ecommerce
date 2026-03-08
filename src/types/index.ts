@@ -259,10 +259,10 @@ export type MCSyncMeta = {
 // ---------------------------------------------------------------------------
 
 export type MCProductState = {
+  attrs?: MCProductAttributes
   customAttributes?: MCCustomAttribute[]
   enabled?: boolean
   identity?: Partial<MCProductIdentity>
-  productAttributes?: MCProductAttributes
   snapshot?: Record<string, unknown>
   syncMeta?: MCSyncMeta
 }
@@ -275,7 +275,7 @@ export type MCProductState = {
 
 export type PayloadProductDoc = {
   id: number | string
-  merchantCenter?: MCProductState
+  mc?: MCProductState
 } & Record<string, unknown>
 
 // ---------------------------------------------------------------------------

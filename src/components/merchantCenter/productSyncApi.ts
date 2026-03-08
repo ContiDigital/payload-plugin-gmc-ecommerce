@@ -1,5 +1,7 @@
 import type { ProductAnalytics } from './types.js'
 
+import { MC_FIELD_GROUP_NAME } from '../../constants.js'
+
 export type ProductStatusEntry = {
   context: string
   status: string
@@ -112,5 +114,5 @@ export const fetchMerchantCenterState = async (args: {
   }
 
   const doc = await response.json()
-  return doc.merchantCenter ?? undefined
+  return doc[MC_FIELD_GROUP_NAME] ?? undefined
 }

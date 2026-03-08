@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import type { ProductAnalytics } from './types.js'
 
+import { MC_FIELD_GROUP_NAME } from '../../constants.js'
 import {
   buildProductStatusEntries,
   executeProductSyncAction,
@@ -31,11 +32,11 @@ export const useMerchantCenterProductSync = (
   const [analyticsLoading, setAnalyticsLoading] = useState(false)
   const [analyticsError, setAnalyticsError] = useState<null | string>(null)
   const [mcData, setMcData] = useState<Record<string, unknown> | undefined>(
-    asClientRecord(initialData?.merchantCenter),
+    asClientRecord(initialData?.[MC_FIELD_GROUP_NAME]),
   )
 
   useEffect(() => {
-    setMcData(asClientRecord(initialData?.merchantCenter))
+    setMcData(asClientRecord(initialData?.[MC_FIELD_GROUP_NAME]))
   }, [initialData])
 
   useEffect(() => {

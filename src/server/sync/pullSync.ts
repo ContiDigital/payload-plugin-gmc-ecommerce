@@ -8,7 +8,11 @@ import type {
 import type { GoogleApiClient } from '../services/sub-services/googleApiClient.js'
 import type { RetryService } from '../services/sub-services/retryService.js'
 
-import { MC_FIELD_GROUP_NAME } from '../../constants.js'
+import {
+  MC_FIELD_GROUP_NAME,
+  MC_IDENTITY_OFFER_ID_PATH,
+  MC_PRODUCT_ATTRIBUTES_FIELD_NAME,
+} from '../../constants.js'
 import { createPluginLogger } from '../utilities/logger.js'
 import { asProductDoc } from '../utilities/recordUtils.js'
 import { checkPullConflict } from './conflictResolver.js'
@@ -97,7 +101,7 @@ export const pullProduct = async (args: {
             feedLabel: identity.feedLabel,
             offerId: identity.offerId,
           },
-          productAttributes,
+          [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: productAttributes,
           snapshot: mcProduct,
           syncMeta: {
             dirty: false,
@@ -262,7 +266,7 @@ export const pullAll = async (args: {
                   feedLabel: extractFeedLabel(mcProduct),
                   offerId,
                 },
-                productAttributes,
+                [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: productAttributes,
                 snapshot: fullProduct,
                 syncMeta: {
                   dirty: false,
@@ -371,14 +375,14 @@ const findMatchingPayloadProduct = async (args: {
     depth: 0,
     limit: 10,
     where: {
-      'merchantCenter.identity.offerId': { equals: offerId },
+      [MC_IDENTITY_OFFER_ID_PATH]: { equals: offerId },
     },
   })
 
   if (byOverrideOfferId.docs.length > 0) {
     const exactMatch = byOverrideOfferId.docs.find((doc) => {
       const payloadProduct = asProductDoc(doc)
-      const identity = payloadProduct.merchantCenter?.identity
+      const identity = payloadProduct[MC_FIELD_GROUP_NAME]?.identity
 
       return (
         identity?.contentLanguage === contentLanguage &&
