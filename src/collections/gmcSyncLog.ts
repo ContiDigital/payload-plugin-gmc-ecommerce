@@ -35,6 +35,7 @@ export const buildGMCSyncLogCollection = (accessFn?: AccessFn): CollectionConfig
     {
       name: 'type',
       type: 'select',
+      dbName: 'gmc_log_type',
       options: [
         { label: 'Push', value: 'push' },
         { label: 'Pull', value: 'pull' },
@@ -47,6 +48,7 @@ export const buildGMCSyncLogCollection = (accessFn?: AccessFn): CollectionConfig
     {
       name: 'status',
       type: 'select',
+      dbName: 'gmc_log_status',
       defaultValue: 'running',
       options: [
         { label: 'Running', value: 'running' },

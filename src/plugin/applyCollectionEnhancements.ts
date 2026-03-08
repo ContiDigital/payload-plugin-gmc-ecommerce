@@ -146,9 +146,15 @@ const buildMerchantCenterFields = (options: NormalizedPluginOptions): Field => (
         { name: 'identifierExists', type: 'checkbox' },
 
         // Product Details
+        // NOTE: All select fields use short `dbName` to keep Postgres enum
+        // identifiers under the 63-character limit.  Without this, versioned
+        // tables produce names like:
+        //   enum__products_v_version_merchant_center_product_attributes_condition (69 chars)
+        // With dbName the enum becomes e.g. enum_products_mc_condition (26 chars).
         {
           name: 'condition',
           type: 'select',
+          dbName: 'mc_condition',
           options: [
             { label: 'New', value: 'NEW' },
             { label: 'Used', value: 'USED' },
@@ -159,6 +165,7 @@ const buildMerchantCenterFields = (options: NormalizedPluginOptions): Field => (
         {
           name: 'ageGroup',
           type: 'select',
+          dbName: 'mc_age_group',
           options: [
             { label: 'Newborn', value: 'newborn' },
             { label: 'Infant', value: 'infant' },
@@ -170,6 +177,7 @@ const buildMerchantCenterFields = (options: NormalizedPluginOptions): Field => (
         {
           name: 'availability',
           type: 'select',
+          dbName: 'mc_avail',
           options: [
             { label: 'In Stock', value: 'IN_STOCK' },
             { label: 'Out of Stock', value: 'OUT_OF_STOCK' },
@@ -182,6 +190,7 @@ const buildMerchantCenterFields = (options: NormalizedPluginOptions): Field => (
         {
           name: 'gender',
           type: 'select',
+          dbName: 'mc_gender',
           options: [
             { label: 'Male', value: 'male' },
             { label: 'Female', value: 'female' },
@@ -194,6 +203,7 @@ const buildMerchantCenterFields = (options: NormalizedPluginOptions): Field => (
         {
           name: 'sizeType',
           type: 'select',
+          dbName: 'mc_size_type',
           options: [
             { label: 'Regular', value: 'regular' },
             { label: 'Petite', value: 'petite' },
@@ -338,6 +348,7 @@ const buildMerchantCenterFields = (options: NormalizedPluginOptions): Field => (
         {
           name: 'state',
           type: 'select',
+          dbName: 'mc_sync_state',
           defaultValue: 'idle',
           options: [
             { label: 'Idle', value: 'idle' },
@@ -352,6 +363,7 @@ const buildMerchantCenterFields = (options: NormalizedPluginOptions): Field => (
         {
           name: 'syncSource',
           type: 'select',
+          dbName: 'mc_sync_src',
           options: [
             { label: 'Push', value: 'push' },
             { label: 'Pull', value: 'pull' },
