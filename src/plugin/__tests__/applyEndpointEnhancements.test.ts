@@ -272,7 +272,7 @@ describe('applyEndpointEnhancements', () => {
     await flushMicrotasks()
 
     expect(pushBatch).toHaveBeenCalledWith({
-      filter: { 'merchantCenter.syncMeta.dirty': { equals: true } },
+      filter: { 'mc.syncMeta.dirty': { equals: true } },
       onProgress: expect.any(Function),
       payload,
     })

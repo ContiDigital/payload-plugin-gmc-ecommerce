@@ -166,7 +166,7 @@ describe('createMerchantService', () => {
 
     const service = createMerchantService(buildOptions())
     const report = await service.pushBatch({
-      filter: { 'merchantCenter.syncMeta.dirty': { equals: true } },
+      filter: { 'mc.syncMeta.dirty': { equals: true } },
       payload: payload as never,
     })
 

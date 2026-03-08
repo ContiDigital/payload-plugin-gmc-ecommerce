@@ -22,7 +22,7 @@ const buildDatabaseUrl = (): string => {
     return process.env.DATABASE_URL
   }
 
-  if (process.env.VITEST) {
+  if (process.env.VITEST || process.env.VITEST_WORKER_ID) {
     const tmpDir = path.resolve(dirname, '.tmp')
     fs.mkdirSync(tmpDir, { recursive: true })
 

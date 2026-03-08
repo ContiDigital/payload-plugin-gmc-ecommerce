@@ -70,7 +70,7 @@ describe('productSyncApi', () => {
 
   test('fetchMerchantCenterState returns refreshed Merchant Center data when available', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse({
-      merchantCenter: {
+      mc: {
         snapshot: { name: 'snapshot-1' },
         syncMeta: { state: 'success' },
       },
@@ -82,8 +82,10 @@ describe('productSyncApi', () => {
       fetchImpl,
       productId: 'prod-3',
     })).resolves.toEqual({
-      snapshot: { name: 'snapshot-1' },
-      syncMeta: { state: 'success' },
+      mc: {
+        snapshot: { name: 'snapshot-1' },
+        syncMeta: { state: 'success' },
+      },
     })
   })
 

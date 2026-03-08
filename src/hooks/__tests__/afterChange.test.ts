@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 import type { NormalizedPluginOptions } from '../../types/index.js'
 
+import { MC_FIELD_GROUP_NAME } from '../../constants.js'
+
 const pushProduct = vi.fn()
 const queueProductPushJob = vi.fn()
 const getMerchantServiceInstance = vi.fn(() => ({
@@ -95,7 +97,7 @@ describe('createAfterChangeHook', () => {
     const hook = createAfterChangeHook(mockOptions())
     const doc = {
       id: 'prod-1',
-      merchantCenter: {
+      [MC_FIELD_GROUP_NAME]: {
         enabled: true,
         syncMeta: { dirty: true },
       },
@@ -146,7 +148,7 @@ describe('createAfterChangeHook', () => {
       context: {},
       doc: {
         id: 'prod-2',
-        merchantCenter: {
+        [MC_FIELD_GROUP_NAME]: {
           enabled: true,
           syncMeta: { dirty: true },
         },
@@ -171,7 +173,7 @@ describe('createAfterChangeHook', () => {
       context: { 'gmc:skip-sync-hooks': true },
       doc: {
         id: 'prod-3',
-        merchantCenter: {
+        [MC_FIELD_GROUP_NAME]: {
           enabled: true,
           syncMeta: { dirty: true },
         },

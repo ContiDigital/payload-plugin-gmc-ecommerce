@@ -1,10 +1,17 @@
+import fs from 'fs'
+import path from 'path'
 import type { Payload } from 'payload'
 
 import config from '@payload-config'
 import { getPayload } from 'payload'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
+import { fileURLToPath } from 'url'
+
+import { MC_FIELD_GROUP_NAME } from '../src/constants.js'
 
 let payload: Payload
+const filename = fileURLToPath(import.meta.url)
+const dirname = path.dirname(filename)
 
 afterAll(async () => {
   if (typeof payload?.db?.destroy === 'function') {
@@ -13,8 +20,10 @@ afterAll(async () => {
 })
 
 beforeAll(async () => {
+  const workerId = process.env.VITEST_WORKER_ID ?? process.pid.toString()
+  fs.rmSync(path.resolve(dirname, '.tmp', `vitest-${workerId}.db`), { force: true })
   payload = await getPayload({ config })
-})
+}, 60_000)
 
 describe('Plugin integration tests', () => {
   test('plugin registers hidden gmc-field-mappings collection', () => {
@@ -25,16 +34,16 @@ describe('Plugin integration tests', () => {
     expect(payload.collections['gmc-sync-log']).toBeDefined()
   })
 
-  test('products collection has merchantCenter group field', () => {
+  test('products collection has mc group field', () => {
     const productsConfig = payload.config.collections?.find((c) => c.slug === 'products')
     expect(productsConfig).toBeDefined()
 
     const flatFields = flattenFields(productsConfig!.fields ?? [])
-    const mcField = flatFields.find((f) => 'name' in f && f.name === 'merchantCenter')
+    const mcField = flatFields.find((f) => 'name' in f && f.name === MC_FIELD_GROUP_NAME)
     expect(mcField).toBeDefined()
   })
 
-  test('can create a product with merchantCenter fields', async () => {
+  test('can create a product with mc fields', async () => {
     const product = await payload.create({
       collection: 'products',
       data: {
@@ -42,7 +51,7 @@ describe('Plugin integration tests', () => {
         sku: 'TEST-001',
         price: 1999.99,
         description: 'A test product',
-        merchantCenter: {
+        mc: {
           enabled: true,
           identity: {
             offerId: 'TEST-001',
@@ -51,15 +60,15 @@ describe('Plugin integration tests', () => {
       },
     })
 
-    expect(product.merchantCenter?.enabled).toBe(true)
-    expect(product.merchantCenter?.identity?.offerId).toBe('TEST-001')
+    expect(product.mc?.enabled).toBe(true)
+    expect(product.mc?.identity?.offerId).toBe('TEST-001')
   })
 
-  test('can query products with merchantCenter.enabled filter', async () => {
+  test('can query products with mc.enabled filter', async () => {
     const { docs } = await payload.find({
       collection: 'products',
       where: {
-        'merchantCenter.enabled': { equals: true },
+        'mc.enabled': { equals: true },
       },
     })
 
@@ -67,7 +76,7 @@ describe('Plugin integration tests', () => {
     expect(
       docs.every(
         (d: Record<string, unknown>) =>
-          (d.merchantCenter as Record<string, unknown>)?.enabled === true,
+          (d.mc as Record<string, unknown>)?.enabled === true,
       ),
     ).toBe(true)
   })

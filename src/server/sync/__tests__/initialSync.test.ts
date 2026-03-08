@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 import type { NormalizedPluginOptions, ResolvedMCIdentity } from '../../../types/index.js'
 
+import { MC_FIELD_GROUP_NAME } from '../../../constants.js'
+
 const prepareProductForSync = vi.fn()
 const validateRequiredProductInput = vi.fn()
 const resolveIdentity = vi.fn()
@@ -100,7 +102,7 @@ describe('runInitialSync', () => {
     const identity = buildIdentity()
     const payload = {
       find: vi.fn().mockResolvedValue({
-        docs: [{ id: 'prod-1', merchantCenter: {} }],
+        docs: [{ id: 'prod-1', [MC_FIELD_GROUP_NAME]: {} }],
         hasNextPage: false,
         totalDocs: 1,
       }),
@@ -156,15 +158,15 @@ describe('runInitialSync', () => {
     expect(prepareProductForSync).toHaveBeenCalledWith(expect.objectContaining({
       identity,
       payload,
-      product: { id: 'prod-1', merchantCenter: {} },
+      product: { id: 'prod-1', [MC_FIELD_GROUP_NAME]: {} },
     }))
     expect(payload.update).toHaveBeenCalledWith(expect.objectContaining({
       data: {
-        merchantCenter: {
+        [MC_FIELD_GROUP_NAME]: {
           snapshot: { name: 'snapshot-1' },
           syncMeta: {
             lastAction: 'initialSync',
-            lastError: undefined,
+            lastError: null,
             lastSyncedAt: expect.any(String),
             state: 'success',
             syncSource: 'initial',

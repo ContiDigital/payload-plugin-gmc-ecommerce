@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 
 import type { NormalizedPluginOptions } from '../../types/index.js'
 
+import { MC_FIELD_GROUP_NAME, MC_PRODUCT_ATTRIBUTES_FIELD_NAME } from '../../constants.js'
 import { createBeforeChangeHook } from '../beforeChange.js'
 
 const mockOptions = (overrides?: Partial<NormalizedPluginOptions>): NormalizedPluginOptions => ({
@@ -64,7 +65,7 @@ const mockOptions = (overrides?: Partial<NormalizedPluginOptions>): NormalizedPl
 })
 
 describe('createBeforeChangeHook', () => {
-  test('marks previously enabled products as dirty even when merchantCenter is omitted from the update', () => {
+  test('marks previously enabled products as dirty even when mc is omitted from the update', () => {
     const hook = createBeforeChangeHook(mockOptions())
     const data = { title: 'Updated title' }
 
@@ -75,7 +76,7 @@ describe('createBeforeChangeHook', () => {
       operation: 'update',
       originalDoc: {
         id: '1',
-        merchantCenter: {
+        mc: {
           enabled: true,
           identity: { offerId: 'SKU-1' },
           syncMeta: { dirty: false, state: 'success' },
@@ -86,7 +87,7 @@ describe('createBeforeChangeHook', () => {
       req: {} as never,
     }) as Record<string, unknown>
 
-    const mcState = result.merchantCenter as Record<string, unknown>
+    const mcState = result[MC_FIELD_GROUP_NAME] as Record<string, unknown>
     const syncMeta = mcState.syncMeta as Record<string, unknown>
     expect(syncMeta.dirty).toBe(true)
   })
@@ -97,7 +98,7 @@ describe('createBeforeChangeHook', () => {
       collection: {} as never,
       context: {},
       data: {
-        merchantCenter: {
+        mc: {
           enabled: true,
         },
         sku: 'SKU-2',
@@ -107,7 +108,7 @@ describe('createBeforeChangeHook', () => {
     }) as Record<string, unknown>
 
     expect(
-      ((result.merchantCenter as Record<string, unknown>).identity as Record<string, unknown>).offerId,
+      ((result[MC_FIELD_GROUP_NAME] as Record<string, unknown>).identity as Record<string, unknown>).offerId,
     ).toBe('SKU-2')
   })
 
@@ -142,11 +143,11 @@ describe('createBeforeChangeHook', () => {
       operation: 'update',
       originalDoc: {
         id: '1',
-        merchantCenter: {
-          enabled: true,
-          productAttributes: {
+        mc: {
+          attrs: {
             description: 'Keep me',
           },
+          enabled: true,
         },
         sku: 'SKU-1',
         title: 'Original',
@@ -155,10 +156,10 @@ describe('createBeforeChangeHook', () => {
     }) as Record<string, unknown>
 
     expect(
-      ((result.merchantCenter as Record<string, unknown>).productAttributes as Record<string, unknown>).title,
+      ((result[MC_FIELD_GROUP_NAME] as Record<string, unknown>)[MC_PRODUCT_ATTRIBUTES_FIELD_NAME] as Record<string, unknown>).title,
     ).toBe('Mapped Title')
     expect(
-      ((result.merchantCenter as Record<string, unknown>).productAttributes as Record<string, unknown>).description,
+      ((result[MC_FIELD_GROUP_NAME] as Record<string, unknown>)[MC_PRODUCT_ATTRIBUTES_FIELD_NAME] as Record<string, unknown>).description,
     ).toBe('Keep me')
   })
 
@@ -168,7 +169,7 @@ describe('createBeforeChangeHook', () => {
       collection: {} as never,
       context: { 'gmc:skip-sync-hooks': true },
       data: {
-        merchantCenter: {
+        mc: {
           enabled: true,
         },
         sku: 'SKU-3',
@@ -176,7 +177,7 @@ describe('createBeforeChangeHook', () => {
       operation: 'update',
       originalDoc: {
         id: '1',
-        merchantCenter: {
+        mc: {
           enabled: true,
           syncMeta: { dirty: false, state: 'success' },
         },
@@ -185,6 +186,6 @@ describe('createBeforeChangeHook', () => {
       req: {} as never,
     }) as Record<string, unknown>
 
-    expect(result.merchantCenter).toEqual({ enabled: true })
+    expect(result[MC_FIELD_GROUP_NAME]).toEqual({ enabled: true })
   })
 })

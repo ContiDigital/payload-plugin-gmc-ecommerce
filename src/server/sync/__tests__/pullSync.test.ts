@@ -2,12 +2,17 @@ import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 import type { NormalizedPluginOptions, ResolvedMCIdentity } from '../../../types/index.js'
 
+import { MC_FIELD_GROUP_NAME, MC_IDENTITY_OFFER_ID_PATH, MC_PRODUCT_ATTRIBUTES_FIELD_NAME } from '../../../constants.js'
+
 const checkPullConflict = vi.fn()
+const extractMCProductLastModified = vi.fn()
+const productAttributesContainRemoteSubset = vi.fn()
 const resolveIdentity = vi.fn()
 const reverseTransformProduct = vi.fn()
 
 vi.mock('../conflictResolver.js', () => ({
   checkPullConflict,
+  extractMCProductLastModified,
 }))
 
 vi.mock('../identityResolver.js', () => ({
@@ -15,6 +20,7 @@ vi.mock('../identityResolver.js', () => ({
 }))
 
 vi.mock('../transformers.js', () => ({
+  productAttributesContainRemoteSubset,
   reverseTransformProduct,
 }))
 
@@ -94,6 +100,9 @@ const buildIdentity = (): ResolvedMCIdentity => ({
 describe('pullSync', () => {
   beforeEach(() => {
     checkPullConflict.mockReset()
+    extractMCProductLastModified.mockReset()
+    productAttributesContainRemoteSubset.mockReset()
+    productAttributesContainRemoteSubset.mockReturnValue(false)
     resolveIdentity.mockReset()
     reverseTransformProduct.mockReset()
   })
@@ -102,7 +111,7 @@ describe('pullSync', () => {
     const payload = {
       findByID: vi.fn().mockResolvedValue({
         id: 'prod-1',
-        merchantCenter: {
+        [MC_FIELD_GROUP_NAME]: {
           syncMeta: { dirty: false },
         },
       }),
@@ -116,7 +125,7 @@ describe('pullSync', () => {
     }
 
     resolveIdentity.mockReturnValue({ ok: true, value: buildIdentity() })
-    checkPullConflict.mockReturnValue({ action: 'pull' })
+    checkPullConflict.mockReturnValue({ action: 'proceed' })
     reverseTransformProduct.mockReturnValue({
       customAttributes: [{ name: 'material', value: 'gold' }],
       productAttributes: {
@@ -150,7 +159,7 @@ describe('pullSync', () => {
     })
     expect(payload.update).toHaveBeenCalledWith(expect.objectContaining({
       data: {
-        merchantCenter: {
+        [MC_FIELD_GROUP_NAME]: {
           customAttributes: [{ name: 'material', value: 'gold' }],
           enabled: true,
           identity: {
@@ -158,7 +167,7 @@ describe('pullSync', () => {
             feedLabel: 'US',
             offerId: 'SKU-1',
           },
-          productAttributes: {
+          [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: {
             availability: 'IN_STOCK',
             imageLink: 'https://example.com/image.jpg',
             link: 'https://example.com/product',
@@ -171,7 +180,7 @@ describe('pullSync', () => {
           syncMeta: {
             dirty: false,
             lastAction: 'pullSync',
-            lastError: undefined,
+            lastError: null,
             lastSyncedAt: expect.any(String),
             state: 'success',
             syncSource: 'pull',
@@ -185,7 +194,7 @@ describe('pullSync', () => {
     const payload = {
       findByID: vi.fn().mockResolvedValue({
         id: 'prod-2',
-        merchantCenter: {
+        [MC_FIELD_GROUP_NAME]: {
           syncMeta: { dirty: true },
         },
       }),
@@ -226,7 +235,7 @@ describe('pullSync', () => {
       find: vi.fn().mockResolvedValue({
         docs: [{
           id: 'prod-3',
-          merchantCenter: {
+          [MC_FIELD_GROUP_NAME]: {
             syncMeta: { dirty: false },
           },
           sku: 'SKU-3',
@@ -235,7 +244,7 @@ describe('pullSync', () => {
       update: vi.fn().mockResolvedValue({}),
     }
 
-    checkPullConflict.mockReturnValue({ action: 'pull' })
+    checkPullConflict.mockReturnValue({ action: 'proceed' })
     reverseTransformProduct.mockReturnValue({
       customAttributes: [{ name: 'artist', value: 'Example' }],
       productAttributes: {
@@ -281,7 +290,7 @@ describe('pullSync', () => {
     })
     expect(payload.update).toHaveBeenCalledWith(expect.objectContaining({
       data: {
-        merchantCenter: expect.objectContaining({
+        [MC_FIELD_GROUP_NAME]: expect.objectContaining({
           customAttributes: [{ name: 'artist', value: 'Example' }],
           enabled: true,
           identity: {
@@ -289,7 +298,7 @@ describe('pullSync', () => {
             feedLabel: 'US',
             offerId: 'SKU-3',
           },
-          productAttributes: {
+          [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: {
             availability: 'IN_STOCK',
             imageLink: 'https://example.com/image.jpg',
             link: 'https://example.com/product',
@@ -311,7 +320,7 @@ describe('pullSync', () => {
         .mockResolvedValueOnce({
           docs: [{
             id: 'prod-override',
-            merchantCenter: {
+            [MC_FIELD_GROUP_NAME]: {
               identity: {
                 contentLanguage: 'en',
                 feedLabel: 'US',
@@ -325,7 +334,7 @@ describe('pullSync', () => {
       update: vi.fn().mockResolvedValue({}),
     }
 
-    checkPullConflict.mockReturnValue({ action: 'pull' })
+    checkPullConflict.mockReturnValue({ action: 'proceed' })
     reverseTransformProduct.mockReturnValue({
       customAttributes: [],
       productAttributes: {
@@ -368,7 +377,7 @@ describe('pullSync', () => {
     })
     expect(payload.find).toHaveBeenNthCalledWith(1, expect.objectContaining({
       where: {
-        'merchantCenter.identity.offerId': { equals: 'REMOTE-1' },
+        [MC_IDENTITY_OFFER_ID_PATH]: { equals: 'REMOTE-1' },
       },
     }))
     expect(payload.find).toHaveBeenCalledTimes(1)

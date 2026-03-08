@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest'
 
 import type { NormalizedPluginOptions } from '../../../types/index.js'
 
+import { MC_FIELD_GROUP_NAME } from '../../../constants.js'
 import { resolveIdentity } from '../identityResolver.js'
 
 // ---------------------------------------------------------------------------
@@ -67,7 +68,7 @@ const mockOptions = (overrides?: Partial<NormalizedPluginOptions>): NormalizedPl
 describe('resolveIdentity', () => {
   test('returns ok result with resolved identity from mcState', () => {
     const product = {
-      merchantCenter: {
+      [MC_FIELD_GROUP_NAME]: {
         identity: {
           contentLanguage: 'en',
           feedLabel: 'US',
@@ -89,7 +90,7 @@ describe('resolveIdentity', () => {
 
   test('falls back to identityField value when offerId not set in mcState', () => {
     const product = {
-      merchantCenter: {
+      [MC_FIELD_GROUP_NAME]: {
         identity: {},
       },
       sku: 'FALLBACK-SKU',
@@ -103,7 +104,7 @@ describe('resolveIdentity', () => {
     }
   })
 
-  test('falls back to identityField when merchantCenter is missing', () => {
+  test('falls back to identityField when mc is missing', () => {
     const product = { sku: 'MY-SKU-123' }
 
     const result = resolveIdentity(product, mockOptions())
@@ -116,7 +117,7 @@ describe('resolveIdentity', () => {
 
   test('uses defaults for contentLanguage and feedLabel', () => {
     const product = {
-      merchantCenter: {
+      [MC_FIELD_GROUP_NAME]: {
         identity: { offerId: 'SKU-001' },
       },
       sku: 'SKU-001',
@@ -140,7 +141,7 @@ describe('resolveIdentity', () => {
 
   test('returns error when offerId is missing/empty', () => {
     const product = {
-      merchantCenter: {
+      [MC_FIELD_GROUP_NAME]: {
         identity: {},
       },
       sku: '',
@@ -156,7 +157,7 @@ describe('resolveIdentity', () => {
 
   test('returns error when offerId is only whitespace', () => {
     const product = {
-      merchantCenter: {
+      [MC_FIELD_GROUP_NAME]: {
         identity: {},
       },
       sku: '   ',
@@ -185,7 +186,7 @@ describe('resolveIdentity', () => {
 
   test('returns error when dataSourceId is missing and no override', () => {
     const product = {
-      merchantCenter: {
+      [MC_FIELD_GROUP_NAME]: {
         identity: { offerId: 'SKU-001' },
       },
       sku: 'SKU-001',
@@ -204,7 +205,7 @@ describe('resolveIdentity', () => {
 
   test('correctly builds merchantProductId as "lang~label~offerId"', () => {
     const product = {
-      merchantCenter: {
+      [MC_FIELD_GROUP_NAME]: {
         identity: {
           contentLanguage: 'en',
           feedLabel: 'US',
@@ -223,7 +224,7 @@ describe('resolveIdentity', () => {
 
   test('correctly builds productInputName and productName', () => {
     const product = {
-      merchantCenter: {
+      [MC_FIELD_GROUP_NAME]: {
         identity: {
           contentLanguage: 'en',
           feedLabel: 'US',
@@ -243,7 +244,7 @@ describe('resolveIdentity', () => {
 
   test('handles dataSourceOverride correctly', () => {
     const product = {
-      merchantCenter: {
+      [MC_FIELD_GROUP_NAME]: {
         identity: {
           contentLanguage: 'en',
           dataSourceOverride: 'override-ds-456',
@@ -264,7 +265,7 @@ describe('resolveIdentity', () => {
 
   test('uses default dataSourceName when no override', () => {
     const product = {
-      merchantCenter: {
+      [MC_FIELD_GROUP_NAME]: {
         identity: {
           contentLanguage: 'en',
           feedLabel: 'US',
@@ -283,7 +284,7 @@ describe('resolveIdentity', () => {
 
   test('resolves nested identityField path', () => {
     const product = {
-      merchantCenter: {
+      [MC_FIELD_GROUP_NAME]: {
         identity: {},
       },
       meta: { sku: 'NESTED-SKU' },

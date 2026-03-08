@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 import type { NormalizedPluginOptions, ResolvedMCIdentity } from '../../../types/index.js'
 
+import { MC_FIELD_GROUP_NAME, MC_PRODUCT_ATTRIBUTES_FIELD_NAME } from '../../../constants.js'
+
 const applyFieldMappings = vi.fn()
 const resolveGoogleCategory = vi.fn()
 const buildProductInput = vi.fn()
@@ -181,8 +183,8 @@ describe('productPreparation', () => {
       payload: payload as never,
       product: {
         id: 'prod-1',
-        merchantCenter: {
-          productAttributes: {
+        [MC_FIELD_GROUP_NAME]: {
+          [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: {
             availability: 'IN_STOCK',
             snapshot: { existing: true },
           },
@@ -194,8 +196,8 @@ describe('productPreparation', () => {
     })
 
     expect(result.action).toBe('update')
-    expect(result.product.merchantCenter).toMatchObject({
-      productAttributes: {
+    expect(result.product[MC_FIELD_GROUP_NAME]).toMatchObject({
+      [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: {
         availability: 'IN_STOCK',
         color: 'red',
         googleProductCategory: 'Arts & Entertainment',
@@ -206,8 +208,8 @@ describe('productPreparation', () => {
     })
     expect(beforePush).toHaveBeenCalledWith(expect.objectContaining({
       doc: expect.objectContaining({
-        merchantCenter: expect.objectContaining({
-          productAttributes: expect.objectContaining({
+        [MC_FIELD_GROUP_NAME]: expect.objectContaining({
+          [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: expect.objectContaining({
             color: 'red',
             googleProductCategory: 'Arts & Entertainment',
           }),

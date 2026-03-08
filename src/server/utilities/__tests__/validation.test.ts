@@ -8,8 +8,9 @@ describe('parseBatchInput', () => {
     expect(result.productIds).toEqual(['id1', 'id2'])
   })
 
-  test('productIds with non-string entry throws', () => {
-    expect(() => parseBatchInput({ productIds: ['id1', 123 as unknown as string] })).toThrow()
+  test('productIds accepts numeric entries and normalizes them to strings', () => {
+    const result = parseBatchInput({ productIds: ['id1', 123 as unknown as string] })
+    expect(result.productIds).toEqual(['id1', '123'])
   })
 
   test('productIds with empty string throws', () => {

@@ -224,7 +224,7 @@ describe('job task definitions', () => {
     })
     expect(payload.update).toHaveBeenCalled()
     expect(pushBatch).toHaveBeenCalledWith(expect.objectContaining({
-      filter: { 'merchantCenter.syncMeta.dirty': { equals: true } },
+      filter: { 'mc.syncMeta.dirty': { equals: true } },
     }))
   })
 

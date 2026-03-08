@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 import type { NormalizedPluginOptions } from '../../types/index.js'
 
+import { MC_FIELD_GROUP_NAME } from '../../constants.js'
+
 const deleteProductByIdentity = vi.fn()
 const getMerchantServiceInstance = vi.fn(() => ({
   deleteProductByIdentity,
@@ -98,7 +100,7 @@ describe('createAfterDeleteHook', () => {
       context: {},
       doc: {
         id: 'prod-1',
-        merchantCenter: {
+        [MC_FIELD_GROUP_NAME]: {
           enabled: true,
           identity: {
             contentLanguage: 'en',
@@ -142,7 +144,7 @@ describe('createAfterDeleteHook', () => {
       context: {},
       doc: {
         id: 'prod-2',
-        merchantCenter: {
+        [MC_FIELD_GROUP_NAME]: {
           enabled: true,
           identity: {
             contentLanguage: 'en',
@@ -174,7 +176,7 @@ describe('createAfterDeleteHook', () => {
       context: {},
       doc: {
         id: 'prod-3',
-        merchantCenter: {
+        [MC_FIELD_GROUP_NAME]: {
           enabled: false,
         },
       },

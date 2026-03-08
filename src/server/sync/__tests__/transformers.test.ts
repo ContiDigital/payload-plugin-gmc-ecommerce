@@ -6,6 +6,7 @@ import type {
   ResolvedMCIdentity,
 } from '../../../types/index.js'
 
+import { MC_FIELD_GROUP_NAME, MC_PRODUCT_ATTRIBUTES_FIELD_NAME } from '../../../constants.js'
 import {
   buildProductInput,
   fromMicros,
@@ -185,8 +186,8 @@ describe('sanitizeCustomAttributes', () => {
 describe('buildProductInput', () => {
   test('builds correct MCProductInput from product data and identity', () => {
     const product = {
-      merchantCenter: {
-        productAttributes: {
+      [MC_FIELD_GROUP_NAME]: {
+        [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: {
           description: 'A great product',
           link: 'https://example.com/product',
           price: { amountMicros: '19990000', currencyCode: 'USD' },
@@ -209,8 +210,8 @@ describe('buildProductInput', () => {
 
   test('strips empty/null fields from productAttributes', () => {
     const product = {
-      merchantCenter: {
-        productAttributes: {
+      [MC_FIELD_GROUP_NAME]: {
+        [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: {
           brand: null,
           description: '',
           link: undefined,
@@ -230,8 +231,8 @@ describe('buildProductInput', () => {
 
   test('applies default condition when not set', () => {
     const product = {
-      merchantCenter: {
-        productAttributes: { title: 'Test' },
+      [MC_FIELD_GROUP_NAME]: {
+        [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: { title: 'Test' },
       },
     }
     const options = mockOptions()
@@ -243,8 +244,8 @@ describe('buildProductInput', () => {
 
   test('does not override existing condition', () => {
     const product = {
-      merchantCenter: {
-        productAttributes: { condition: 'USED', title: 'Test' },
+      [MC_FIELD_GROUP_NAME]: {
+        [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: { condition: 'USED', title: 'Test' },
       },
     }
     const options = mockOptions()
@@ -256,8 +257,8 @@ describe('buildProductInput', () => {
 
   test('applies default currency to price when missing', () => {
     const product = {
-      merchantCenter: {
-        productAttributes: {
+      [MC_FIELD_GROUP_NAME]: {
+        [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: {
           price: { amountMicros: '19990000' },
         },
       },
@@ -271,8 +272,8 @@ describe('buildProductInput', () => {
 
   test('applies default currency to salePrice when missing', () => {
     const product = {
-      merchantCenter: {
-        productAttributes: {
+      [MC_FIELD_GROUP_NAME]: {
+        [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: {
           salePrice: { amountMicros: '9990000' },
         },
       },
@@ -286,11 +287,11 @@ describe('buildProductInput', () => {
 
   test('includes customAttributes when present', () => {
     const product = {
-      merchantCenter: {
+      [MC_FIELD_GROUP_NAME]: {
         customAttributes: [
           { name: 'warehouse', value: 'us-east' },
         ],
-        productAttributes: { title: 'Test' },
+        [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: { title: 'Test' },
       },
     }
     const options = mockOptions()
@@ -302,9 +303,9 @@ describe('buildProductInput', () => {
 
   test('does not include customAttributes key when none are valid', () => {
     const product = {
-      merchantCenter: {
+      [MC_FIELD_GROUP_NAME]: {
         customAttributes: [{ name: '', value: '' }],
-        productAttributes: { title: 'Test' },
+        [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: { title: 'Test' },
       },
     }
     const options = mockOptions()
@@ -314,7 +315,7 @@ describe('buildProductInput', () => {
     expect(result.customAttributes).toBeUndefined()
   })
 
-  test('handles missing merchantCenter state', () => {
+  test('handles missing mc state', () => {
     const product = {}
     const options = mockOptions()
 

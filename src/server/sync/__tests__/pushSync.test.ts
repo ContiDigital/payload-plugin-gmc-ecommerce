@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 import type { NormalizedPluginOptions, ResolvedMCIdentity } from '../../../types/index.js'
 
+import { MC_FIELD_GROUP_NAME, MC_PRODUCT_ATTRIBUTES_FIELD_NAME } from '../../../constants.js'
+
 const prepareProductForSync = vi.fn()
 const validateRequiredProductInput = vi.fn()
 const resolveIdentity = vi.fn()
@@ -148,29 +150,32 @@ describe('pushSync', () => {
     })
     expect(payload.update).toHaveBeenCalledTimes(2)
     expect(payload.update).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      data: {
-        merchantCenter: {
-          syncMeta: {
+      data: expect.objectContaining({
+        [MC_FIELD_GROUP_NAME]: expect.objectContaining({
+          syncMeta: expect.objectContaining({
             lastAction: 'saveSync',
-            lastError: undefined,
+            lastError: null,
             state: 'syncing',
             syncSource: 'push',
-          },
-        },
-      },
+          }),
+        }),
+      }),
     }))
     expect(payload.update).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      data: {
-        merchantCenter: {
+      data: expect.objectContaining({
+        [MC_FIELD_GROUP_NAME]: expect.objectContaining({
+          [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: expect.any(Object),
           snapshot: { name: 'snapshot-1' },
-          syncMeta: {
+          syncMeta: expect.objectContaining({
             dirty: false,
-            lastError: undefined,
+            lastAction: 'saveSync',
+            lastError: null,
             lastSyncedAt: expect.any(String),
             state: 'success',
-          },
-        },
-      },
+            syncSource: 'push',
+          }),
+        }),
+      }),
     }))
     expect(apiClient.insertProductInput).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -225,7 +230,7 @@ describe('pushSync', () => {
     })
     expect(payload.update).toHaveBeenLastCalledWith(expect.objectContaining({
       data: {
-        merchantCenter: {
+        [MC_FIELD_GROUP_NAME]: {
           syncMeta: {
             lastError: 'Missing required fields: link, imageLink, availability',
             state: 'error',
@@ -295,16 +300,18 @@ describe('pushSync', () => {
       '[GMC] Failed to fetch snapshot after sync',
     )
     expect(payload.update).toHaveBeenLastCalledWith(expect.objectContaining({
-      data: {
-        merchantCenter: {
-          syncMeta: {
+      data: expect.objectContaining({
+        [MC_FIELD_GROUP_NAME]: expect.objectContaining({
+          syncMeta: expect.objectContaining({
             dirty: false,
-            lastError: undefined,
+            lastAction: 'saveSync',
+            lastError: null,
             lastSyncedAt: expect.any(String),
             state: 'success',
-          },
-        },
-      },
+            syncSource: 'push',
+          }),
+        }),
+      }),
     }))
   })
 
@@ -342,7 +349,7 @@ describe('pushSync', () => {
     expect(prepareProductForSync).not.toHaveBeenCalled()
     expect(payload.update).toHaveBeenLastCalledWith(expect.objectContaining({
       data: {
-        merchantCenter: {
+        [MC_FIELD_GROUP_NAME]: {
           syncMeta: {
             lastError: 'offerId is required',
             state: 'error',
@@ -401,7 +408,7 @@ describe('pushSync', () => {
     })
     expect(payload.update).toHaveBeenLastCalledWith(expect.objectContaining({
       data: {
-        merchantCenter: {
+        [MC_FIELD_GROUP_NAME]: {
           syncMeta: {
             lastError: expect.stringContaining('Response: {"code":"INVALID_ARGUMENT"}'),
             state: 'error',
@@ -437,10 +444,10 @@ describe('pushSync', () => {
     })
     expect(payload.update).toHaveBeenNthCalledWith(2, expect.objectContaining({
       data: {
-        merchantCenter: {
+        [MC_FIELD_GROUP_NAME]: {
           snapshot: null,
           syncMeta: {
-            lastError: undefined,
+            lastError: null,
             lastSyncedAt: expect.any(String),
             state: 'success',
           },
@@ -475,17 +482,17 @@ describe('pushSync', () => {
       success: true,
     })
     expect(payload.update).toHaveBeenCalledWith(expect.objectContaining({
-      data: {
-        merchantCenter: {
+      data: expect.objectContaining({
+        [MC_FIELD_GROUP_NAME]: expect.objectContaining({
           snapshot: { name: 'snapshot-7' },
-          syncMeta: {
+          syncMeta: expect.objectContaining({
             lastAction: 'refresh',
-            lastError: undefined,
-            lastSyncedAt: expect.any(String),
+            lastError: null,
             state: 'success',
-          },
-        },
-      },
+            syncSource: 'pull',
+          }),
+        }),
+      }),
     }))
   })
 
