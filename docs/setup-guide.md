@@ -1,36 +1,58 @@
 # Setup Guide
 
-This guide walks through integrating `payload-plugin-gmc-ecommerce` into a Payload CMS project. It covers both first-time Merchant Center setups and connecting to an existing live catalog.
+This guide walks through integrating `payload-plugin-gmc-ecommerce` into a Payload CMS project.
 
-## Before You Start
+**Choose your path:**
 
-Gather the following:
+- [Path A: New Application](#path-a-new-application) — No existing Merchant Center products. You're starting fresh.
+- [Path B: Existing Application](#path-b-existing-application) — You already have products in Merchant Center from another system (custom hooks, feed files, Shopify, manual uploads, etc.) and need to migrate to this plugin without disrupting your live catalog.
+
+Both paths share the same prerequisites and core configuration.
+
+---
+
+## Prerequisites
+
+### 1. Gather Your Credentials
 
 | What | Where to Find It |
 |---|---|
 | **Merchant Center account ID** | [Merchant Center](https://merchants.google.com/) > Settings > Account Information |
 | **Data source ID** | Merchant Center > Products > Feeds > click into your feed/data source |
 | **Service account JSON** | [Google Cloud Console](https://console.cloud.google.com/) > IAM & Admin > Service Accounts |
-| **Your existing feed label** (if migrating) | Merchant Center > Products > look at any product's identity |
-| **Your existing content language** (if migrating) | Same as above |
 
-### Service Account Setup
+If migrating from an existing setup, also note:
+| What | Where to Find It |
+|---|---|
+| **Your existing feed label** | Merchant Center > Products > click any product > look at the identity |
+| **Your existing content language** | Same as above |
+| **Your existing offerId format** | Same — is it uppercase? lowercase? a SKU? a model ID? |
+
+### 2. Service Account Setup
 
 1. Go to Google Cloud Console > IAM & Admin > Service Accounts.
 2. Create a service account (or use an existing one).
-3. Enable the **Merchant API** (Content API for Shopping) on your Google Cloud project.
+3. Enable the **Merchant API** on your Google Cloud project.
 4. Create a JSON key and download it.
-5. In **Merchant Center**, go to Settings > Account Access and add the service account email with **Admin** permissions. This is the step that actually grants API access — the Google Cloud project role alone does not determine Merchant API access.
+5. In **Merchant Center**, go to Settings > Account Access and add the service account email with **Admin** permissions.
+
+> Step 5 is the step that actually grants API access — the Google Cloud project role alone does not determine Merchant API permissions.
 
 You need `client_email` and `private_key` from the JSON key file.
 
-## Step 1: Install
+---
+
+## Path A: New Application
+
+No existing Merchant Center products. You're setting up sync for the first time.
+
+### A1. Install
 
 ```bash
 pnpm add payload-plugin-gmc-ecommerce
 ```
 
-## Step 2: Add the Plugin
+### A2. Add the Plugin
 
 ```ts
 // payload.config.ts
@@ -52,8 +74,8 @@ export default buildConfig({
       }),
       collections: {
         products: {
-          slug: 'products',      // your products collection slug
-          identityField: 'sku',  // field used for MC offerId
+          slug: 'products',
+          identityField: 'sku',  // field used as MC offerId
         },
       },
     }),
@@ -61,7 +83,7 @@ export default buildConfig({
 })
 ```
 
-Add the environment variables to your `.env`:
+Add environment variables to your `.env`:
 
 ```env
 GMC_MERCHANT_ID=your-merchant-id
@@ -70,31 +92,19 @@ GMC_CLIENT_EMAIL=service-account@project.iam.gserviceaccount.com
 GMC_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
 ```
 
-Start your dev server and verify:
-- The products collection now has a **Merchant Center** tab.
+### A3. Start Dev Server and Verify
+
+Start your dev server. Verify:
+- The products collection has a **Merchant Center** tab.
 - The admin sidebar has a **Merchant Center** nav link.
 - `GET /api/gmc/health` returns `{ status: 'ok' }`.
+- `GET /api/gmc/health?deep=true` (with auth) returns `{ apiConnection: 'ok' }`.
 
-## Step 3: Understand Identity
+If the deep health check fails, your service account credentials or permissions are wrong. Fix that before continuing.
 
-Every product in Merchant Center has an identity composed of three parts:
+### A4. Configure Field Mappings
 
-```
-contentLanguage~feedLabel~offerId
-```
-
-The plugin constructs this from:
-1. `defaults.contentLanguage` (default: `en`)
-2. `defaults.feedLabel` (default: `PRODUCTS`)
-3. The value of your `identityField` on each product (e.g., `sku`)
-
-**If you are connecting to an existing live catalog**, your `contentLanguage` and `feedLabel` must match what is already in Merchant Center. Check any existing product in your Merchant Center account to see the current identity format. If they don't match, the plugin will create new products instead of updating existing ones.
-
-Per-product overrides are available in the Merchant Center tab on each product if specific products need different values.
-
-## Step 4: Configure Field Mappings
-
-Field mappings tell the plugin how to populate Merchant Center attributes from your Payload document fields.
+Field mappings tell the plugin how to populate MC attributes from your Payload fields:
 
 ```ts
 collections: {
@@ -102,403 +112,478 @@ collections: {
     slug: 'products',
     identityField: 'sku',
     fieldMappings: [
-      {
-        source: 'title',
-        target: 'productAttributes.title',
-        syncMode: 'permanent',
-      },
-      {
-        source: 'description',
-        target: 'productAttributes.description',
-        syncMode: 'permanent',
-      },
-      {
-        source: 'price',
-        target: 'productAttributes.price.amountMicros',
-        syncMode: 'permanent',
-        transformPreset: 'toMicrosString',
-      },
-      {
-        source: 'featuredImage',
-        target: 'productAttributes.imageLink',
-        syncMode: 'permanent',
-        transformPreset: 'extractAbsoluteUrl',
-      },
+      { source: 'title', target: 'productAttributes.title', syncMode: 'permanent' },
+      { source: 'description', target: 'productAttributes.description', syncMode: 'permanent' },
+      { source: 'price', target: 'productAttributes.price.amountMicros', syncMode: 'permanent', transformPreset: 'toMicrosString' },
+      { source: 'featuredImage', target: 'productAttributes.imageLink', syncMode: 'permanent', transformPreset: 'extractAbsoluteUrl' },
     ],
   },
 },
 ```
 
-> **Product link URL**: The `link` attribute requires a full URL (e.g., `https://example.com/products/chair-1`). Since slugs are bare strings (not paths starting with `/`), `extractAbsoluteUrl` won't prepend `siteUrl`. Use `beforePush` to construct the URL:
->
-> ```ts
-> beforePush: async ({ doc, productInput }) => {
->   const slug = (doc as any).slug
->   if (slug) {
->     productInput.productAttributes ??= {}
->     productInput.productAttributes.link = `${process.env.SITE_URL}/products/${slug}`
->   }
->   return productInput
-> },
-> ```
-
-### Source and Target Paths
-
-- **source**: Dot-notation path in your Payload document. For example, `title`, `pricing.amount`, `mainImage`. Array indexing is supported: `adImages[0]`, `adImages.0`.
-- **target**: Dot-notation path in the MC product. Almost always starts with `productAttributes.`. For example, `productAttributes.title`, `productAttributes.price.amountMicros`.
-
-### Relationship and Upload Fields
-
-The plugin fetches product documents at **depth 1** by default, which means one level of relationships is hydrated. An upload field like `featuredImage` becomes `{ url: '/media/image.jpg', filename: '...', ... }` instead of just an ID string.
-
-This means `extractUrl` and `extractAbsoluteUrl` transforms work on upload fields out of the box — they extract `.url` from the hydrated media object.
-
-For deeper nesting (e.g., a brand relationship with its own logo upload), use `beforePush` with `payload.findByID()` to fetch the data you need. You can also set `collections.products.fetchDepth` to a higher value, but this increases query cost for every push.
+For the product `link` (full URL), use `beforePush`:
 
 ```ts
-collections: {
-  products: {
-    slug: 'products',
-    identityField: 'sku',
-    fetchDepth: 2,  // default: 1 — increase if mappings need deeper relations
-  },
+siteUrl: process.env.SITE_URL,  // required for extractAbsoluteUrl
+
+beforePush: async ({ doc, productInput }) => {
+  const slug = (doc as any).slug
+  if (slug) {
+    productInput.productAttributes ??= {}
+    productInput.productAttributes.link = `${process.env.SITE_URL}/products/${slug}`
+  }
+  return productInput
 },
 ```
 
-### Sync Modes
+> **Required MC fields**: Every product must have `title`, `link`, `imageLink`, and `availability`. The plugin validates these before sending to the API.
 
-- **`permanent`**: Applied every time a product is pushed. If `sync.permanentSync` is `true`, also applied in the `beforeChange` hook on every document save.
-- **`initialOnly`**: Applied only when a product has no existing snapshot (its first sync).
+For transform presets and advanced mappings, see the [README](../README.md#field-mappings).
 
-### Transform Presets
-
-| Preset | Input | Output | Notes |
-|---|---|---|---|
-| `none` | any | Unchanged | |
-| `toMicrosString` | `15.99` (number or string) | `"15990000"` | Accepts `"15.99"` string input too |
-| `toMicros` | `15.99` (number only) | `"15990000"` | Non-numbers pass through unchanged |
-| `extractUrl` | `{ url: '/image.jpg' }` | `"/image.jpg"` | Checks `.url`, `.src`, `.href` in that order |
-| `extractAbsoluteUrl` | `{ url: '/image.jpg' }` | `"https://example.com/image.jpg"` | Same as `extractUrl` but prepends `siteUrl` for relative paths |
-| `toArray` | `"value"` | `["value"]` | Arrays pass through unchanged |
-| `toString` | `42` | `"42"` | Objects become JSON strings |
-| `toBoolean` | any | `true` or `false` | Uses JS truthiness — `"false"` becomes `true` |
-
-If you use `extractAbsoluteUrl`, set `siteUrl` in your plugin config:
-
-```ts
-siteUrl: process.env.SITE_URL,  // e.g., 'https://example.com'
-```
-
-### Runtime Mappings
-
-Additional field mappings can be created in the Merchant Center admin dashboard without code changes. These are stored in the `gmc-field-mappings` collection and merged with your config-time mappings at push time.
-
-## Step 5: Required Merchant Center Fields
-
-Every product pushed to Merchant Center must have these attributes populated (by field mappings, manual entry, or `beforePush`):
-
-| Field | Attribute Path |
-|---|---|
-| Title | `productAttributes.title` |
-| Link | `productAttributes.link` |
-| Image Link | `productAttributes.imageLink` |
-| Availability | `productAttributes.availability` |
-
-The plugin validates these before sending to the API and will return an error listing any missing required fields.
-
-Additional fields like `price`, `condition`, `brand`, and `description` are strongly recommended for product approval. See [Google's product data specification](https://support.google.com/merchants/answer/7052112) for the full list.
-
-The plugin auto-applies `defaults.condition` (default: `NEW`) if no condition is set on the product.
-
-## Step 6: Verify with a Manual Push
+### A5. Test with One Product
 
 With sync mode set to `manual` (the default):
 
 1. Open a product in the admin panel.
 2. Go to the **Merchant Center** tab.
 3. Enable the **Enable Merchant Center sync** checkbox.
-4. Verify the offerId, content language, and feed label look correct.
+4. Verify the offerId looks correct.
 5. Save the product.
 6. Click **Push to Merchant Center**.
 
 Check the result:
-- The sync status should show **Success**.
-- The snapshot section should populate with the processed product data from MC.
+- Sync status should show **Success**.
+- The snapshot section should populate with processed product data from MC.
 - In Merchant Center, the product should appear under Products.
-
-If push fails, the error message will indicate what went wrong. Common issues:
 
 | Error | Cause | Fix |
 |---|---|---|
-| Missing required fields | title, link, imageLink, or availability not populated | Add field mappings or set values in the MC tab |
-| 401/403 | Service account doesn't have access | Check service account permissions in MC |
-| Identity mismatch (duplicate products) | feedLabel or contentLanguage doesn't match existing catalog | Set `defaults.feedLabel` and `defaults.contentLanguage` to match |
+| Missing required fields | title, link, imageLink, or availability not populated | Add field mappings or set values manually |
+| 401/403 | Service account doesn't have access | Check MC account access settings |
+| Unknown field in product input | Null/empty values sent for fields MC doesn't expect | This shouldn't happen — the plugin strips empty values. Report if you see this. |
 
-> **Note:** A successful push means the data was accepted by the Merchant Center API. Product processing and approval may take additional time (minutes to hours). The snapshot may not reflect the final processed state immediately — use **Refresh Snapshot** to re-fetch it later.
+### A6. Enable Products for Sync
 
-## Step 7: Configure Access Control
+You have two options:
 
-The default access check allows any user with `isAdmin === true` or `roles` containing `'admin'`. For production, provide your own:
+**Option 1: Manual** — Enable products one-by-one in the admin UI (Merchant Center tab > Enable checkbox).
 
-```ts
-access: async ({ req }) => {
-  return req.user?.role === 'admin' || req.user?.role === 'seo'
-},
-```
-
-This controls access to all plugin endpoints and the admin UI sections.
-
-## Step 8: Set Up Categories (Optional)
-
-If your products have categories and you want them reflected in Merchant Center:
+**Option 2: Migration script** — Enable products in bulk via a Payload Local API script or migration:
 
 ```ts
-collections: {
-  categories: {
-    slug: 'categories',
-    nameField: 'title',                  // field with category name
-    googleCategoryIdField: 'googleCategoryId',  // Google taxonomy ID
-    parentField: 'parent',              // self-referencing relationship for hierarchy
-    productCategoryField: 'category',   // relationship field on products pointing to categories
-    productTypeField: 'fullTitle',      // field for MC productTypes breadcrumb
-  },
-},
+// enable-mc-products.ts — run with tsx or as a Payload migration
+import { getPayload } from 'payload'
+import config from './payload.config'
+
+const payload = await getPayload({ config })
+
+// Enable all products (or add a where clause to filter)
+const products = await payload.find({
+  collection: 'products',
+  limit: 0,  // all products
+  depth: 0,
+  select: {},
+})
+
+for (const product of products.docs) {
+  await payload.update({
+    collection: 'products',
+    id: product.id,
+    data: {
+      mc: { enabled: true },
+    } as any,
+    depth: 0,
+  })
+}
+
+console.log(`Enabled MC sync for ${products.totalDocs} products`)
 ```
 
-During push, the plugin:
-1. Follows the product's category relationships.
-2. Walks up the parent chain to build `productTypes` (breadcrumb array).
-3. Takes the `googleCategoryIdField` value from the most specific category that has one.
-4. Only sets these if they aren't already manually populated on the product.
+### A7. Run Initial Sync
 
-## Step 9: Choose a Sync Mode
+Initial sync pushes all enabled products to Merchant Center.
 
-### Manual (default)
+**Dry run first** (validates without pushing):
 
-No automatic syncing. You push products through the admin UI or API.
+```bash
+# Via admin UI: Merchant Center dashboard > Initial Sync > Dry Run
 
-### onChange
+# Or via API (worker endpoint):
+curl -X POST https://your-site.com/api/gmc/worker/batch/initial-sync \
+  -H "Authorization: Bearer $GMC_WORKER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"dryRun": true}'
+```
 
-Products auto-push after every successful save:
+Review the dry run results. If no errors, run the real sync:
 
+```bash
+curl -X POST https://your-site.com/api/gmc/worker/batch/initial-sync \
+  -H "Authorization: Bearer $GMC_WORKER_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"dryRun": false}'
+```
+
+The operation runs asynchronously and returns a `jobId`. Track progress in the admin dashboard under Sync History, or query the sync log:
+
+```bash
+curl https://your-site.com/api/gmc-sync-log?limit=1&sort=-createdAt \
+  -H "Authorization: users API-Key $PAYLOAD_API_KEY"
+```
+
+### A8. Configure Ongoing Sync
+
+Once initial sync succeeds, choose a sync mode:
+
+**onChange** — Products auto-push on every save:
 ```ts
-sync: {
-  mode: 'onChange',
-},
+sync: { mode: 'onChange' },
 ```
 
-The push happens asynchronously after the response is sent to the user. Failures are logged to the sync log collection and visible in the admin dashboard.
-
-If using `payload-jobs` strategy, the push is queued as a job instead of running inline.
-
-### Scheduled
-
-Products are marked dirty on save. A scheduled job pushes all dirty products:
-
+**scheduled** — Products are marked dirty on save, pushed in batch on a schedule:
 ```ts
 sync: {
   mode: 'scheduled',
   schedule: {
     strategy: 'external',
     apiKey: process.env.GMC_WORKER_API_KEY!,
-    cron: '0 * * * *',
+    cron: '0 4 * * *',
   },
 },
 ```
 
-See the [Scheduling](#step-10-set-up-scheduling-if-not-manual) section below.
-
-## Step 10: Set Up Scheduling (if not Manual)
-
-### External Strategy
-
-Your external system (cron, CI/CD, Cloud Tasks, etc.) calls the sync endpoint on a schedule:
-
+Then set up your cron system to call:
 ```bash
-# Run every hour via cron
-0 * * * * curl -s -X POST https://your-site.com/api/gmc/cron/sync -H "Authorization: Bearer $GMC_WORKER_API_KEY"
-```
-
-The `cron` config value is informational — the plugin does not run a scheduler itself. Your external system is responsible for calling the endpoint.
-
-Worker endpoints are also available for granular orchestration:
-
-```bash
-# Push a specific product
-curl -X POST https://your-site.com/api/gmc/worker/product/push \
-  -H "Authorization: Bearer $GMC_WORKER_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"productId": "abc123"}'
-
-# Push all dirty products
-curl -X POST https://your-site.com/api/gmc/worker/batch/push-dirty \
+curl -X POST https://your-site.com/api/gmc/cron/sync \
   -H "Authorization: Bearer $GMC_WORKER_API_KEY"
-
-# Delete a product from MC (requires identity — the local doc may already be gone)
-curl -X POST https://your-site.com/api/gmc/worker/product/delete \
-  -H "Authorization: Bearer $GMC_WORKER_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "productId": "abc123",
-    "identity": {
-      "offerId": "SKU-123",
-      "contentLanguage": "en",
-      "feedLabel": "PRODUCTS"
-    }
-  }'
 ```
 
-> **Delete orchestration**: When deleting products from Merchant Center via the worker endpoint, you must provide the product's MC identity (`offerId`, `contentLanguage`, `feedLabel`) in the request body. This is because the Payload document may already be deleted — the plugin cannot look it up to resolve identity. The `afterDelete` hook handles this automatically for local deletes, but if you're orchestrating deletes externally (e.g., from a queue or cleanup script), you need to supply the identity yourself.
+See the [README](../README.md#scheduling-strategies) for details on the `payload-jobs` strategy and worker endpoints.
 
-### Payload Jobs Strategy
+### A9. Production Checklist
 
-The plugin registers task definitions with Payload's job system:
+- [ ] Deep health check passes (`/api/gmc/health?deep=true`)
+- [ ] Field mappings produce correct values for title, link, imageLink, availability
+- [ ] `siteUrl` is set if using `extractAbsoluteUrl`
+- [ ] `access` function is configured for your role model
+- [ ] Sync mode is appropriate for your workflow
+- [ ] If using `scheduled`, scheduling is configured and tested
+- [ ] If using `payload-jobs`, a worker is running for the `gmc-sync` queue
+- [ ] If using `external` strategy, `apiKey` is set
+- [ ] Initial sync completed without errors (or errors are understood and addressed)
 
-```ts
-sync: {
-  mode: 'scheduled',
-  schedule: {
-    strategy: 'payload-jobs',
-  },
-},
-```
+---
 
-**You must run a Payload jobs worker** for the `gmc-sync` queue. The web process does not process jobs on its own. Refer to the [Payload Jobs documentation](https://payloadcms.com/docs/jobs-queue/overview) for worker setup.
+## Path B: Existing Application
 
-Six tasks are registered on the `gmc-sync` queue:
+You already have products in Merchant Center and are replacing an existing sync system with this plugin. This requires careful identity alignment, testing against a test data source, and a controlled cutover.
 
-| Task Slug | Purpose |
-|---|---|
-| `gmcPushProduct` | Push a single product (used by onChange) |
-| `gmcDeleteProduct` | Delete a product from MC (used by afterDelete hook) |
-| `gmcSyncDirty` | Push all dirty products (used by scheduled sync) |
-| `gmcBatchPush` | Push a batch of products by IDs or filter |
-| `gmcInitialSync` | Run initial sync across all products |
-| `gmcPullAll` | Pull all products from MC back into Payload |
-
-## Step 11: Use `beforePush` for Custom Logic
-
-For transformations that field mappings cannot express:
-
-```ts
-beforePush: async ({ doc, operation, payload, productInput }) => {
-  const attrs = productInput.productAttributes ?? {}
-
-  // Dynamic availability from inventory
-  const inventory = (doc as any).inventory ?? 0
-  attrs.availability = inventory > 0 ? 'IN_STOCK' : 'OUT_OF_STOCK'
-
-  // Set brand from a relationship
-  if (doc.brand && typeof doc.brand === 'object') {
-    attrs.brand = (doc.brand as any).name
-  }
-
-  productInput.productAttributes = attrs
-  return productInput
-},
-```
-
-`beforePush` runs after field mappings and category resolution, right before the API call. It receives:
-
-| Argument | Description |
-|---|---|
-| `doc` | The Payload document (with merged field mapping values) |
-| `operation` | `'insert'` or `'update'` |
-| `payload` | Payload instance (for querying other collections) |
-| `productInput` | The prepared MC product input to modify |
-
-## Step 12: Run Initial Sync
-
-If you have existing products that need to be pushed to Merchant Center for the first time:
-
-1. Go to the Merchant Center admin dashboard.
-2. Click **Initial Sync**.
-
-Or via API. Batch endpoints under `/api/gmc/batch/*` require a Payload-authenticated user. Worker equivalents use the plugin's own API key (`sync.schedule.apiKey`):
+### B1. Install
 
 ```bash
-# Via worker endpoint (plugin API key — use this for scripts/cron)
+pnpm add payload-plugin-gmc-ecommerce
+```
+
+### B2. Create a Test Data Source
+
+**Do not point the plugin at your production data source yet.**
+
+In Merchant Center:
+1. Go to Products > Feeds.
+2. Create a new data source (Content API feed).
+3. Note the data source ID — this is your test data source.
+
+Products pushed to this test data source will not interfere with your production feed.
+
+### B3. Add the Plugin (Pointing to Test Data Source)
+
+```ts
+payloadGmcEcommerce({
+  merchantId: process.env.GMC_MERCHANT_ID!,
+  dataSourceId: process.env.GMC_TEST_DATA_SOURCE_ID!,  // TEST data source
+  getCredentials: async () => ({
+    type: 'json',
+    credentials: {
+      client_email: process.env.GMC_CLIENT_EMAIL!,
+      private_key: process.env.GMC_PRIVATE_KEY!.replace(/\\n/g, '\n'),
+    },
+  }),
+  collections: {
+    products: {
+      slug: 'products',
+      identityField: 'modelId',  // must produce the SAME offerId as your existing catalog
+    },
+  },
+  defaults: {
+    contentLanguage: 'en',     // must match your existing catalog
+    feedLabel: 'PRODUCTS',      // must match your existing catalog
+    currency: 'USD',
+  },
+})
+```
+
+> **Identity is critical.** Check any existing product in Merchant Center. Its identity format is `contentLanguage~feedLabel~offerId`. Your `defaults.contentLanguage`, `defaults.feedLabel`, and the value produced by `identityField` on each product **must match exactly** what your existing catalog uses. If your existing products have offerId `MF-123` (uppercase), your `identityField` must produce `MF-123` — not `mf-123`.
+
+### B4. Configure Field Mappings and `beforePush`
+
+Map your Payload fields to MC attributes. For anything field mappings can't express, use `beforePush`.
+
+Here's a real-world example from a production ecommerce site with ~5400 products, showing how complex field derivations (materials from categories, sale prices, promo labels, free shipping, custom labels) are handled entirely in `beforePush`:
+
+```ts
+payloadGmcEcommerce({
+  // ...required options...
+
+  collections: {
+    products: {
+      slug: 'products',
+      identityField: 'modelId',
+      fetchDepth: 2,  // need category relationships hydrated
+      fieldMappings: [
+        // Simple 1:1 mappings go here
+        { source: 'title', target: 'productAttributes.title', syncMode: 'permanent' },
+        { source: 'description', target: 'productAttributes.description', syncMode: 'permanent' },
+      ],
+    },
+  },
+
+  siteUrl: process.env.NEXT_PUBLIC_SERVER_URL,
+
+  beforePush: async ({ doc, payload, productInput }) => {
+    const attrs = productInput.productAttributes ?? {}
+    const product = doc as any
+
+    // --- Product link ---
+    attrs.link = `${process.env.NEXT_PUBLIC_SERVER_URL}/products/${product.slug}`
+
+    // --- Images ---
+    // Primary: first ad image, fallback to main image
+    const primaryImage = product.adImages?.[0]
+    attrs.imageLink = primaryImage?.url || product.mainImage?.url || ''
+    if (attrs.imageLink?.startsWith('/')) {
+      attrs.imageLink = `${process.env.NEXT_PUBLIC_SERVER_URL}${attrs.imageLink}`
+    }
+
+    // Additional images
+    const additionalImages = product.adImages?.slice(1)
+      ?.map((img: any) => img?.url)
+      ?.filter(Boolean) ?? []
+    if (additionalImages.length > 0) {
+      attrs.additionalImageLinks = additionalImages.map((url: string) =>
+        url.startsWith('/') ? `${process.env.NEXT_PUBLIC_SERVER_URL}${url}` : url,
+      )
+    }
+
+    // --- Pricing ---
+    const toMicros = (value: number) => String(Math.round(value * 1_000_000))
+    const price = product.suggestedPrice || product.price || 0
+    attrs.price = { amountMicros: toMicros(price), currencyCode: 'USD' }
+
+    // Sale price (only if lower than regular price)
+    if (product.effectivePrice && product.effectivePrice < price) {
+      attrs.salePrice = { amountMicros: toMicros(product.effectivePrice), currencyCode: 'USD' }
+    }
+
+    // --- Category-derived fields ---
+    // Fetch the category if needed (or use the hydrated relationship)
+    const category = product.category  // hydrated at fetchDepth: 2
+
+    if (category && typeof category === 'object') {
+      // Google product category from category's taxonomy ID
+      if (category.googleCategoryId) {
+        attrs.googleProductCategory = String(category.googleCategoryId)
+      }
+
+      // Material derived from category hierarchy
+      attrs.material = getMaterial(category)  // your existing utility
+
+      // Product types from category breadcrumb
+      if (category.fullTitle) {
+        attrs.productTypes = [category.fullTitle]
+      }
+
+      // Custom label: marble vs non-marble
+      const isMarble = category.displayName?.toLowerCase().includes('marble')
+      attrs.customLabel0 = isMarble ? 'marbleShopping' : 'nonMarbleShopping'
+    }
+
+    // --- Static fields ---
+    attrs.brand = "Your Brand"
+    attrs.condition = 'NEW'
+    attrs.identifierExists = false
+    attrs.availability = product.stockStatus === 'out-of-stock' ? 'OUT_OF_STOCK' : 'IN_STOCK'
+
+    // --- Dimensions ---
+    if (product.height) attrs.productHeight = { value: product.height, unit: 'in' }
+    if (product.width) attrs.productWidth = { value: product.width, unit: 'in' }
+    if (product.length) attrs.productLength = { value: product.length, unit: 'in' }
+
+    // --- Promo-derived fields ---
+    const promoLabels = getActivePromoCustomLabels(product.promos)  // your utility
+    if (promoLabels.length > 0) {
+      attrs.customLabel1 = promoLabels.join(' | ')
+    }
+
+    // Free shipping from active promotions
+    if (hasEligibleFreeShippingPromo(product.promos)) {
+      attrs.shipping = [{
+        country: 'US',
+        service: 'Standard',
+        price: { amountMicros: '0', currencyCode: 'USD' },
+      }]
+    }
+
+    productInput.productAttributes = attrs
+    return productInput
+  },
+})
+```
+
+### B5. Test Against the Test Data Source
+
+Start your dev server (or a staging environment) pointing to the test data source.
+
+1. **Verify health**: `GET /api/gmc/health?deep=true` should return `{ apiConnection: 'ok' }`.
+
+2. **Push one product manually**:
+   - Open a product in admin > Merchant Center tab > Enable > Save > Push.
+   - Verify the push succeeds.
+   - Check Merchant Center — the product should appear under the test data source.
+   - Verify the identity matches what your production catalog uses.
+
+3. **Push a small batch** (5-10 products):
+   - Enable MC sync on a handful of products.
+   - Use the admin dashboard's "Push All Enabled" or run:
+     ```bash
+     curl -X POST https://your-site.com/api/gmc/batch/push \
+       -H "Authorization: users API-Key $PAYLOAD_API_KEY" \
+       -H "Content-Type: application/json" \
+       -d '{"productIds": ["id1", "id2", "id3"]}'
+     ```
+   - Review the sync log for errors.
+   - Spot-check products in Merchant Center — verify titles, prices, images, availability are correct.
+
+4. **Run a dry-run initial sync** to validate all products:
+   ```bash
+   curl -X POST https://your-site.com/api/gmc/worker/batch/initial-sync \
+     -H "Authorization: Bearer $GMC_WORKER_API_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"dryRun": true}'
+   ```
+   This validates every enabled product without pushing. Review errors.
+
+### B6. Disable Your Old Sync System
+
+**Do not run two sync systems simultaneously.** Before cutting over:
+
+1. Disable all existing MC sync hooks (`beforeChange`, `afterChange` hooks that call your old sync function).
+2. Disable any existing cron jobs, Lambda functions, or scheduled tasks that sync products to MC.
+3. Disable or remove the old MC sync endpoint if you have one.
+4. Comment out or remove the old sync code. Don't delete it yet — you may need to reference it.
+
+Example (disabling an old hook-based sync):
+```ts
+// In your products collection hooks:
+// BEFORE:
+// beforeChange: [updateGoogleListing]
+// AFTER:
+beforeChange: []  // Old MC sync disabled — now handled by GMC plugin
+```
+
+### B7. Cut Over to Production Data Source
+
+Update your environment variable to point to the production data source:
+
+```env
+# BEFORE:
+GMC_DATA_SOURCE_ID=test-datasource-id
+
+# AFTER:
+GMC_DATA_SOURCE_ID=production-datasource-id
+```
+
+### B8. Enable Products and Sync
+
+Now you need to enable MC sync on all the products you want to manage through the plugin, and decide how to handle the initial data flow.
+
+**Step 1: Enable products via migration**
+
+```ts
+// enable-mc-products.ts
+import { getPayload } from 'payload'
+import config from './payload.config'
+
+const payload = await getPayload({ config })
+
+// Enable MC sync for products that were previously synced
+// Adjust the where clause to match your product selection criteria
+const products = await payload.find({
+  collection: 'products',
+  limit: 0,
+  depth: 0,
+  select: {},
+  where: {
+    googleFeed: { equals: true },  // or whatever flag your old system used
+  },
+})
+
+for (const product of products.docs) {
+  await payload.update({
+    collection: 'products',
+    id: product.id,
+    data: {
+      mc: { enabled: true },
+    } as any,
+    depth: 0,
+  })
+}
+
+console.log(`Enabled MC sync for ${products.totalDocs} products`)
+```
+
+**Step 2: Choose your sync strategy based on your situation:**
+
+#### Scenario 1: Production MC data source has NO existing products (clean data source)
+
+This is the case when you created a new data source for the plugin, or your old system used a different data source.
+
+Run **initial sync** (or push all enabled):
+
+```bash
+# Initial sync — inserts all enabled products
 curl -X POST https://your-site.com/api/gmc/worker/batch/initial-sync \
   -H "Authorization: Bearer $GMC_WORKER_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"dryRun": true}'
-
-# Or via user endpoint (Payload API key — requires useAPIKey on your auth collection)
-curl -X POST https://your-site.com/api/gmc/batch/initial-sync \
-  -H "Authorization: users API-Key $PAYLOAD_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"dryRun": false}'
 ```
 
-> Payload supports [API keys](https://payloadcms.com/docs/authentication/api-keys) as an auth strategy. Enable `useAPIKey: true` on your users collection, then generate a key for the user. The header format is `Authorization: {collection-slug} API-Key {key}`.
-
-Additional fields supported by the initial-sync endpoint: `limit` (max products to process), `batchSize`, `onlyIfRemoteMissing`.
-
-Initial sync defaults:
-- `dryRun: true` — validates products without pushing. Run this first.
-- `onlyIfRemoteMissing: true` — skips products that already exist in MC.
-- `batchSize: 100` — products processed per chunk.
-
-The operation is tracked in the sync log with a `jobId` for progress monitoring.
-
-## Connecting to an Existing Live Catalog
-
-If your Merchant Center account already has products from another system (a feed file, Shopify, manual uploads, etc.), follow this additional guidance:
-
-### 1. Match Your Identity
-
-Check any existing product in Merchant Center to find its identity format. For example:
-
-```
-en~PRODUCTS~SKU-123
-```
-
-Configure the plugin to match:
-
-```ts
-defaults: {
-  contentLanguage: 'en',   // must match
-  feedLabel: 'PRODUCTS',    // must match
-},
-```
-
-The `identityField` on your products must produce the same offerId values as your existing catalog. If your existing products use SKU `ABC-001`, your Payload product with that SKU must have `ABC-001` as the value in the field you configure as `identityField`.
-
-### 2. Verify with One Product
-
-Before running any bulk operation:
-
-1. Pick one product you know exists in MC.
-2. Enable MC sync for it in the admin panel.
-3. Verify the identity (offerId, feedLabel, contentLanguage) matches exactly.
-4. Push it.
-5. Confirm in Merchant Center that the existing product was **updated** (not duplicated).
-
-### 3. Run a Pull Before Pushing
-
-If Merchant Center has data you want to preserve (manually entered attributes, approval status), pull before pushing:
+Or push all enabled products:
 
 ```bash
-# Pull all products from MC into Payload (worker endpoint — API key auth)
+curl -X POST https://your-site.com/api/gmc/worker/batch/push-dirty \
+  -H "Authorization: Bearer $GMC_WORKER_API_KEY"
+```
+
+Both work because the MC v1 `insertProductInput` is an **upsert** — it creates or replaces.
+
+#### Scenario 2: Production MC data source HAS existing products
+
+This is the case when you're taking over the same data source your old system used.
+
+Run **pull-all first** to populate snapshots and MC state on your Payload documents:
+
+```bash
 curl -X POST https://your-site.com/api/gmc/worker/batch/pull-all \
   -H "Authorization: Bearer $GMC_WORKER_API_KEY"
 ```
 
-This populates snapshot data and MC attributes on your Payload documents based on the `conflictStrategy`:
+This:
+- Iterates through every product in your MC account
+- Matches each MC product to a Payload document by identity (offerId → identityField)
+- Populates the MC snapshot, attributes, and sync metadata on each matched document
+- Products in MC with no matching Payload document are counted as "orphaned"
 
-| Strategy | Behavior |
-|---|---|
-| `mc-wins` | MC values overwrite Payload values for conflicting fields |
-| `payload-wins` | Payload values are preserved; only empty fields are populated from MC |
-| `newest-wins` | The most recently updated value wins |
-
-### 4. Disable Your Old Sync System
-
-Do not run two sync systems simultaneously. Disable your existing feed, Shopify connector, or other integration before enabling automated sync from this plugin.
-
-### 5. Initial Sync for Existing Catalogs
-
-Run initial sync with `onlyIfRemoteMissing: true` (the default) — this only pushes products that don't already exist in MC:
+After pull completes, run **initial sync** to push any products that exist in Payload but not in MC:
 
 ```bash
 curl -X POST https://your-site.com/api/gmc/worker/batch/initial-sync \
@@ -507,79 +592,123 @@ curl -X POST https://your-site.com/api/gmc/worker/batch/initial-sync \
   -d '{"dryRun": false, "onlyIfRemoteMissing": true}'
 ```
 
-## Monitoring and Debugging
+`onlyIfRemoteMissing: true` (the default) means it only pushes products that don't already exist in MC — it won't overwrite the data you just pulled.
+
+### B9. Verify and Configure Ongoing Sync
+
+1. Check the sync log for errors: admin dashboard > Sync History.
+2. Spot-check products in MC — verify data is correct.
+3. Push a single product manually to confirm the full round-trip works.
+4. Configure your ongoing sync mode (`onChange`, `scheduled`, or stay on `manual`).
+
+### B10. Production Checklist
+
+- [ ] Old sync system fully disabled (hooks, crons, lambdas, endpoints)
+- [ ] Deep health check passes on production
+- [ ] `dataSourceId` points to production data source
+- [ ] Identity (feedLabel, contentLanguage, offerId format) matches existing catalog exactly
+- [ ] Initial sync or pull-all completed without critical errors
+- [ ] Products in MC match Payload data (spot-check 5-10 products)
+- [ ] Ongoing sync mode configured and tested
+- [ ] `access` function configured for your role model
+- [ ] If using `scheduled` mode with `external` strategy, cron/EventBridge is configured
+- [ ] If using `payload-jobs`, worker is running for the `gmc-sync` queue
+
+---
+
+## Advanced Configuration
+
+### Categories
+
+If your products have categories and you want `googleProductCategory` and `productTypes` resolved automatically:
+
+```ts
+collections: {
+  categories: {
+    slug: 'categories',
+    nameField: 'title',
+    googleCategoryIdField: 'googleCategoryId',
+    parentField: 'parent',
+    productCategoryField: 'category',
+    productTypeField: 'fullTitle',
+  },
+},
+```
+
+During push, the plugin walks the category chain, builds `productTypes` breadcrumbs, and resolves `googleProductCategory` from the most specific category that has a Google taxonomy ID.
+
+### Access Control
+
+Default: `user.isAdmin === true || user.roles includes 'admin'`
+
+For custom roles:
+
+```ts
+access: async ({ req }) => {
+  return req.user?.role === 'admin' || req.user?.role === 'seo'
+},
+```
+
+### Permanent Sync
+
+When `sync.permanentSync` is `true`, field mappings with `syncMode: 'permanent'` are also applied in the `beforeChange` hook on every document save. This pre-populates the MC attribute fields on the document before the push, so the MC tab always shows current values.
+
+### Scheduling
+
+See the [README](../README.md#scheduling-strategies) for details on the `external` and `payload-jobs` strategies.
+
+### Rate Limiting
+
+Default settings handle most single-instance deployments (4 concurrent, 120 requests/min). For multi-instance deployments, provide a `rateLimit.store`. See [README](../README.md#distributed-rate-limiting).
+
+---
+
+## Monitoring
 
 ### Health Endpoint
 
 ```bash
-# Basic check (public — returns status without merchant details)
+# Basic (public)
 curl https://your-site.com/api/gmc/health
 
-# Deep check (requires Payload user auth — tests API connectivity)
+# Deep (requires auth — tests API connectivity)
 curl https://your-site.com/api/gmc/health?deep=true \
   -H "Authorization: users API-Key $PAYLOAD_API_KEY"
 ```
 
 ### Sync Logs
 
-All batch operations create entries in the `gmc-sync-log` collection. View them in the admin dashboard under **Sync History**, or query directly (requires Payload user auth):
+All batch operations create entries in `gmc-sync-log`. View them in the admin dashboard or query directly:
 
 ```bash
 curl https://your-site.com/api/gmc-sync-log?limit=10&sort=-createdAt \
   -H "Authorization: users API-Key $PAYLOAD_API_KEY"
 ```
 
-Each log entry contains:
-- `jobId` — Unique operation identifier
-- `type` — Operation type (push, pull, initialSync, pullAll, batch)
-- `status` — running, completed, failed, cancelled
-- `total`, `processed`, `succeeded`, `failed` — Progress counters
-- `errors` — Array of `{ productId, message }` for failed products
+Each entry contains: `jobId`, `type`, `status` (running/completed/failed), progress counters (`total`, `processed`, `succeeded`, `failed`), and an `errors` array.
 
-### Per-Product Sync State
+### Per-Product State
 
 Each product's Merchant Center tab shows:
 - Current sync state (idle, syncing, success, error)
-- Last sync timestamp
-- Last error message
-- The dirty flag (whether the product needs syncing)
-- The snapshot (last known processed state from MC)
+- Last sync timestamp and error
+- Dirty flag (needs syncing)
+- Read-only snapshot of the processed MC product
 
-### Product Analytics
+### Analytics
 
-The per-product sync controls include a performance analytics section showing impressions, clicks, click-through rate, and conversions from the Merchant Center Reports API.
+The per-product sync controls include performance analytics (impressions, clicks, CTR, conversions) from the MC Reports API.
 
-## Rate Limiting
+---
 
-The plugin rate-limits both inbound requests to plugin endpoints and outbound requests to the Google Merchant API.
+## Troubleshooting
 
-Default settings handle most single-instance deployments:
-
-| Setting | Default | Description |
+| Symptom | Cause | Fix |
 |---|---|---|
-| `maxConcurrency` | 4 | Concurrent outbound API requests |
-| `maxQueueSize` | 200 | Maximum queued outbound requests |
-| `maxRequestsPerMinute` | 120 | Per-minute API budget |
-| `maxRetries` | 4 | Retry count for failed API requests |
-| `baseRetryDelayMs` | 300 | Base delay for exponential backoff |
-| `requestTimeoutMs` | 15000 | Per-request timeout |
-
-For multi-instance deployments, provide a `rateLimit.store` to coordinate API budget across processes. See the [README](../README.md#distributed-rate-limiting) for the store interface.
-
-## Production Checklist
-
-Before going live:
-
-- [ ] `feedLabel` and `contentLanguage` match your existing MC identity (or are intentionally new)
-- [ ] At least one product pushed successfully with correct identity (no duplicates)
-- [ ] Field mappings produce correct values for title, link, imageLink, availability
-- [ ] `siteUrl` is set if using `extractAbsoluteUrl` transform
-- [ ] `access` function is configured for your role model
-- [ ] Old sync systems are disabled (if migrating)
-- [ ] Deep health check passes (`/api/gmc/health?deep=true`)
-- [ ] Sync mode is appropriate for your workflow
-- [ ] If using `scheduled` mode, scheduling is configured and tested
-- [ ] If using `payload-jobs`, a worker is running for the `gmc-sync` queue
-- [ ] If using `external` strategy, `apiKey` is set and cron is configured
-- [ ] Rate limit settings are appropriate for your catalog size
-- [ ] Sync logs are reviewed for any errors after initial sync
+| Deep health check fails | Service account credentials or permissions wrong | Verify credentials in env, check MC account access |
+| Push returns "Missing required fields" | title, link, imageLink, or availability not set | Add field mappings or set in `beforePush` |
+| Products duplicated in MC | Identity mismatch — feedLabel, contentLanguage, or offerId doesn't match | Check existing MC product identity, align `defaults` and `identityField` |
+| Push succeeds but snapshot is stale | MC product propagation delay (30-90 seconds) | Use "Refresh Snapshot" after a few minutes |
+| Batch job stuck on "running" | Should not happen — if it does, check sync logs for errors | Review `gmc-sync-log` entries; check server logs |
+| `RateLimitQueueOverflowError` | Too many concurrent pushes (e.g., bulk save triggered 1000+ onChange pushes) | Expected behavior — overflow products stay dirty and sync on next scheduled run |
+| 429 from Google API | MC API quota exceeded | Reduce `maxRequestsPerMinute` or add a `rateLimit.store` for distributed limiting |

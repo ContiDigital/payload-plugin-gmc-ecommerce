@@ -193,7 +193,7 @@ export const createMerchantService = (
             }
           }
 
-          void onProgress?.(report)
+          await onProgress?.(report)
         }
 
         report.status = report.failed > 0 && report.succeeded === 0 ? 'failed' : 'completed'
