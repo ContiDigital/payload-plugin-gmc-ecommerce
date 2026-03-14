@@ -197,10 +197,7 @@ export const pushProduct = async (args: {
       ...(warning ? { warning } : {}),
     }
   } catch (error) {
-    let message = error instanceof Error ? error.message : String(error)
-    if (error instanceof GoogleApiError && error.responseBody) {
-      message += ` | Response: ${JSON.stringify(error.responseBody)}`
-    }
+    const message = error instanceof Error ? error.message : String(error)
     log.error('Push failed', { error: message })
     await updateSyncMeta(payload, collectionSlug, productId, {
       lastError: message,

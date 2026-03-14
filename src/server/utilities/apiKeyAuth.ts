@@ -25,15 +25,7 @@ const timingSafeEqual = (a: string, b: string): boolean => {
 }
 
 export const getRequestApiKey = (req: PayloadRequest): string | undefined => {
-  const url = new URL(req.url || '', 'http://localhost')
-
-  // 1. Query parameter: ?key=...
-  const queryKey = url.searchParams.get('key')
-  if (queryKey) {
-    return queryKey
-  }
-
-  // 2. Custom header: x-gmc-api-key
+  // 1. Custom header: x-gmc-api-key
   const headerKey = req.headers.get('x-gmc-api-key')
   if (headerKey) {
     return headerKey

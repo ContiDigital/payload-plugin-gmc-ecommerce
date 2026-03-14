@@ -410,7 +410,7 @@ describe('pushSync', () => {
       data: {
         [MC_FIELD_GROUP_NAME]: {
           syncMeta: {
-            lastError: expect.stringContaining('Response: {"code":"INVALID_ARGUMENT"}'),
+            lastError: 'Bad request',
             state: 'error',
           },
         },
