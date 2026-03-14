@@ -78,23 +78,27 @@ export const useMerchantCenterDashboard = (
 
     pollRef.current = setInterval(() => {
       void (async () => {
-        const currentLogs = await fetchLogs()
-        const job = currentLogs.find((entry) => entry.jobId === jobId)
+        try {
+          const currentLogs = await fetchLogs()
+          const job = currentLogs.find((entry) => entry.jobId === jobId)
 
-        if (!job || job.status === 'running') {
-          return
+          if (!job || job.status === 'running') {
+            return
+          }
+
+          if (pollRef.current) {
+            clearInterval(pollRef.current)
+            pollRef.current = null
+          }
+
+          setActiveJob(null)
+          setMessage({
+            type: job.failed > 0 && job.succeeded === 0 ? 'error' : 'success',
+            text: `${job.type}: ${job.succeeded} succeeded, ${job.failed} failed out of ${job.total}`,
+          })
+        } catch {
+          // Polling fetch failed; next interval will retry
         }
-
-        if (pollRef.current) {
-          clearInterval(pollRef.current)
-          pollRef.current = null
-        }
-
-        setActiveJob(null)
-        setMessage({
-          type: job.failed > 0 && job.succeeded === 0 ? 'error' : 'success',
-          text: `${job.type}: ${job.succeeded} succeeded, ${job.failed} failed out of ${job.total}`,
-        })
       })()
     }, 2_000)
   }, [fetchLogs])

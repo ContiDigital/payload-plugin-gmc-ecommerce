@@ -12,7 +12,11 @@ import {
   parseMappingsInput,
   parseSyncProductInput,
 } from '../server/utilities/validation.js'
-import { createHandledEndpoint, createUserEndpoint, createWorkerEndpoint } from './endpointFactory.js'
+import {
+  createHandledEndpoint,
+  createUserEndpoint,
+  createWorkerEndpoint,
+} from './endpointFactory.js'
 import {
   DIRTY_SYNC_FILTER,
   getService,
@@ -42,10 +46,11 @@ export const applyEndpointEnhancements = (
       parseBody: parseSyncProductInput,
       path: `${basePath}/product/push`,
       rateLimitKey: 'push',
-      run: ({ body, req, service }) => service.pushProduct({
-        payload: req.payload,
-        productId: body.productId,
-      }),
+      run: ({ body, req, service }) =>
+        service.pushProduct({
+          payload: req.payload,
+          productId: body.productId,
+        }),
     }),
     createUserEndpoint({
       method: 'post',
@@ -53,10 +58,11 @@ export const applyEndpointEnhancements = (
       parseBody: parseSyncProductInput,
       path: `${basePath}/product/pull`,
       rateLimitKey: 'pull',
-      run: ({ body, req, service }) => service.pullProduct({
-        payload: req.payload,
-        productId: body.productId,
-      }),
+      run: ({ body, req, service }) =>
+        service.pullProduct({
+          payload: req.payload,
+          productId: body.productId,
+        }),
     }),
     createUserEndpoint({
       method: 'post',
@@ -64,10 +70,11 @@ export const applyEndpointEnhancements = (
       parseBody: parseSyncProductInput,
       path: `${basePath}/product/delete`,
       rateLimitKey: 'delete',
-      run: ({ body, req, service }) => service.deleteProduct({
-        payload: req.payload,
-        productId: body.productId,
-      }),
+      run: ({ body, req, service }) =>
+        service.deleteProduct({
+          payload: req.payload,
+          productId: body.productId,
+        }),
     }),
     createUserEndpoint({
       method: 'post',
@@ -75,10 +82,11 @@ export const applyEndpointEnhancements = (
       parseBody: parseSyncProductInput,
       path: `${basePath}/product/refresh`,
       rateLimitKey: 'refresh',
-      run: ({ body, req, service }) => service.refreshSnapshot({
-        payload: req.payload,
-        productId: body.productId,
-      }),
+      run: ({ body, req, service }) =>
+        service.refreshSnapshot({
+          payload: req.payload,
+          productId: body.productId,
+        }),
     }),
     createUserEndpoint({
       method: 'post',
@@ -86,11 +94,12 @@ export const applyEndpointEnhancements = (
       parseBody: parseAnalyticsInput,
       path: `${basePath}/product/analytics`,
       rateLimitKey: 'analytics',
-      run: ({ body, req, service }) => service.getProductAnalytics({
-        payload: req.payload,
-        productId: body.productId,
-        rangeDays: body.rangeDays,
-      }),
+      run: ({ body, req, service }) =>
+        service.getProductAnalytics({
+          payload: req.payload,
+          productId: body.productId,
+          rangeDays: body.rangeDays,
+        }),
     }),
     createUserEndpoint({
       method: 'post',
@@ -127,10 +136,11 @@ export const applyEndpointEnhancements = (
       parseBody: parseMappingsInput,
       path: `${basePath}/mappings`,
       requiresService: false,
-      run: ({ body, req }) => replaceMappings({
-        mappings: body.mappings,
-        req,
-      }),
+      run: ({ body, req }) =>
+        replaceMappings({
+          mappings: body.mappings,
+          req,
+        }),
     }),
     createHandledEndpoint({
       method: 'get',
@@ -180,10 +190,11 @@ export const applyEndpointEnhancements = (
       parseBody: parseSyncProductInput,
       path: `${basePath}/worker/product/push`,
       rateLimitKey: 'push',
-      run: ({ body, req, service }) => service.pushProduct({
-        payload: req.payload,
-        productId: body.productId,
-      }),
+      run: ({ body, req, service }) =>
+        service.pushProduct({
+          payload: req.payload,
+          productId: body.productId,
+        }),
     }),
     createWorkerEndpoint({
       method: 'post',
@@ -191,19 +202,19 @@ export const applyEndpointEnhancements = (
       parseBody: parseDeleteProductInput,
       path: `${basePath}/worker/product/delete`,
       rateLimitKey: 'delete',
-      run: async ({ body, req, service }) => {
+      run: ({ body, req, service }) => {
         const resolvedIdentity = resolveDeleteIdentity(body.identity, options)
 
         return resolvedIdentity
           ? service.deleteProductByIdentity({
-            identity: resolvedIdentity,
-            payload: req.payload,
-            productId: body.productId,
-          })
+              identity: resolvedIdentity,
+              payload: req.payload,
+              productId: body.productId,
+            })
           : service.deleteProduct({
-            payload: req.payload,
-            productId: body.productId,
-          })
+              payload: req.payload,
+              productId: body.productId,
+            })
       },
     }),
     createWorkerEndpoint({
@@ -211,10 +222,11 @@ export const applyEndpointEnhancements = (
       options,
       path: `${basePath}/worker/batch/push-dirty`,
       rateLimitKey: 'batch-push',
-      run: ({ req, service }) => service.pushBatch({
-        filter: DIRTY_SYNC_FILTER,
-        payload: req.payload,
-      }),
+      run: ({ req, service }) =>
+        service.pushBatch({
+          filter: DIRTY_SYNC_FILTER,
+          payload: req.payload,
+        }),
     }),
     createWorkerEndpoint({
       method: 'post',
@@ -222,10 +234,11 @@ export const applyEndpointEnhancements = (
       parseBody: parseInitialSyncInput,
       path: `${basePath}/worker/batch/initial-sync`,
       rateLimitKey: 'initial-sync',
-      run: ({ body, req, service }) => service.runInitialSync({
-        overrides: body,
-        payload: req.payload,
-      }),
+      run: ({ body, req, service }) =>
+        service.runInitialSync({
+          overrides: body,
+          payload: req.payload,
+        }),
     }),
     createWorkerEndpoint({
       method: 'post',
@@ -272,13 +285,14 @@ export const applyEndpointEnhancements = (
       path: `${basePath}/batch/push-dirty`,
       rateLimitKey: 'batch-push',
       requiresService: false,
-      run: ({ req }) => startDirtySyncDispatch({
-        jobId: `gmc-batch-dirty-${Date.now().toString(36)}`,
-        metadata: { trigger: 'manual-dirty-push' },
-        options,
-        req,
-        triggeredBy: req.user?.email ?? 'system',
-      }),
+      run: ({ req }) =>
+        startDirtySyncDispatch({
+          jobId: `gmc-batch-dirty-${Date.now().toString(36)}`,
+          metadata: { trigger: 'manual-dirty-push' },
+          options,
+          req,
+          triggeredBy: req.user?.email ?? 'system',
+        }),
     }),
   ]
 

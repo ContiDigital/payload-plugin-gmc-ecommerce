@@ -8,6 +8,10 @@ import { getMerchantServiceInstance } from '../plugin/serviceRegistry.js'
 import { shouldSkipSyncHooks } from '../server/sync/hookContext.js'
 import { createPluginLogger } from '../server/utilities/logger.js'
 
+// Prevents duplicate concurrent pushes for the same product when rapid saves
+// trigger multiple afterChange hooks before the first push completes.
+const inFlightPushes = new Set<string>()
+
 export const createAfterChangeHook = (
   options: NormalizedPluginOptions,
 ): CollectionAfterChangeHook => {
@@ -55,13 +59,24 @@ export const createAfterChangeHook = (
       return doc
     }
 
+    if (inFlightPushes.has(productId)) {
+      log.info('Skipping duplicate onChange push (already in-flight)')
+      return doc
+    }
+
     const payloadInstance = req.payload
+    inFlightPushes.add(productId)
     setImmediate(() => {
-      service.pushProduct({ payload: payloadInstance, productId }).catch((error) => {
-        const message = error instanceof Error ? error.message : String(error)
-        log.error('onChange sync failed', { error: message })
-        void createSyncLogEntry(payloadInstance, productId, message, 'onChange:push')
-      })
+      service
+        .pushProduct({ payload: payloadInstance, productId })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error)
+          log.error('onChange sync failed', { error: message })
+          void createSyncLogEntry(payloadInstance, productId, message, 'onChange:push')
+        })
+        .finally(() => {
+          inFlightPushes.delete(productId)
+        })
     })
 
     return doc

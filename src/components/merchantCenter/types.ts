@@ -38,9 +38,17 @@ export type ProductSyncMeta = {
   syncSource?: string
 }
 
+export type PerformanceRow = {
+  clicks: number
+  clickThroughRate: number
+  conversions: number
+  date: string
+  impressions: number
+}
+
 export type ProductAnalytics = {
   merchantProductId?: string
-  performance?: unknown[]
+  performance?: PerformanceRow[]
   status?: Record<string, unknown>
 }
 
