@@ -16,7 +16,28 @@ const jsonResponse = (data: unknown, status = 200): Response => new Response(
 )
 
 describe('productSyncApi', () => {
-  test('buildProductStatusEntries stringifies non-string status values', () => {
+  test('buildProductStatusEntries parses MC statusPerReportingContext array', () => {
+    expect(buildProductStatusEntries({
+      aggregatedReportingContextStatus: 'ELIGIBLE',
+      statusPerReportingContext: [
+        { approvedCountries: ['US', 'CA'], reportingContext: 'SHOPPING_ADS' },
+        { disapprovedCountries: ['US'], reportingContext: 'FREE_LISTINGS' },
+      ],
+    })).toEqual([
+      { context: 'SHOPPING_ADS', status: 'APPROVED (US, CA)' },
+      { context: 'FREE_LISTINGS', status: 'DISAPPROVED (US)' },
+    ])
+  })
+
+  test('buildProductStatusEntries falls back to aggregatedReportingContextStatus', () => {
+    expect(buildProductStatusEntries({
+      aggregatedReportingContextStatus: 'ELIGIBLE',
+    })).toEqual([
+      { context: 'Overall', status: 'ELIGIBLE' },
+    ])
+  })
+
+  test('buildProductStatusEntries falls back to flat key-value for legacy shapes', () => {
     expect(buildProductStatusEntries({
       destination: 'approved',
       issueSummary: { count: 0 },

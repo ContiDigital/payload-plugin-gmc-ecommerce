@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-03-18
+
+### Fixed
+
+- Analytics performance data not loading — MC Reports API returns `offer_id` in lowercase in `product_performance_view`; query now lowercases the offerId for performance lookups
+- Reports API response parsing — results are wrapped in view-specific keys (`productPerformanceView`, `productView`) that were not being unwrapped
+- Date parsing — MC returns dates as `{year, month, day}` objects, not strings; now correctly formatted as `YYYY-MM-DD`
+- Status query now requests `status_per_reporting_context` for per-destination approval details (SHOPPING_ADS, FREE_LISTINGS, etc.)
+- `buildProductStatusEntries` now properly parses MC's `statusPerReportingContext` array into readable status entries
+
 ## [1.0.0] - 2026-03-07
 
 ### Added

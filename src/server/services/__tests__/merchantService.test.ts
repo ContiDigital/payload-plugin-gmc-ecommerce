@@ -230,24 +230,34 @@ describe('createMerchantService', () => {
       }),
     }
 
+    // MC Reports API wraps rows in view-specific keys
     apiClient.reportQuery
       .mockResolvedValueOnce({
         data: {
           results: [{
-            aggregatedReportingContextStatus: 'ACTIVE',
-            offerId: 'SKU-123',
-            title: 'Analytics Product',
+            productView: {
+              id: 'en~US~SKU-123',
+              aggregatedReportingContextStatus: 'ELIGIBLE',
+              offerId: 'SKU-123',
+              statusPerReportingContext: [
+                { approvedCountries: ['US', 'CA'], reportingContext: 'SHOPPING_ADS' },
+                { approvedCountries: ['US'], reportingContext: 'FREE_LISTINGS' },
+              ],
+              title: 'Analytics Product',
+            },
           }],
         },
       })
       .mockResolvedValueOnce({
         data: {
           results: [{
-            click_through_rate: '0.25',
-            clicks: '5',
-            conversions: '2',
-            date: '2026-03-06',
-            impressions: '20',
+            productPerformanceView: {
+              clicks: '5',
+              clickThroughRate: 0.25,
+              conversions: '2',
+              date: { day: 6, month: 3, year: 2026 },
+              impressions: '20',
+            },
           }],
         },
       })
@@ -263,7 +273,8 @@ describe('createMerchantService', () => {
     const statusQuery = apiClient.reportQuery.mock.calls[0]?.[0]
     const perfQuery = apiClient.reportQuery.mock.calls[1]?.[0]
     expect(statusQuery).toContain("product_view.id = 'en~US~SKU-123'")
-    expect(perfQuery).toContain("product_performance_view.offer_id = 'SKU-123'")
+    expect(statusQuery).toContain('status_per_reporting_context')
+    expect(perfQuery).toContain("product_performance_view.offer_id = 'sku-123'")
     expect(analytics).toEqual({
       merchantProductId: 'en~US~SKU-123',
       performance: [{
@@ -274,8 +285,13 @@ describe('createMerchantService', () => {
         impressions: 20,
       }],
       status: {
-        aggregatedReportingContextStatus: 'ACTIVE',
+        id: 'en~US~SKU-123',
+        aggregatedReportingContextStatus: 'ELIGIBLE',
         offerId: 'SKU-123',
+        statusPerReportingContext: [
+          { approvedCountries: ['US', 'CA'], reportingContext: 'SHOPPING_ADS' },
+          { approvedCountries: ['US'], reportingContext: 'FREE_LISTINGS' },
+        ],
         title: 'Analytics Product',
       },
     })

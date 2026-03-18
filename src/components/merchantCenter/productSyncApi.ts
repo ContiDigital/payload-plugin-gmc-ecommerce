@@ -20,6 +20,33 @@ export const buildProductStatusEntries = (
     return []
   }
 
+  // MC product_view returns statusPerReportingContext as an array of
+  // { reportingContext, approvedCountries?, disapprovedCountries? }
+  const perContext = status.statusPerReportingContext
+  if (Array.isArray(perContext)) {
+    return perContext.map((entry: Record<string, unknown>) => {
+      const rawContext = entry.reportingContext
+      const context = typeof rawContext === 'string' ? rawContext : 'UNKNOWN'
+      const approved = Array.isArray(entry.approvedCountries) ? entry.approvedCountries : []
+      const disapproved = Array.isArray(entry.disapprovedCountries) ? entry.disapprovedCountries : []
+      let entryStatus: string
+      if (disapproved.length > 0) {
+        entryStatus = `DISAPPROVED (${disapproved.join(', ')})`
+      } else if (approved.length > 0) {
+        entryStatus = `APPROVED (${approved.join(', ')})`
+      } else {
+        entryStatus = 'PENDING'
+      }
+      return { context, status: entryStatus }
+    })
+  }
+
+  // Fallback: if aggregatedReportingContextStatus is present, show it as a single entry
+  if (typeof status.aggregatedReportingContextStatus === 'string') {
+    return [{ context: 'Overall', status: status.aggregatedReportingContextStatus }]
+  }
+
+  // Legacy fallback: treat as flat key-value pairs
   return Object.entries(status).map(([context, value]) => ({
     context,
     status: typeof value === 'string' ? value : JSON.stringify(value),

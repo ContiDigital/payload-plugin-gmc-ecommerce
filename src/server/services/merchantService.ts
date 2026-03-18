@@ -276,12 +276,13 @@ export const createMerchantService = (
       }
 
       const safeProductId = assertSafeQueryValue(identity.merchantProductId, 'merchantProductId')
-      const safeOfferId = assertSafeQueryValue(identity.offerId, 'offerId')
+      // MC Reports API stores offer_id in lowercase — always lowercase for performance queries
+      const safeOfferId = assertSafeQueryValue(identity.offerId.toLowerCase(), 'offerId')
       const safeStartDate = assertSafeQueryValue(formatDate(startDate), 'startDate')
       const safeEndDate = assertSafeQueryValue(formatDate(endDate), 'endDate')
 
       // Product status query
-      const statusQuery = `SELECT product_view.id, product_view.offer_id, product_view.title, product_view.aggregated_reporting_context_status FROM product_view WHERE product_view.id = '${safeProductId}'`
+      const statusQuery = `SELECT product_view.id, product_view.offer_id, product_view.title, product_view.aggregated_reporting_context_status, product_view.status_per_reporting_context FROM product_view WHERE product_view.id = '${safeProductId}'`
 
       // Performance query
       const perfQuery = `SELECT date, impressions, clicks, click_through_rate, conversions FROM product_performance_view WHERE product_performance_view.offer_id = '${safeOfferId}' AND date BETWEEN '${safeStartDate}' AND '${safeEndDate}' ORDER BY date`
@@ -297,23 +298,49 @@ export const createMerchantService = (
         ),
       ])
 
-      const status = statusResult.status === 'fulfilled'
+      // MC Reports API wraps each row: { productView: { ... } } or { productPerformanceView: { ... } }
+      const unwrapRow = (row: Record<string, unknown>): Record<string, unknown> => {
+        for (const key of ['productView', 'productPerformanceView', 'priceInsightsProductView']) {
+          if (row[key] && typeof row[key] === 'object') {
+            return row[key] as Record<string, unknown>
+          }
+        }
+        return row
+      }
+
+      // MC date fields are { year, month, day } objects — convert to YYYY-MM-DD string
+      const formatMcDate = (val: unknown): string => {
+        if (typeof val === 'string') {
+          return val
+        }
+        if (val && typeof val === 'object' && 'year' in val && 'month' in val && 'day' in val) {
+          const d = val as { day: number; month: number; year: number }
+          return `${d.year}-${String(d.month).padStart(2, '0')}-${String(d.day).padStart(2, '0')}`
+        }
+        return ''
+      }
+
+      const statusRow = statusResult.status === 'fulfilled'
         ? statusResult.value.data.results?.[0]
         : undefined
+      const status = statusRow ? unwrapRow(statusRow) : undefined
 
-      const performanceRows = perfResult.status === 'fulfilled'
+      const rawPerfRows = perfResult.status === 'fulfilled'
         ? (perfResult.value.data.results ?? [])
         : []
 
       return {
         merchantProductId: identity.merchantProductId,
-        performance: performanceRows.map((row: Record<string, unknown>) => ({
-          clicks: Number(row.clicks ?? 0),
-          clickThroughRate: Number(row.clickThroughRate ?? row.click_through_rate ?? 0),
-          conversions: Number(row.conversions ?? 0),
-          date: typeof row.date === 'string' ? row.date : '',
-          impressions: Number(row.impressions ?? 0),
-        })),
+        performance: rawPerfRows.map((raw: Record<string, unknown>) => {
+          const row = unwrapRow(raw)
+          return {
+            clicks: Number(row.clicks ?? 0),
+            clickThroughRate: Number(row.clickThroughRate ?? row.click_through_rate ?? 0),
+            conversions: Number(row.conversions ?? 0),
+            date: formatMcDate(row.date),
+            impressions: Number(row.impressions ?? 0),
+          }
+        }),
         status,
       }
     },
