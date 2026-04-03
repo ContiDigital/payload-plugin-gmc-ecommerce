@@ -158,6 +158,73 @@ export type MCArrayField = MCAttributeValueRow[] | string[]
 export type MCUrlArrayField = MCAttributeUrlRow[] | string[]
 
 // ---------------------------------------------------------------------------
+// Local inventory (Inventories sub-API)
+// ---------------------------------------------------------------------------
+
+export type LocalInventoryAvailability = 'in_stock' | 'out_of_stock'
+
+/**
+ * Pickup SLA turnaround time values accepted by Google Merchant API v1.
+ * Google displays the expected pickup date based on this + store hours from GBP.
+ * Use 'MULTI_WEEK' for a generic "Store pick-up" annotation without a specific date.
+ *
+ * @see https://developers.google.com/merchant/api/reference/rpc/google.shopping.merchant.inventories.v1
+ */
+export type LocalInventoryPickupSla =
+  | 'MULTI_WEEK'
+  | 'NEXT_DAY'
+  | 'SAME_DAY'
+  | 'TWO_DAY'
+  | 'THREE_DAY'
+  | 'FOUR_DAY'
+  | 'FIVE_DAY'
+  | 'SIX_DAY'
+  | 'SEVEN_DAY'
+
+export type LocalInventoryPickupConfig = {
+  /**
+   * Pickup SLA turnaround time. Google will display the expected pickup date based on this value
+   * and your store's opening hours from Google Business Profile.
+   *
+   * Note: As of September 2024, Google only requires pickupSla. The pickupMethod attribute
+   * is deprecated and should NOT be submitted.
+   */
+  sla: LocalInventoryPickupSla
+}
+
+export type LocalInventoryConfig = {
+  /** Enable local inventory sync. When enabled, in-stock products are synced to the specified store. */
+  enabled?: boolean
+  /** Custom resolver returning 'in_stock' for products that should appear as locally available, or null to remove. */
+  availabilityResolver?: (doc: Record<string, unknown>) => LocalInventoryAvailability | null
+  /** Optional pickup configuration. When set, products are marked as available for in-store pickup. */
+  pickup?: LocalInventoryPickupConfig
+  /** Your Google Business Profile store code for the physical location. */
+  storeCode: string
+}
+
+export type NormalizedLocalInventoryConfig = {
+  availabilityResolver?: (doc: Record<string, unknown>) => LocalInventoryAvailability | null
+  enabled: boolean
+  pickup?: LocalInventoryPickupConfig
+  storeCode: string
+}
+
+export type LocalInventoryInput = {
+  availability: string
+  price?: MCPrice
+  storeCode: string
+}
+
+export type LocalInventorySyncResult = {
+  action: 'delete' | 'insert'
+  error?: string
+  productId: string
+  storeCode: string
+  success: boolean
+}
+
+// ---------------------------------------------------------------------------
 // Merchant Center product attributes
 // ---------------------------------------------------------------------------
 
@@ -503,6 +570,8 @@ export type PayloadGMCEcommercePluginOptions = {
   }
   disabled?: boolean
   getCredentials: GetCredentialsFn
+  /** Local inventory configuration for syncing in-store availability to Google. */
+  localInventory?: LocalInventoryConfig
   merchantId: string
   rateLimit?: RateLimitConfig
   /** Base URL of your site (e.g. 'https://example.com'). Used by extractAbsoluteUrl transform to resolve relative media URLs. */
@@ -539,6 +608,7 @@ export type NormalizedPluginOptions = {
   }
   disabled: boolean
   getCredentials: GetCredentialsFn
+  localInventory: NormalizedLocalInventoryConfig
   merchantId: string
   rateLimit: {
     baseRetryDelayMs: number

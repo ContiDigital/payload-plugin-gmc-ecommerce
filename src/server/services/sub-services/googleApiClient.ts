@@ -271,14 +271,68 @@ export const createGoogleApiClient = (options: NormalizedPluginOptions) => {
     )
   }
 
+  // -----------------------------------------------------------------------
+  // Local Inventory methods (Inventories sub-API)
+  // -----------------------------------------------------------------------
+
+  const insertLocalInventory = async (
+    productName: string,
+    localInventory: Record<string, unknown>,
+    payload: null | Payload,
+  ) => {
+    return request<Record<string, unknown>>(
+      {
+        body: localInventory,
+        method: 'POST',
+        path: `${productName}/localInventories:insert`,
+        subApi: 'inventories',
+      },
+      payload,
+    )
+  }
+
+  const deleteLocalInventory = async (
+    productName: string,
+    storeCode: string,
+    payload: null | Payload,
+  ) => {
+    return request<void>(
+      {
+        method: 'DELETE',
+        path: `${productName}/localInventories/${storeCode}`,
+        subApi: 'inventories',
+      },
+      payload,
+    )
+  }
+
+  const listLocalInventories = async (
+    productName: string,
+    payload: null | Payload,
+    pageSize = 250,
+  ) => {
+    return request<{ localInventories?: Record<string, unknown>[]; nextPageToken?: string }>(
+      {
+        method: 'GET',
+        params: { pageSize: String(pageSize) },
+        path: `${productName}/localInventories`,
+        subApi: 'inventories',
+      },
+      payload,
+    )
+  }
+
   const resetTokenCache = (): void => {
     cachedToken = null
   }
 
   return {
+    deleteLocalInventory,
     deleteProductInput,
     getProduct,
+    insertLocalInventory,
     insertProductInput,
+    listLocalInventories,
     listProducts,
     reportQuery,
     request,

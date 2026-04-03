@@ -14,6 +14,7 @@ import { asProductDoc } from '../utilities/recordUtils.js'
 import { extractMCProductLastModified, isRemoteNewerThanLocal } from './conflictResolver.js'
 import { buildInternalSyncContext } from './hookContext.js'
 import { resolveIdentity } from './identityResolver.js'
+import { syncLocalInventory } from './localInventorySync.js'
 import { prepareProductForSync, validateRequiredProductInput } from './productPreparation.js'
 import { productAttributesContainRemoteSubset, reverseTransformProduct } from './transformers.js'
 
@@ -188,6 +189,29 @@ export const pushProduct = async (args: {
       depth: 0,
       overrideAccess: true,
     })
+
+    // 9. Sync local inventory (non-critical — failures are logged but don't fail the push)
+    if (options.localInventory.enabled) {
+      const availability = input.productAttributes?.availability
+      const localAvailability = options.localInventory.availabilityResolver
+        ? options.localInventory.availabilityResolver(preparedProduct)
+        : availability === 'IN_STOCK' ? 'in_stock' as const : null
+
+      await syncLocalInventory({
+        apiClient,
+        identity,
+        localAvailability,
+        options,
+        payload,
+        price: input.productAttributes?.price,
+        productId,
+        retryService,
+      }).catch((err) => {
+        log.warn('Local inventory sync failed (non-critical)', {
+          error: err instanceof Error ? err.message : String(err),
+        })
+      })
+    }
 
     return {
       action,

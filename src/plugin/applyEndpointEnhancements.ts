@@ -294,6 +294,22 @@ export const applyEndpointEnhancements = (
           triggeredBy: req.user?.email ?? 'system',
         }),
     }),
+    // Local inventory reconciliation
+    createWorkerEndpoint({
+      method: 'post',
+      options,
+      path: `${basePath}/worker/local-inventory/reconcile`,
+      rateLimitKey: 'local-inventory-reconcile',
+      run: ({ req, service }) => service.reconcileLocalInventory({ payload: req.payload }),
+    }),
+    createUserEndpoint({
+      method: 'post',
+      options,
+      path: `${basePath}/local-inventory/reconcile`,
+      rateLimitKey: 'local-inventory-reconcile',
+      requiresService: true,
+      run: ({ req, service }) => service!.reconcileLocalInventory({ payload: req.payload }),
+    }),
   ]
 
   config.endpoints.push(...endpoints)

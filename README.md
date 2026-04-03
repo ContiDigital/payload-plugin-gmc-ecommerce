@@ -202,9 +202,112 @@ payloadGmcEcommerce({
   beforePush?: async ({ doc, operation, payload, productInput }) => MCProductInput,
     // The key integration point. See "The beforePush Hook" below.
 
+  // --- Local Inventory (for Local Ads / Free Local Listings) ---
+  localInventory?: {
+    enabled?: boolean,              // default: false
+    storeCode: string,              // Google Business Profile store code
+    pickup?: {
+      sla: LocalInventoryPickupSla,
+        // 'SAME_DAY' | 'NEXT_DAY' | 'TWO_DAY' | ... | 'SEVEN_DAY' | 'MULTI_WEEK'
+        // Omit pickup entirely for "On Display in Store" only (ships to customer)
+    },
+    availabilityResolver?: (doc) => 'in_stock' | null,
+      // Optional custom resolver. Return 'in_stock' for products that should
+      // appear as locally available; return null to remove the local entry.
+      // Default: checks if MC availability is 'IN_STOCK' after beforePush.
+  },
+
   // --- Disable ---
   disabled?: boolean,  // default: false
 })
+```
+
+## Local Inventory (Local Ads & Free Local Listings)
+
+The plugin supports Google's [Inventories sub-API](https://developers.google.com/merchant/api/guides/inventories) for **Local Inventory Ads** and **Free Local Listings**. This lets your in-stock products appear in Google's local shopping results, tied to your physical store location.
+
+### How It Works
+
+When `localInventory.enabled` is `true`:
+
+1. **On every product push**: after the product is successfully synced to Merchant Center, the plugin checks if the product is in-stock (via `availabilityResolver` or the resolved MC `availability` attribute).
+   - **In-stock** → inserts a local inventory entry for your store (`insertLocalInventory`)
+   - **Not in-stock** → deletes the local inventory entry (`deleteLocalInventory`)
+2. Local inventory sync is **non-critical** — failures are logged but do not fail the product push.
+3. A **reconciliation endpoint** is available for batch operations and nightly cron jobs.
+
+### Prerequisites
+
+Before enabling local inventory in the plugin, complete these steps in Google Merchant Center:
+
+1. **Link your Google Business Profile** to your Merchant Center account (your physical store must be listed)
+2. **Enable the Free Local Listings and/or Local Inventory Ads add-on** (Settings → Add-ons)
+3. **Configure your in-store product experience** (e.g., "On Display in Store" for showroom products shipped to customers)
+4. **Note your store code** from Google Business Profile — this is the `storeCode` you'll pass to the plugin
+
+### Configuration
+
+```ts
+payloadGmcEcommerce({
+  // ... other options
+  localInventory: {
+    enabled: true,
+    storeCode: 'your-gbp-store-code',
+
+    // Optional: pickup configuration for "Pickup Later"
+    // Omit this for "On Display in Store" only (items ship to customer)
+    pickup: {
+      sla: 'MULTI_WEEK',  // or 'SAME_DAY', 'NEXT_DAY', 'TWO_DAY' ... 'SEVEN_DAY'
+    },
+
+    // Optional: custom logic for which products are locally available
+    availabilityResolver: (doc) => {
+      return doc.stockStatus === 'in-stock' ? 'in_stock' : null
+    },
+  },
+})
+```
+
+### Pickup Configuration
+
+The `pickup` option controls whether in-stock products are also available for in-store pickup. This is separate from "On Display in Store" (which shows products viewable in the showroom but shipped to customers).
+
+| `pickup.sla` | Google Annotation | Use Case |
+|---|---|---|
+| `'SAME_DAY'` | "Pickup today" | Item is ready for same-day pickup |
+| `'NEXT_DAY'` | "Pickup tomorrow" | Ready next business day |
+| `'TWO_DAY'` to `'SEVEN_DAY'` | "Pickup in X days" | Needs packaging/preparation time |
+| `'MULTI_WEEK'` | "Store pick-up" | Generic annotation, no specific date shown |
+| *(omit pickup entirely)* | No pickup annotation | "On Display in Store" only — item ships to customer |
+
+> **Note:** As of September 2024, Google only requires `pickupSla`. The `pickupMethod` attribute is deprecated and is NOT submitted by this plugin.
+
+**Example: Showroom with 7-day pickup prep time**
+```ts
+localInventory: {
+  enabled: true,
+  storeCode: 'bonita-springs-01',
+  pickup: { sla: 'SEVEN_DAY' },  // Google rounds to next open day based on GBP hours
+}
+```
+
+### Reconciliation Endpoint
+
+For nightly cron jobs or manual reconciliation, use:
+
+```
+POST /api/gmc/local-inventory/reconcile        (authenticated user)
+POST /api/gmc/worker/local-inventory/reconcile  (API key via X-GMC-API-Key header)
+```
+
+This iterates all MC-enabled products and ensures local inventory entries match their current stock status.
+
+### Programmatic Access
+
+```ts
+const service = getMerchantServiceInstance()
+const report = await service.reconcileLocalInventory({ payload })
+// { inserted: 42, deleted: 5, errors: 0, processed: 47, total: 47 }
 ```
 
 ## Merchant Center Product Identity

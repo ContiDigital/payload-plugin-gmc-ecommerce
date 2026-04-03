@@ -42,6 +42,7 @@ const buildOptions = (): NormalizedPluginOptions => ({
     feedLabel: 'US',
   },
   disabled: false,
+  localInventory: { enabled: false, storeCode: '' },
   getCredentials: () =>
     Promise.resolve({
       type: 'json' as const,

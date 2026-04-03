@@ -2,6 +2,7 @@ import type {
   AdminMode,
   CategoriesCollectionConfig,
   ConflictStrategy,
+  NormalizedLocalInventoryConfig,
   NormalizedPluginOptions,
   PayloadGMCEcommercePluginOptions,
   SyncMode,
@@ -96,6 +97,25 @@ const normalizeConflictStrategy = (value: string | undefined): ConflictStrategy 
     return value
   }
   return 'newest-wins'
+}
+
+const normalizeLocalInventory = (
+  config: PayloadGMCEcommercePluginOptions['localInventory'],
+): NormalizedLocalInventoryConfig => {
+  if (!config || !config.enabled) {
+    return { enabled: false, storeCode: '' }
+  }
+
+  if (!config.storeCode || typeof config.storeCode !== 'string' || config.storeCode.trim().length === 0) {
+    throw new Error(`${PLUGIN_SLUG}: localInventory.storeCode is required when localInventory is enabled`)
+  }
+
+  return {
+    availabilityResolver: config.availabilityResolver,
+    enabled: true,
+    pickup: config.pickup,
+    storeCode: config.storeCode.trim(),
+  }
 }
 
 const normalizeCategories = (
@@ -207,6 +227,7 @@ const buildNormalizedOptions = (
     },
     disabled: overrides.disabled,
     getCredentials: options.getCredentials,
+    localInventory: normalizeLocalInventory(options.localInventory),
     merchantId,
     rateLimit: {
       baseRetryDelayMs: normalizePositiveInteger(

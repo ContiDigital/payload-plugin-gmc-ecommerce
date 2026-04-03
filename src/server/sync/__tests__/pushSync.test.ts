@@ -48,6 +48,7 @@ const buildOptions = (overrides?: Partial<NormalizedPluginOptions>): NormalizedP
       type: 'json' as const,
       credentials: { client_email: 'test@example.com', private_key: 'key' },
     }),
+  localInventory: { enabled: false, storeCode: '' },
   merchantId: '123',
   rateLimit: {
     baseRetryDelayMs: 100,

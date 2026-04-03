@@ -113,9 +113,10 @@ const buildMerchantCenterFields = (options: NormalizedPluginOptions): Field => (
         {
           name: 'salePriceEffectiveDate',
           type: 'group',
+          admin: { description: 'ISO 8601 timestamps (e.g. 2026-04-03T00:00:00.000Z)' },
           fields: [
-            { name: 'startDate', type: 'date' },
-            { name: 'endDate', type: 'date' },
+            { name: 'startDate', type: 'text' },
+            { name: 'endDate', type: 'text' },
           ],
         },
         {

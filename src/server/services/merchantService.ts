@@ -19,6 +19,7 @@ import type { RetryService } from './sub-services/retryService.js'
 import { GMC_SYNC_QUEUE_NAME, MC_FIELD_GROUP_NAME } from '../../constants.js'
 import { resolveIdentity } from '../sync/identityResolver.js'
 import { runInitialSync } from '../sync/initialSync.js'
+import { reconcileLocalInventory } from '../sync/localInventorySync.js'
 import { pullAll, pullProduct } from '../sync/pullSync.js'
 import { deleteFromMC, deleteFromMCByIdentity, pushProduct, refreshSnapshot } from '../sync/pushSync.js'
 import { createPluginLogger } from '../utilities/logger.js'
@@ -43,6 +44,10 @@ export type MerchantService = {
     productId: string
     rangeDays: number
   }) => Promise<MCProductAnalytics>
+  reconcileLocalInventory: (args: {
+    onProgress?: (report: { deleted: number; errors: number; inserted: number; processed: number; total: number }) => void
+    payload: Payload
+  }) => Promise<{ deleted: number; errors: number; inserted: number; processed: number; total: number }>
   pullAllProducts: (args: {
     onProgress?: (report: PullAllReport) => Promise<void> | void
     payload: Payload
@@ -380,6 +385,9 @@ export const createMerchantService = (
         }
       }
     },
+
+    reconcileLocalInventory: async ({ onProgress, payload }) =>
+      reconcileLocalInventory({ apiClient, onProgress, options, payload, retryService }),
 
     cleanupSyncLogs: async ({ payload, ttlDays = 30 }) => {
       try {
