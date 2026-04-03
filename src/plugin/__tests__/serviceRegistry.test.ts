@@ -40,12 +40,12 @@ const buildOptions = (
     feedLabel: 'US',
   },
   disabled: false,
-  localInventory: { enabled: false, storeCode: '' },
   getCredentials: () =>
     Promise.resolve({
       type: 'json' as const,
       credentials: { client_email: 'test@example.com', private_key: 'key' },
     }),
+  localInventory: { enabled: false, storeCode: '' },
   merchantId,
   rateLimit: {
     baseRetryDelayMs: 100,

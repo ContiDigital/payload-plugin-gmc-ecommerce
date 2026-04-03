@@ -32,7 +32,6 @@ const buildOptions = (): NormalizedPluginOptions => ({
     feedLabel: 'US',
   },
   disabled: false,
-  localInventory: { enabled: false, storeCode: '' },
   getCredentials: () =>
     Promise.resolve({
       type: 'json' as const,
@@ -41,6 +40,7 @@ const buildOptions = (): NormalizedPluginOptions => ({
         private_key: privateKeyPem,
       },
     }),
+  localInventory: { enabled: false, storeCode: '' },
   merchantId: '123',
   rateLimit: {
     baseRetryDelayMs: 100,

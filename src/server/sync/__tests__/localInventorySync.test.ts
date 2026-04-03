@@ -1,7 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
 import type { NormalizedPluginOptions, ResolvedMCIdentity } from '../../../types/index.js'
+
 import { GoogleApiError } from '../../services/sub-services/googleApiClient.js'
-import { resolveLocalAvailability, syncLocalInventory, reconcileLocalInventory } from '../localInventorySync.js'
+import { reconcileLocalInventory, resolveLocalAvailability, syncLocalInventory } from '../localInventorySync.js'
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -53,8 +55,8 @@ const buildIdentity = (): ResolvedMCIdentity => ({
 })
 
 const mockApiClient = {
-  insertLocalInventory: vi.fn().mockResolvedValue({ data: {}, status: 200 }),
   deleteLocalInventory: vi.fn().mockResolvedValue({ data: undefined, status: 204 }),
+  insertLocalInventory: vi.fn().mockResolvedValue({ data: {}, status: 200 }),
   listLocalInventories: vi.fn().mockResolvedValue({ data: { localInventories: [] }, status: 200 }),
 }
 
@@ -63,8 +65,8 @@ const mockRetryService = {
 }
 
 const mockPayload = {
-  logger: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
   find: vi.fn(),
+  logger: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
 }
 
 beforeEach(() => {
@@ -135,11 +137,11 @@ describe('syncLocalInventory', () => {
     expect(mockApiClient.insertLocalInventory).toHaveBeenCalledWith(
       'accounts/123/products/en~US~SKU-001',
       {
-        storeCode: 'bonita-springs-01',
         localInventoryAttributes: {
           availability: 'IN_STOCK',
           price: { amountMicros: '5990000', currencyCode: 'USD' },
         },
+        storeCode: 'bonita-springs-01',
       },
       expect.anything(),
     )
@@ -161,11 +163,11 @@ describe('syncLocalInventory', () => {
     expect(mockApiClient.insertLocalInventory).toHaveBeenCalledWith(
       expect.anything(),
       {
-        storeCode: 'bonita-springs-01',
         localInventoryAttributes: expect.objectContaining({
-          pickupSla: 'MULTI_WEEK',
           availability: 'IN_STOCK',
+          pickupSla: 'MULTI_WEEK',
         }),
+        storeCode: 'bonita-springs-01',
       },
       expect.anything(),
     )
@@ -187,8 +189,8 @@ describe('syncLocalInventory', () => {
     expect(mockApiClient.insertLocalInventory).toHaveBeenCalledWith(
       expect.anything(),
       {
-        storeCode: 'bonita-springs-01',
         localInventoryAttributes: expect.objectContaining({ pickupSla: 'SIX_DAY' }),
+        storeCode: 'bonita-springs-01',
       },
       expect.anything(),
     )
@@ -313,17 +315,17 @@ describe('reconcileLocalInventory', () => {
         {
           id: '1',
           mc: {
+            attrs: { availability: 'IN_STOCK', price: { amountMicros: '1000000', currencyCode: 'USD' } },
             enabled: true,
             identity: { contentLanguage: 'en', feedLabel: 'US', offerId: 'SKU-1' },
-            attrs: { availability: 'IN_STOCK', price: { amountMicros: '1000000', currencyCode: 'USD' } },
           },
         },
         {
           id: '2',
           mc: {
+            attrs: { availability: 'OUT_OF_STOCK' },
             enabled: true,
             identity: { contentLanguage: 'en', feedLabel: 'US', offerId: 'SKU-2' },
-            attrs: { availability: 'OUT_OF_STOCK' },
           },
         },
       ],
@@ -368,9 +370,9 @@ describe('reconcileLocalInventory', () => {
     const docs = Array.from({ length: 30 }, (_, i) => ({
       id: String(i),
       mc: {
+        attrs: { availability: 'IN_STOCK' },
         enabled: true,
         identity: { contentLanguage: 'en', feedLabel: 'US', offerId: `SKU-${i}` },
-        attrs: { availability: 'IN_STOCK' },
       },
     }))
 

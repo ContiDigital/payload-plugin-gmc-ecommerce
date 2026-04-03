@@ -31,8 +31,8 @@ const mockOptions = (overrides?: Partial<NormalizedPluginOptions>): NormalizedPl
     feedLabel: 'US',
   },
   disabled: false,
-  localInventory: { enabled: false, storeCode: '' },
   getCredentials: () => Promise.resolve({ type: 'json' as const, credentials: { client_email: '', private_key: '' } }),
+  localInventory: { enabled: false, storeCode: '' },
   merchantId: '12345',
   rateLimit: {
     baseRetryDelayMs: 1000,

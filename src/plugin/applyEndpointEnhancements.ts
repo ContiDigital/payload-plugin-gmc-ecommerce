@@ -308,7 +308,7 @@ export const applyEndpointEnhancements = (
       path: `${basePath}/local-inventory/reconcile`,
       rateLimitKey: 'local-inventory-reconcile',
       requiresService: true,
-      run: ({ req, service }) => service!.reconcileLocalInventory({ payload: req.payload }),
+      run: ({ req, service }) => service.reconcileLocalInventory({ payload: req.payload }),
     }),
   ]
 

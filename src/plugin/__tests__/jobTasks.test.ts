@@ -42,12 +42,12 @@ const buildOptions = (): NormalizedPluginOptions => ({
     feedLabel: 'US',
   },
   disabled: false,
-  localInventory: { enabled: false, storeCode: '' },
   getCredentials: () =>
     Promise.resolve({
       type: 'json' as const,
       credentials: { client_email: 'test@example.com', private_key: 'key' },
     }),
+  localInventory: { enabled: false, storeCode: '' },
   merchantId: '123',
   rateLimit: {
     baseRetryDelayMs: 100,
@@ -116,7 +116,7 @@ describe('job task definitions', () => {
     const task = buildPushProductTaskConfig(buildOptions())
     const result = await task.handler({
       input: {
-        merchantId: '123',
+  merchantId: '123',
         productId: 'prod-1',
       },
       req: { payload: {} } as never,
@@ -152,7 +152,7 @@ describe('job task definitions', () => {
           productInputName: 'accounts/123/productInputs/en~US~SKU-1',
           productName: 'accounts/123/products/en~US~SKU-1',
         },
-        merchantId: '123',
+  merchantId: '123',
         productId: 'prod-2',
       },
       req: { payload } as never,
@@ -208,7 +208,7 @@ describe('job task definitions', () => {
     const task = buildSyncDirtyTaskConfig()
     const result = await task.handler({
       input: {
-        merchantId: '123',
+  merchantId: '123',
         triggeredBy: 'cron',
       },
       req: { payload } as never,
@@ -284,21 +284,21 @@ describe('job task definitions', () => {
     const batchResult = await buildBatchPushTaskConfig().handler({
       input: {
         filter: { sku: { equals: 'SKU-1' } } as never,
-        merchantId: '123',
+  merchantId: '123',
         productIds: ['prod-1'],
       },
       req: { payload } as never,
     })
     const initialResult = await buildInitialSyncTaskConfig().handler({
       input: {
-        merchantId: '123',
+  merchantId: '123',
         overrides: { dryRun: true, limit: 2 },
       },
       req: { payload } as never,
     })
     const pullResult = await buildPullAllTaskConfig().handler({
       input: {
-        merchantId: '123',
+  merchantId: '123',
       },
       req: { payload } as never,
     })

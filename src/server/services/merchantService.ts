@@ -44,10 +44,6 @@ export type MerchantService = {
     productId: string
     rangeDays: number
   }) => Promise<MCProductAnalytics>
-  reconcileLocalInventory: (args: {
-    onProgress?: (report: { deleted: number; errors: number; inserted: number; processed: number; total: number }) => void
-    payload: Payload
-  }) => Promise<{ deleted: number; errors: number; inserted: number; processed: number; total: number }>
   pullAllProducts: (args: {
     onProgress?: (report: PullAllReport) => Promise<void> | void
     payload: Payload
@@ -60,6 +56,10 @@ export type MerchantService = {
     productIds?: string[]
   }) => Promise<BatchSyncReport>
   pushProduct: (args: { payload: Payload; productId: string }) => Promise<SyncResult>
+  reconcileLocalInventory: (args: {
+    onProgress?: (report: { deleted: number; errors: number; inserted: number; processed: number; total: number }) => void
+    payload: Payload
+  }) => Promise<{ deleted: number; errors: number; inserted: number; processed: number; total: number }>
   refreshSnapshot: (args: { payload: Payload; productId: string }) => Promise<SyncResult>
   runInitialSync: (args: {
     onProgress?: (report: InitialSyncReport) => Promise<void> | void

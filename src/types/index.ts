@@ -171,15 +171,15 @@ export type LocalInventoryAvailability = 'in_stock' | 'out_of_stock'
  * @see https://developers.google.com/merchant/api/reference/rpc/google.shopping.merchant.inventories.v1
  */
 export type LocalInventoryPickupSla =
+  | 'FIVE_DAY'
+  | 'FOUR_DAY'
   | 'MULTI_WEEK'
   | 'NEXT_DAY'
   | 'SAME_DAY'
-  | 'TWO_DAY'
-  | 'THREE_DAY'
-  | 'FOUR_DAY'
-  | 'FIVE_DAY'
-  | 'SIX_DAY'
   | 'SEVEN_DAY'
+  | 'SIX_DAY'
+  | 'THREE_DAY'
+  | 'TWO_DAY'
 
 export type LocalInventoryPickupConfig = {
   /**
@@ -193,10 +193,10 @@ export type LocalInventoryPickupConfig = {
 }
 
 export type LocalInventoryConfig = {
-  /** Enable local inventory sync. When enabled, in-stock products are synced to the specified store. */
-  enabled?: boolean
   /** Custom resolver returning 'in_stock' for products that should appear as locally available, or null to remove. */
   availabilityResolver?: (doc: Record<string, unknown>) => LocalInventoryAvailability | null
+  /** Enable local inventory sync. When enabled, in-stock products are synced to the specified store. */
+  enabled?: boolean
   /** Optional pickup configuration. When set, products are marked as available for in-store pickup. */
   pickup?: LocalInventoryPickupConfig
   /** Your Google Business Profile store code for the physical location. */

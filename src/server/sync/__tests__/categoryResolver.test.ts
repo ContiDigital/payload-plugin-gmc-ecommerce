@@ -35,12 +35,12 @@ const buildOptions = (): NormalizedPluginOptions => ({
     feedLabel: 'PRODUCTS',
   },
   disabled: false,
-  localInventory: { enabled: false, storeCode: '' },
   getCredentials: () =>
     Promise.resolve({
       type: 'json' as const,
       credentials: { client_email: 'test@example.com', private_key: 'key' },
     }),
+  localInventory: { enabled: false, storeCode: '' },
   merchantId: '123',
   rateLimit: {
     baseRetryDelayMs: 100,

@@ -187,14 +187,23 @@ export const reconcileLocalInventory = async (args: {
       }
 
       // Build the resolved identity
+      const contentLang = typeof identity.contentLanguage === 'string' && identity.contentLanguage
+        ? identity.contentLanguage
+        : options.defaults.contentLanguage
+      const feedLbl = typeof identity.feedLabel === 'string' && identity.feedLabel
+        ? identity.feedLabel
+        : options.defaults.feedLabel
+      const offId = typeof identity.offerId === 'string' ? identity.offerId : ''
+      const merchantProductId = `${contentLang}~${feedLbl}~${offId}`
+
       const resolvedIdentity: ResolvedMCIdentity = {
-        contentLanguage: String(identity.contentLanguage || options.defaults.contentLanguage),
+        contentLanguage: contentLang,
         dataSourceName: options.dataSourceName,
-        feedLabel: String(identity.feedLabel || options.defaults.feedLabel),
-        merchantProductId: `${identity.contentLanguage || options.defaults.contentLanguage}~${identity.feedLabel || options.defaults.feedLabel}~${identity.offerId}`,
-        offerId: String(identity.offerId),
-        productInputName: `accounts/${options.merchantId}/productInputs/${identity.contentLanguage || options.defaults.contentLanguage}~${identity.feedLabel || options.defaults.feedLabel}~${identity.offerId}`,
-        productName: `accounts/${options.merchantId}/products/${identity.contentLanguage || options.defaults.contentLanguage}~${identity.feedLabel || options.defaults.feedLabel}~${identity.offerId}`,
+        feedLabel: feedLbl,
+        merchantProductId,
+        offerId: offId,
+        productInputName: `accounts/${options.merchantId}/productInputs/${merchantProductId}`,
+        productName: `accounts/${options.merchantId}/products/${merchantProductId}`,
       }
 
       const price = attrs.price as MCPrice | undefined
@@ -211,8 +220,8 @@ export const reconcileLocalInventory = async (args: {
       })
 
       if (syncResult.success) {
-        if (syncResult.action === 'insert') report.inserted++
-        else report.deleted++
+        if (syncResult.action === 'insert') {report.inserted++}
+        else {report.deleted++}
       } else {
         report.errors++
       }
