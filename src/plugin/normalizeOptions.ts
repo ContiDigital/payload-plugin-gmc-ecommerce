@@ -107,7 +107,9 @@ const normalizeLocalInventory = (
   }
 
   if (!config.storeCode || typeof config.storeCode !== 'string' || config.storeCode.trim().length === 0) {
-    throw new Error(`${PLUGIN_SLUG}: localInventory.storeCode is required when localInventory is enabled`)
+    // Gracefully disable — storeCode may be unavailable at build time (e.g. Docker build
+    // runs payload migrate before runtime env vars like SST secrets are injected)
+    return { enabled: false, storeCode: '' }
   }
 
   return {
