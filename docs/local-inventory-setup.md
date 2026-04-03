@@ -34,19 +34,22 @@ In Google Merchant Center:
 
 During setup, Google asks how your website handles in-store availability. Choose the option that matches your site:
 
-#### "Product pages with in-store availability" (recommended)
+#### "Product pages with in-store availability" (RECOMMENDED)
 
-Choose this if your product pages display product availability (e.g., in-stock/out-of-stock badges). This is the correct choice for most e-commerce sites and all single-store merchants.
+**Choose this option.** Google sends customers directly to YOUR product pages on YOUR domain.
 
-- Google links customers directly to YOUR product pages
-- The price shown is from your primary data source
-- You provide a sample product URL for Google to verify
+Your product pages must meet these requirements:
+- **Show in-store availability** — a section, badge, or indicator showing whether the product is available at your physical location. This can appear after the customer clicks a link like "Check store availability" or enters a postcode. For single-store merchants, a static "Available at [Store Name] Showroom" badge on in-stock products is sufficient.
+- **Show the omnichannel price** — the price on your landing page must match what you submit in your primary data source
+- **Be crawlable by Google Storebot** — standard server-rendered pages work; no special configuration needed if you're already indexed
 
-This is the recommended option. Your product pages already show availability status — Google will detect this.
+You'll provide a sample product URL showing in-store availability for Google to verify.
+
+> **Do NOT select "Product pages without in-store availability"** — that option makes Google host a generic page for your products instead of sending customers to your site.
 
 #### "Store-specific product pages with availability and price"
 
-Choose this only if your website can load store-specific pricing and availability based on a `{store_code}` parameter in the URL. This requires a `link_template` attribute with a `{store_code}` ValueTrack parameter. Most single-location merchants do NOT need this.
+Choose this only if your website can load store-specific pricing and availability based on a `{store_code}` parameter in the URL (e.g., `yoursite.com/products/item?store=STORE123`). Requires a `link_template` attribute with a `{store_code}` ValueTrack parameter. Most single-location merchants do NOT need this.
 
 ### 5. Configure Your Pickup/Display Experience
 

@@ -236,6 +236,8 @@ When `localInventory.enabled` is `true`:
 2. Local inventory sync is **non-critical** — failures are logged but do not fail the product push.
 3. A **reconciliation endpoint** is available for batch operations and nightly cron jobs.
 
+For the complete local inventory walkthrough (Merchant Center setup, GBP linking, product page experience selection, pickup configuration, troubleshooting), see **[docs/local-inventory-setup.md](./docs/local-inventory-setup.md)**.
+
 ### Prerequisites
 
 Before enabling local inventory in the plugin, complete these steps in Google Merchant Center:
