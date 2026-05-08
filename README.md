@@ -18,7 +18,7 @@ This plugin powers the [Fine's Gallery](https://finesgallery.com) Google Shoppin
 
 <img width="1193" height="667" alt="Fine's Gallery product listings powered by Merchant Center sync" src="https://github.com/user-attachments/assets/fa0435c0-83f9-4559-90db-3dc49894847a" />
 
-The plugin manages Fine's entire Merchant Center catalog — syncing thousands of products, segmenting them into paid Shopping campaigns via `customLabel` fields, and providing a simple way for non-technical users to manage everything from the admin panel.
+The plugin manages Fine's entire Merchant Center catalog - syncing thousands of products, segmenting them into paid Shopping campaigns via `customLabel` fields, and providing a simple way for non-technical users to manage everything from the admin panel.
 
 Read more for how Fine's Gallery uses Google Shopping to generate $200+k in monthly revenue: [Google Shopping for High-Ticket Ecommerce: The Fine's Gallery Playbook](https://www.petertconti.com/blog/google-shopping-for-high-ticket-ecommerce-the-fines-gallery-playbook)
 
@@ -231,9 +231,9 @@ The plugin supports Google's [Inventories sub-API](https://developers.google.com
 When `localInventory.enabled` is `true`:
 
 1. **On every product push**: after the product is successfully synced to Merchant Center, the plugin checks if the product is in-stock (via `availabilityResolver` or the resolved MC `availability` attribute).
-   - **In-stock** → inserts a local inventory entry for your store (`insertLocalInventory`)
-   - **Not in-stock** → deletes the local inventory entry (`deleteLocalInventory`)
-2. Local inventory sync is **non-critical** — failures are logged but do not fail the product push.
+   - **In-stock**: inserts a local inventory entry for your store (`insertLocalInventory`)
+   - **Not in-stock**: deletes the local inventory entry (`deleteLocalInventory`)
+2. Local inventory sync is **non-critical** - failures are logged but do not fail the product push.
 3. A **reconciliation endpoint** is available for batch operations and nightly cron jobs.
 
 For the complete local inventory walkthrough (Merchant Center setup, GBP linking, product page experience selection, pickup configuration, troubleshooting), see **[docs/local-inventory-setup.md](./docs/local-inventory-setup.md)**.
@@ -243,9 +243,9 @@ For the complete local inventory walkthrough (Merchant Center setup, GBP linking
 Before enabling local inventory in the plugin, complete these steps in Google Merchant Center:
 
 1. **Link your Google Business Profile** to your Merchant Center account (your physical store must be listed)
-2. **Enable the Free Local Listings and/or Local Inventory Ads add-on** (Settings → Add-ons)
+2. **Enable the Free Local Listings and/or Local Inventory Ads add-on** (Settings > Add-ons)
 3. **Configure your in-store product experience** (e.g., "On Display in Store" for showroom products shipped to customers)
-4. **Note your store code** from Google Business Profile — this is the `storeCode` you'll pass to the plugin
+4. **Note your store code** from Google Business Profile - this is the `storeCode` you'll pass to the plugin
 
 ### Configuration
 
@@ -280,7 +280,7 @@ The `pickup` option controls whether in-stock products are also available for in
 | `'NEXT_DAY'` | "Pickup tomorrow" | Ready next business day |
 | `'TWO_DAY'` to `'SEVEN_DAY'` | "Pickup in X days" | Needs packaging/preparation time |
 | `'MULTI_WEEK'` | "Store pick-up" | Generic annotation, no specific date shown |
-| *(omit pickup entirely)* | No pickup annotation | "On Display in Store" only — item ships to customer |
+| *(omit pickup entirely)* | No pickup annotation | "On Display in Store" only - item ships to customer |
 
 > **Note:** As of September 2024, Google only requires `pickupSla`. The `pickupMethod` attribute is deprecated and is NOT submitted by this plugin.
 
@@ -572,6 +572,57 @@ beforePush: async ({ doc, productInput, payload }) => {
 },
 ```
 
+### Surfacing Product Videos to Merchant Center
+
+Google Merchant Center accepts up to 10 `video_link` URLs per product, surfaced via the plugin's `videoLinks` attribute (stored as `[{ url }]` in Payload, sent as `string[]` to the API). Field mappings can't safely produce this shape because they only support a fixed list of [transform presets](#transform-presets) - none of them filter, normalize, or cap a list of URLs by extension or hostname. Videos belong in `beforePush`.
+
+The example below assumes a `videos` upload field on the products collection (`hasMany: true`, `relationTo: 'media'`) hydrated to depth >= 1 so each item has `url` and `mimeType`.
+
+```ts
+const SUPPORTED_VIDEO_EXTENSIONS = /\.(mp4|mov|mpg|mpeg|wmv|avi|flv|mpegps)(\?.*)?$/i
+const YOUTUBE_HOSTS = /(^|\.)((youtube\.com)|(youtu\.be))$/i
+
+const isAcceptableVideoUrl = (url: string, mimeType?: string): boolean => {
+  if (!/^https?:\/\//i.test(url)) return false
+  if (mimeType && !mimeType.startsWith('video/')) return false
+  try {
+    const parsed = new URL(url)
+    if (YOUTUBE_HOSTS.test(parsed.hostname)) return true
+    return SUPPORTED_VIDEO_EXTENSIONS.test(parsed.pathname)
+  } catch {
+    return false
+  }
+}
+
+beforePush: async ({ doc, productInput }) => {
+  productInput.productAttributes ??= {}
+  const attrs = productInput.productAttributes
+
+  const videos = (doc as any).videos as Array<{ url?: string; mimeType?: string }> | undefined
+  const videoUrls = (videos ?? [])
+    .filter((v): v is { url: string; mimeType?: string } => typeof v?.url === 'string')
+    .filter((v) => isAcceptableVideoUrl(v.url, v.mimeType))
+    .map((v) => v.url)
+    .slice(0, 10)
+
+  if (videoUrls.length > 0) {
+    attrs.videoLinks = videoUrls
+  } else {
+    delete attrs.videoLinks
+  }
+
+  return productInput
+}
+```
+
+A few things to note:
+
+- **Always set or delete deterministically.** The plugin seeds `productInput.productAttributes` from the stored `mc.attrs` group, and `productInputs.insert` is a full-record replace. Leaving `videoLinks` alone in `beforePush` is not a no-op when stale URLs are stored - explicitly `delete` it when there are no valid videos.
+- **Filter HLS / streaming manifests.** Google's video format support is raw video files (`.mp4`, `.mov`, `.mpg`, `.mpeg`, `.wmv`, `.avi`, `.flv`, `.mpegps`) or YouTube URLs. `.m3u8` HLS manifests and `.mpd` DASH manifests are not supported and will be rejected. If your media collection stores both an original upload and a transcoded streaming URL (e.g. MediaConvert `manifestUrl`), surface the original `url` only.
+- **Public access required.** Googlebot must be able to fetch the URL without authentication. Strip signed/expiring URLs unless you can guarantee long-lived public access.
+- **Cap at 10.** Google's `video_link` field allows up to 10 entries per product.
+- **Inline validation in admin UI.** When users edit `videoLinks` directly in the admin (rather than through `beforePush`), each row's `url` is blocked from saving if it isn't `http(s)://` or exceeds 2000 characters. Server-side rejections from Google still surface through the sync log.
+
 ### What `beforePush` Can Do
 
 Because `beforePush` receives the full Payload instance, you can do anything:
@@ -580,6 +631,7 @@ Because `beforePush` receives the full Payload instance, you can do anything:
 - **Conditional logic**: Set different values based on product type, category, status, or any field on the document. Rugs get feet for dimensions, everything else gets inches. Products with no GTIN set `identifierExists: false`.
 - **Price computation**: Validate sale prices against regular prices, apply currency conversions, handle tax-inclusive pricing.
 - **Image prioritization**: Choose between multiple image sources (ad images, main image, gallery) and set primary vs. additional image links.
+- **Video link surfacing**: Filter your products' video uploads to Google's supported formats (raw video files or YouTube URLs) and emit them as `videoLinks` for video carousel placement. See [Surfacing Product Videos to Merchant Center](#surfacing-product-videos-to-merchant-center) above.
 - **Custom labels for campaigns**: Derive custom labels from category hierarchies, active promotions, or any business logic for Google Shopping campaign segmentation.
 - **Override or delete fields**: Remove invalid sale prices, override values set by field mappings, or conditionally suppress fields.
 

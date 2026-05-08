@@ -187,6 +187,67 @@ describe('pushSync', () => {
     )
   })
 
+  test('pushProduct passes prepared videoLinks string[] through to insertProductInput unchanged', async () => {
+    const identity = buildIdentity()
+    const payload = {
+      findByID: vi.fn().mockResolvedValue({ id: 'prod-video' }),
+      logger: { error: vi.fn(), warn: vi.fn() },
+      update: vi.fn().mockResolvedValue({}),
+    }
+    const retryService = {
+      execute: vi.fn((fn: () => Promise<unknown>) => fn()),
+    }
+    const apiClient = {
+      getProduct: vi.fn().mockResolvedValue({ data: { name: 'snapshot-video' } }),
+      insertProductInput: vi.fn().mockResolvedValue({}),
+    }
+
+    resolveIdentity.mockReturnValue({ ok: true, value: identity })
+    // prepareProductForSync runs the transformers, so its output is already
+    // in MC wire shape: videoLinks as string[], not [{ url }].
+    prepareProductForSync.mockResolvedValue({
+      action: 'insert',
+      input: {
+        contentLanguage: 'en',
+        feedLabel: 'US',
+        offerId: 'SKU-1',
+        productAttributes: {
+          availability: 'IN_STOCK',
+          imageLink: 'https://example.com/image.jpg',
+          link: 'https://example.com/product',
+          title: 'Product 1',
+          videoLinks: [
+            'https://example.com/v1.mp4',
+            'https://www.youtube.com/watch?v=abc',
+          ],
+        },
+      },
+      product: { id: 'prod-video' },
+    })
+    validateRequiredProductInput.mockReturnValue([])
+
+    await pushProduct({
+      apiClient: apiClient as never,
+      options: buildOptions(),
+      payload: payload as never,
+      productId: 'prod-video',
+      retryService: retryService as never,
+    })
+
+    expect(apiClient.insertProductInput).toHaveBeenCalledWith(
+      expect.objectContaining({
+        productAttributes: expect.objectContaining({
+          videoLinks: [
+            'https://example.com/v1.mp4',
+            'https://www.youtube.com/watch?v=abc',
+          ],
+        }),
+      }),
+      payload,
+      undefined,
+    )
+  })
+
   test('pushProduct marks the record as error when validation fails', async () => {
     const identity = buildIdentity()
     const payload = {

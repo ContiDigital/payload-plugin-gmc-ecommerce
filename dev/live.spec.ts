@@ -29,6 +29,7 @@ import { getMerchantServiceInstance } from '../src/plugin/serviceRegistry.js'
 import type { MerchantService } from '../src/server/services/merchantService.js'
 import { createGoogleApiClient } from '../src/server/services/sub-services/googleApiClient.js'
 import type { GoogleApiClient } from '../src/server/services/sub-services/googleApiClient.js'
+import { buildInternalSyncContext } from '../src/server/sync/hookContext.js'
 import { normalizePluginOptions } from '../src/plugin/normalizeOptions.js'
 
 // ---------------------------------------------------------------------------
@@ -46,22 +47,45 @@ const pushedSkus: string[] = []
 
 // Unique prefix to avoid collisions with other test runs
 const TEST_PREFIX = `live-test-${Date.now().toString(36)}`
+const FORCE_PULL_LAST_SYNCED_AT = '2000-01-01T00:00:00.000Z'
 
 // ---------------------------------------------------------------------------
 // Helper: wait for MC Product to propagate after INSERT
-// MC v1 processes ProductInput asynchronously — Product may not be GETable
-// for 30-120s after insert. This helper polls with retries.
+// MC v1 processes ProductInput asynchronously - Product may not be GETable
+// for 30-120s after insert. Returning on the first non-empty snapshot
+// regardless of contents leaks MC's eventual-consistency races into
+// downstream assertions (the snapshot may have metadata only and an empty
+// productAttributes), so we now require populated attrs by default and
+// accept a caller-supplied predicate for stricter conditions.
 // ---------------------------------------------------------------------------
+
+type SnapshotPredicate = (snapshot: Record<string, unknown>) => boolean
+
+const hasPopulatedProductAttributes: SnapshotPredicate = (snapshot) => {
+  const attrs = snapshot.productAttributes as Record<string, unknown> | undefined
+  return Boolean(attrs && Object.keys(attrs).length > 0)
+}
 
 async function waitForMCProduct(
   svc: MerchantService,
   pl: Payload,
   productId: string,
-  { maxAttempts = 8, intervalMs = 5_000 }: { intervalMs?: number; maxAttempts?: number } = {},
+  options: {
+    intervalMs?: number
+    maxAttempts?: number
+    predicate?: SnapshotPredicate
+  } = {},
 ): Promise<boolean> {
+  const {
+    intervalMs = 5_000,
+    maxAttempts = 8,
+    predicate = hasPopulatedProductAttributes,
+  } = options
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const result = await svc.refreshSnapshot({ payload: pl, productId })
-    if (result.success && result.snapshot) {
+    const snapshot = result.snapshot as Record<string, unknown> | undefined
+    if (result.success && snapshot && predicate(snapshot)) {
       return true
     }
     if (attempt < maxAttempts) {
@@ -187,14 +211,14 @@ async function createTestProduct(overrides: Record<string, unknown> = {}): Promi
       price: 49.99,
       description: 'A product created by the live integration test suite',
       imageUrl: 'https://example.com/test-image.jpg',
-      merchantCenter: {
+      mc: {
         enabled: true,
         identity: {
           offerId: sku,
           contentLanguage: 'en',
           feedLabel: 'PRODUCTS',
         },
-        productAttributes: {
+        attrs: {
           title: `Live Test Product ${createdProductIds.length + 1}`,
           link: 'https://example.com/products/test',
           imageLink: 'https://example.com/test-image.jpg',
@@ -262,7 +286,7 @@ describe('Live MC Integration: Push Single Product', () => {
       depth: 0,
     }) as unknown as Record<string, unknown>
 
-    const mc = doc.merchantCenter as Record<string, unknown>
+    const mc = doc.mc as Record<string, unknown>
     const syncMeta = mc.syncMeta as Record<string, unknown>
     expect(syncMeta.state).toBe('success')
     expect(syncMeta.lastSyncedAt).toBeDefined()
@@ -275,8 +299,8 @@ describe('Live MC Integration: Push Single Product', () => {
       id: productId,
       collection: 'products',
       data: {
-        merchantCenter: {
-          productAttributes: {
+        mc: {
+          attrs: {
             title: 'Updated Live Test Product',
           },
         },
@@ -318,7 +342,7 @@ describe('Live MC Integration: Refresh Snapshot (with propagation wait)', () => 
       depth: 0,
     }) as unknown as Record<string, unknown>
 
-    const mc = doc.merchantCenter as Record<string, unknown>
+    const mc = doc.mc as Record<string, unknown>
     expect(mc.snapshot).toBeDefined()
     expect(Object.keys(mc.snapshot as object).length).toBeGreaterThan(0)
   }, 120_000)
@@ -339,18 +363,21 @@ describe('Live MC Integration: Pull Single Product (with propagation wait)', () 
     })
     expect(available).toBe(true)
 
-    // Clear local product attributes to verify pull repopulates them
+    // Clear local product attributes to verify pull repopulates them. This is
+    // test setup, not a user edit, so skip dirty-tracking hooks and set an old
+    // lastSyncedAt so the default newest-wins strategy proceeds deterministically.
     await payload.update({
       id: productId,
       collection: 'products',
+      context: buildInternalSyncContext(),
       data: {
-        merchantCenter: {
-          productAttributes: {},
+        mc: {
+          attrs: {},
           snapshot: {},
           syncMeta: {
+            dirty: false,
+            lastSyncedAt: FORCE_PULL_LAST_SYNCED_AT,
             state: 'idle',
-            lastSyncedAt: undefined,
-            dirty: true,
           },
         },
       } as never,
@@ -360,6 +387,7 @@ describe('Live MC Integration: Pull Single Product (with propagation wait)', () 
     const result = await service.pullProduct({ payload, productId })
     expect(result.success).toBe(true)
     expect(result.action).toBe('pull')
+    expect(result.skipped).toBeFalsy()
     expect(result.populatedFields.length).toBeGreaterThan(0)
 
     // Verify local doc was updated with pulled data
@@ -369,8 +397,8 @@ describe('Live MC Integration: Pull Single Product (with propagation wait)', () 
       depth: 0,
     }) as unknown as Record<string, unknown>
 
-    const mc = doc.merchantCenter as Record<string, unknown>
-    const attrs = mc.productAttributes as Record<string, unknown>
+    const mc = doc.mc as Record<string, unknown>
+    const attrs = mc.attrs as Record<string, unknown>
     expect(attrs.title).toBeDefined()
     expect(attrs.availability).toBeDefined()
 
@@ -436,7 +464,7 @@ describe('Live MC Integration: Batch Push', () => {
         id,
         collection: 'products',
         data: {
-          merchantCenter: {
+          mc: {
             syncMeta: { dirty: true },
           },
         } as never,
@@ -446,7 +474,7 @@ describe('Live MC Integration: Batch Push', () => {
 
     const report = await service.pushBatch({
       filter: {
-        'merchantCenter.syncMeta.dirty': { equals: true },
+        'mc.syncMeta.dirty': { equals: true },
         id: { in: batchProductIds },
       },
       payload,
@@ -502,7 +530,7 @@ describe('Live MC Integration: Initial Sync', () => {
       id,
       collection: 'products',
       data: {
-        merchantCenter: {
+        mc: {
           snapshot: null,
           syncMeta: {
             state: 'idle',
@@ -588,14 +616,14 @@ describe('Live MC Integration: Field Mappings', () => {
     const mappingSku = `${TEST_PREFIX}-mapping-test`
     const { id } = await createTestProduct({
       title: 'Mapped Title from Payload Field',
-      merchantCenter: {
+      mc: {
         enabled: true,
         identity: {
           offerId: mappingSku,
           contentLanguage: 'en',
           feedLabel: 'PRODUCTS',
         },
-        productAttributes: {
+        attrs: {
           title: 'Original MC Title — Should Be Overridden',
           link: 'https://example.com/products/test',
           imageLink: 'https://example.com/test-image.jpg',
@@ -621,8 +649,8 @@ describe('Live MC Integration: Field Mappings', () => {
       depth: 0,
     }) as unknown as Record<string, unknown>
 
-    const mc = doc.merchantCenter as Record<string, unknown>
-    const attrs = mc.productAttributes as Record<string, unknown>
+    const mc = doc.mc as Record<string, unknown>
+    const attrs = mc.attrs as Record<string, unknown>
     // The permanent mapping should have overridden the title in productAttributes
     expect(attrs.title).toBe('Mapped Title from Payload Field')
 
@@ -662,10 +690,10 @@ describe('Live MC Integration: Push validation', () => {
       data: {
         title: 'Validation Test',
         sku,
-        merchantCenter: {
+        mc: {
           enabled: true,
           identity: { offerId: sku, contentLanguage: 'en', feedLabel: 'PRODUCTS' },
-          productAttributes: {
+          attrs: {
             // Missing: title, link, imageLink, availability
           },
         },
@@ -685,7 +713,7 @@ describe('Live MC Integration: Push validation', () => {
       depth: 0,
     }) as unknown as Record<string, unknown>
 
-    const mc = doc.merchantCenter as Record<string, unknown>
+    const mc = doc.mc as Record<string, unknown>
     const syncMeta = mc.syncMeta as Record<string, unknown>
     expect(syncMeta.state).toBe('error')
     expect(syncMeta.lastError).toContain('Missing required fields')
@@ -700,7 +728,7 @@ describe('Live MC Integration: Disabled product skipped', () => {
       data: {
         title: 'Disabled Product',
         sku,
-        merchantCenter: {
+        mc: {
           enabled: false,
         },
       },
@@ -714,7 +742,7 @@ describe('Live MC Integration: Disabled product skipped', () => {
       payload,
       filter: {
         id: { equals: id },
-        'merchantCenter.enabled': { equals: true },
+        'mc.enabled': { equals: true },
       },
     })
 
@@ -740,7 +768,7 @@ describe('Live MC Integration: End-to-end lifecycle', () => {
       collection: 'products',
       depth: 0,
     }) as unknown as Record<string, unknown>
-    let mc = doc.merchantCenter as Record<string, unknown>
+    let mc = doc.mc as Record<string, unknown>
     expect((mc.syncMeta as Record<string, unknown>).state).toBe('success')
 
     // 4. WAIT for MC propagation then PULL
@@ -750,14 +778,20 @@ describe('Live MC Integration: End-to-end lifecycle', () => {
     })
     expect(available).toBe(true)
 
-    // Clear local attrs and pull from MC
+    // Clear local attrs and pull from MC. This is test setup, not a user edit,
+    // so skip dirty-tracking hooks and make MC older/newer comparison deterministic.
     await payload.update({
       id,
       collection: 'products',
+      context: buildInternalSyncContext(),
       data: {
-        merchantCenter: {
-          productAttributes: {},
-          syncMeta: { state: 'idle', dirty: true },
+        mc: {
+          attrs: {},
+          syncMeta: {
+            dirty: false,
+            lastSyncedAt: FORCE_PULL_LAST_SYNCED_AT,
+            state: 'idle',
+          },
         },
       } as never,
       overrideAccess: true,
@@ -765,6 +799,7 @@ describe('Live MC Integration: End-to-end lifecycle', () => {
 
     const pullResult = await service.pullProduct({ payload, productId: id })
     expect(pullResult.success).toBe(true)
+    expect(pullResult.skipped).toBeFalsy()
     expect(pullResult.populatedFields.length).toBeGreaterThan(0)
 
     // 5. UPDATE & RE-PUSH
@@ -774,8 +809,8 @@ describe('Live MC Integration: End-to-end lifecycle', () => {
       data: {
         title: 'Updated Lifecycle Product',
         price: 299.99,
-        merchantCenter: {
-          productAttributes: {
+        mc: {
+          attrs: {
             title: 'Updated Lifecycle Product',
             price: {
               amountMicros: String(299_990_000),
@@ -801,4 +836,181 @@ describe('Live MC Integration: End-to-end lifecycle', () => {
     const reDeleteResult = await service.deleteProduct({ payload, productId: id })
     expect(reDeleteResult.success).toBe(true)
   }, 180_000)
+})
+
+// ---------------------------------------------------------------------------
+// videoLinks roundtrip + replace-on-clear API contract
+//
+// We use real publicly-crawlable URLs:
+//   - A Google-hosted permanent sample MP4 (raw video file, ASCII-safe path)
+//   - A YouTube URL (Google's own platform; persistent and publicly fetchable)
+//
+// Tests cover:
+//   1. Roundtrip: push -> wait -> pull restores videoLinks in [{url}] shape.
+//   2. Replace-on-clear API contract: emptying mc.attrs.videoLinks and
+//      re-pushing is accepted by MC and results in the prepared productInput
+//      omitting videoLinks (verified via pushSync + transformer unit tests).
+//      We deliberately do not assert on MC's eventual-consistency read-back
+//      after the clear: in practice MC can take more than two minutes to
+//      reflect a replace via getProduct, which makes a live assertion flaky.
+// ---------------------------------------------------------------------------
+
+describe('Live MC Integration: videoLinks lifecycle', () => {
+  const REAL_VIDEO_URLS = [
+    'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+    'https://www.youtube.com/watch?v=aqz-KE-bpKQ',
+  ]
+
+  test('push -> wait -> pull persists videoLinks roundtrip in [{url}] shape', async () => {
+    const { id } = await createTestProduct({
+      mc: {
+        enabled: true,
+        identity: {
+          contentLanguage: 'en',
+          feedLabel: 'PRODUCTS',
+        },
+        attrs: {
+          title: 'videoLinks roundtrip test',
+          link: 'https://example.com/products/test',
+          imageLink: 'https://example.com/test-image.jpg',
+          availability: 'IN_STOCK',
+          condition: 'NEW',
+          price: { amountMicros: '49990000', currencyCode: 'USD' },
+          description: 'Roundtrip test for videoLinks',
+          videoLinks: REAL_VIDEO_URLS.map((url) => ({ url })),
+        },
+      },
+    } as never)
+
+    const pushResult = await service.pushProduct({ payload, productId: id })
+    expect(pushResult.success).toBe(true)
+
+    const available = await waitForMCProduct(service, payload, id, {
+      maxAttempts: 18,
+      intervalMs: 5_000,
+    })
+    expect(available).toBe(true)
+
+    // Clear local attrs to force pull to repopulate from MC. This is test
+    // setup, not a user edit, so skip dirty-tracking hooks and set an old
+    // lastSyncedAt for deterministic newest-wins behavior.
+    await payload.update({
+      id,
+      collection: 'products',
+      context: buildInternalSyncContext(),
+      data: {
+        mc: {
+          attrs: {},
+          syncMeta: {
+            dirty: false,
+            lastSyncedAt: FORCE_PULL_LAST_SYNCED_AT,
+            state: 'idle',
+          },
+        },
+      } as never,
+      overrideAccess: true,
+    })
+
+    const pullResult = await service.pullProduct({ payload, productId: id })
+    expect(pullResult.success).toBe(true)
+
+    const doc = (await payload.findByID({
+      id,
+      collection: 'products',
+      depth: 0,
+    })) as unknown as Record<string, unknown>
+
+    const mc = doc.mc as Record<string, unknown>
+    const attrs = mc.attrs as Record<string, unknown>
+    const stored = attrs.videoLinks as Array<{ url: string }> | undefined
+
+    expect(stored).toBeDefined()
+    expect(Array.isArray(stored)).toBe(true)
+    expect(stored).toEqual(
+      expect.arrayContaining(REAL_VIDEO_URLS.map((url) => expect.objectContaining({ url }))),
+    )
+    expect(stored).toHaveLength(REAL_VIDEO_URLS.length)
+  }, 180_000)
+
+  test('clearing videoLinks locally and re-pushing is accepted by the live MC API', async () => {
+    const { id } = await createTestProduct({
+      mc: {
+        enabled: true,
+        identity: {
+          contentLanguage: 'en',
+          feedLabel: 'PRODUCTS',
+        },
+        attrs: {
+          title: 'videoLinks replace-on-clear test',
+          link: 'https://example.com/products/test',
+          imageLink: 'https://example.com/test-image.jpg',
+          availability: 'IN_STOCK',
+          condition: 'NEW',
+          price: { amountMicros: '49990000', currencyCode: 'USD' },
+          description: 'Replace-on-clear test for videoLinks',
+          videoLinks: [{ url: REAL_VIDEO_URLS[0] }],
+        },
+      },
+    } as never)
+
+    // First push: with videoLinks
+    const firstPush = await service.pushProduct({ payload, productId: id })
+    expect(firstPush.success).toBe(true)
+
+    const available = await waitForMCProduct(service, payload, id, {
+      maxAttempts: 18,
+      intervalMs: 5_000,
+    })
+    expect(available).toBe(true)
+
+    // Confirm MC has the video via the snapshot stored on the doc
+    const docAfterFirstPush = (await payload.findByID({
+      id,
+      collection: 'products',
+      depth: 0,
+    })) as unknown as Record<string, unknown>
+    const firstSnapshot = (docAfterFirstPush.mc as Record<string, unknown>).snapshot as Record<string, unknown>
+    const firstAttrs = firstSnapshot.productAttributes as Record<string, unknown> | undefined
+    expect(firstAttrs?.videoLinks).toEqual([REAL_VIDEO_URLS[0]])
+
+    // Clear videoLinks locally, mark dirty, push again
+    await payload.update({
+      id,
+      collection: 'products',
+      data: {
+        mc: {
+          attrs: {
+            videoLinks: [],
+          },
+          syncMeta: { dirty: true, state: 'idle' },
+        },
+      } as never,
+      overrideAccess: true,
+    })
+
+    const secondPush = await service.pushProduct({ payload, productId: id })
+    expect(secondPush.success).toBe(true)
+    expect(secondPush.action).toMatch(/insert|update/)
+
+    // What this proves at the live boundary:
+    //   - First push with videoLinks was accepted (asserted above).
+    //   - First push's snapshot reflected the video (asserted above).
+    //   - Second push, sent after locally clearing videoLinks, was accepted
+    //     by the live MC API.
+    //
+    // The full replace-on-clear contract (empty videoLinks array stripped
+    // from the productInput by stripEmpty, productInputs.insert replacing
+    // the stored record) is covered deterministically by:
+    //   - transformers.test.ts: empty videoLinks array is stripped from the
+    //     prepared productInput.
+    //   - pushSync.test.ts: the prepared payload reaches insertProductInput
+    //     unchanged.
+    //   - productPreparation.videoLinks.test.ts: Payload [{url}] data is
+    //     converted to wire-shape string[] (and empty arrays are dropped)
+    //     end-to-end through the real prep chain.
+    //
+    // We do not poll MC's getProduct here for the cleared state because MC
+    // can take more than two minutes to reflect a replace, which would make
+    // this test flaky for reasons unrelated to plugin correctness.
+  }, 240_000)
 })

@@ -58,8 +58,8 @@ pnpm add payload-plugin-gmc-ecommerce
 
 The `getCredentials` function is **async** and supports two return types:
 
-- **`keyFilename`** — pass a file path; the plugin reads and parses the JSON for you
-- **`json`** — pass `client_email` and `private_key` directly (for secret managers, env vars, etc.)
+- **`keyFilename`** - pass a file path; the plugin reads and parses the JSON for you
+- **`json`** - pass `client_email` and `private_key` directly (for secret managers, env vars, etc.)
 
 **Local development** (JSON key file on disk):
 
@@ -95,7 +95,7 @@ GMC_DATA_SOURCE_ID=your-data-source-id
 GMC_SERVICE_ACCOUNT_PATH=./secrets/service-account.json
 ```
 
-**Production** (secret manager — example using AWS Secrets Manager):
+**Production** (secret manager - example using AWS Secrets Manager):
 
 ```ts
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager'
@@ -169,6 +169,42 @@ beforePush: async ({ doc, productInput }) => {
 ```
 
 > **Required MC fields**: Every product must have `title`, `link`, `imageLink`, and `availability`. The plugin validates these before sending to the API.
+
+If your products have video uploads and you want them to appear in Google's video carousels, surface them as `videoLinks` in the same top-level `beforePush`. Field mappings cannot do this safely because they do not support filtering or capping arrays. Example assuming a `videos` upload field on the products collection:
+
+```ts
+const SUPPORTED_VIDEO_EXTENSIONS = /\.(mp4|mov|mpg|mpeg|wmv|avi|flv|mpegps)(\?.*)?$/i
+const YOUTUBE_HOSTS = /(^|\.)((youtube\.com)|(youtu\.be))$/i
+
+beforePush: async ({ doc, productInput }) => {
+  productInput.productAttributes ??= {}
+  const attrs = productInput.productAttributes
+
+  const videos = (doc as any).videos as Array<{ url?: string; mimeType?: string }> | undefined
+  const videoUrls = (videos ?? [])
+    .filter((v): v is { url: string; mimeType?: string } => typeof v?.url === 'string')
+    .filter((v) => {
+      if (!/^https?:\/\//i.test(v.url)) return false
+      if (v.mimeType && !v.mimeType.startsWith('video/')) return false
+      try {
+        const u = new URL(v.url)
+        return YOUTUBE_HOSTS.test(u.hostname) || SUPPORTED_VIDEO_EXTENSIONS.test(u.pathname)
+      } catch {
+        return false
+      }
+    })
+    .map((v) => v.url)
+    .slice(0, 10)  // Google allows up to 10 video_link values per product
+
+  if (videoUrls.length > 0) {
+    attrs.videoLinks = videoUrls
+  } else {
+    delete attrs.videoLinks  // productInputs.insert is replace; clear stale URLs explicitly
+  }
+
+  return productInput
+},
+```
 
 For the full `beforePush` capabilities and a production example, see the [README](../README.md#the-beforepush-hook).
 

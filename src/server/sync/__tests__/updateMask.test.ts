@@ -148,6 +148,30 @@ describe('buildUpdateMask', () => {
     expect(result).toBe('product_attributes.additional_image_links')
   })
 
+  test('handles videoLinks → product_attributes.video_links', () => {
+    const attrs: MCProductAttributes = {
+      videoLinks: ['https://example.com/v1.mp4'],
+    }
+
+    const result = buildUpdateMask(attrs)
+
+    expect(result).toBe('product_attributes.video_links')
+  })
+
+  test('emits both image and video link mask paths when both are set', () => {
+    const attrs: MCProductAttributes = {
+      additionalImageLinks: ['https://example.com/img1.jpg'],
+      videoLinks: ['https://example.com/v1.mp4'],
+    }
+
+    const result = buildUpdateMask(attrs)
+
+    expect(result.split(',').sort()).toEqual([
+      'product_attributes.additional_image_links',
+      'product_attributes.video_links',
+    ])
+  })
+
   test('handles boolean values', () => {
     const attrs: MCProductAttributes = {
       adult: false,

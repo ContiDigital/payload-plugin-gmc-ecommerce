@@ -88,6 +88,42 @@ const buildMerchantCenterFields = (options: NormalizedPluginOptions): Field => (
           dbName: 'mc_addl_img_links',
           fields: [{ name: 'url', type: 'text', required: true }],
         },
+        {
+          name: 'videoLinks',
+          type: 'array',
+          admin: {
+            description:
+              'Up to 10 product video URLs sent to Merchant Center as videoLinks. ' +
+              'Must be http(s):// and 2000 characters or fewer. ' +
+              'YouTube URLs are accepted; otherwise the URL must point directly to a raw video file ' +
+              '(.mp4, .mov, .mpg, .mpeg, .wmv, .avi, .flv, .mpegps). ' +
+              'Googlebot must be able to fetch the URL without authentication.',
+          },
+          dbName: 'mc_video_links',
+          fields: [
+            {
+              name: 'url',
+              type: 'text',
+              required: true,
+              validate: (value: unknown) => {
+                if (typeof value !== 'string' || value.length === 0) {
+                  return 'URL is required'
+                }
+                if (value !== value.trim()) {
+                  return 'URL must not have leading or trailing whitespace'
+                }
+                if (value.length > 2000) {
+                  return 'URL must be 2000 characters or fewer (Google Merchant Center limit)'
+                }
+                if (!/^https?:\/\//i.test(value)) {
+                  return 'URL must start with http:// or https://'
+                }
+                return true
+              },
+            },
+          ],
+          maxRows: 10,
+        },
 
         // Price
         {
@@ -517,7 +553,7 @@ const injectMerchantCenterTab = (
       }
     }
   } else {
-    // No existing tabs — wrap all fields in a "General" tab, add MC tab
+    // No existing tabs - wrap all fields in a "General" tab, add MC tab
     const existingFields = [...collection.fields]
     collection.fields = [
       {

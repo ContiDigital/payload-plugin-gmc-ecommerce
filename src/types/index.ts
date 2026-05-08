@@ -285,6 +285,7 @@ export type MCProductAttributes = {
   sizeType?: string
   taxes?: MCTax[]
   title?: string
+  videoLinks?: MCUrlArrayField
 }
 
 // ---------------------------------------------------------------------------

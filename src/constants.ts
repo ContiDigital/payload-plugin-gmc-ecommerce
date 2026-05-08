@@ -167,6 +167,7 @@ export const MC_PRODUCT_ATTRIBUTE_FIELDS = [
   'excludedDestinations',
   'includedDestinations',
   'externalSellerId',
+  'videoLinks',
   'pause',
 ] as const
 

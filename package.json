@@ -1,7 +1,7 @@
 {
   "name": "payload-plugin-gmc-ecommerce",
-  "version": "1.1.2",
-  "description": "Google Merchant Center integration plugin for Payload CMS — full product sync, field mapping, and admin UI",
+  "version": "1.2.0",
+  "description": "Google Merchant Center integration plugin for Payload CMS - full product sync, field mapping, and admin UI",
   "license": "MIT",
   "repository": {
     "type": "git",

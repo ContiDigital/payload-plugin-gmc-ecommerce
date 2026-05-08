@@ -325,6 +325,73 @@ describe('buildProductInput', () => {
     expect(result.offerId).toBe('SKU-001')
     expect(result.productAttributes?.condition).toBe('NEW')
   })
+
+  test('converts videoLinks [{url}] objects to string[] for the wire', () => {
+    const product = {
+      [MC_FIELD_GROUP_NAME]: {
+        [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: {
+          title: 'Test',
+          videoLinks: [
+            { url: 'https://example.com/v1.mp4' },
+            { url: 'https://www.youtube.com/watch?v=abc123' },
+          ],
+        },
+      },
+    }
+
+    const result = buildProductInput(product, mockIdentity, mockOptions())
+
+    expect(result.productAttributes?.videoLinks).toEqual([
+      'https://example.com/v1.mp4',
+      'https://www.youtube.com/watch?v=abc123',
+    ])
+  })
+
+  test('strips empty videoLinks array from productAttributes', () => {
+    const product = {
+      [MC_FIELD_GROUP_NAME]: {
+        [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: { title: 'Test', videoLinks: [] },
+      },
+    }
+
+    const result = buildProductInput(product, mockIdentity, mockOptions())
+
+    expect(result.productAttributes).not.toHaveProperty('videoLinks')
+  })
+
+  test('drops videoLinks rows with empty or missing url', () => {
+    const product = {
+      [MC_FIELD_GROUP_NAME]: {
+        [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: {
+          title: 'Test',
+          videoLinks: [
+            { url: '' },
+            { url: 'https://example.com/v.mp4' },
+            {},
+          ],
+        },
+      },
+    }
+
+    const result = buildProductInput(product, mockIdentity, mockOptions())
+
+    expect(result.productAttributes?.videoLinks).toEqual(['https://example.com/v.mp4'])
+  })
+
+  test('passes through plain string[] videoLinks unchanged', () => {
+    const product = {
+      [MC_FIELD_GROUP_NAME]: {
+        [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: {
+          title: 'Test',
+          videoLinks: ['https://example.com/v.mp4'],
+        },
+      },
+    }
+
+    const result = buildProductInput(product, mockIdentity, mockOptions())
+
+    expect(result.productAttributes?.videoLinks).toEqual(['https://example.com/v.mp4'])
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -435,6 +502,24 @@ describe('reverseTransformProduct', () => {
     expect(result.productAttributes.additionalImageLinks).toEqual([
       { url: 'https://example.com/img1.jpg' },
       { url: 'https://example.com/img2.jpg' },
+    ])
+  })
+
+  test('converts videoLinks string[] to objects with url key', () => {
+    const mcProduct = {
+      productAttributes: {
+        videoLinks: [
+          'https://example.com/v1.mp4',
+          'https://www.youtube.com/watch?v=abc',
+        ],
+      },
+    }
+
+    const result = reverseTransformProduct(mcProduct)
+
+    expect(result.productAttributes.videoLinks).toEqual([
+      { url: 'https://example.com/v1.mp4' },
+      { url: 'https://www.youtube.com/watch?v=abc' },
     ])
   })
 

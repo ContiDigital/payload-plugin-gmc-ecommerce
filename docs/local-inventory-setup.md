@@ -13,7 +13,7 @@ Before enabling local inventory in the plugin, complete these steps in Google's 
 Your physical store must be listed and verified in [Google Business Profile](https://business.google.com/).
 
 - Ensure your store address, phone number, and business hours are accurate and up-to-date
-- Note your **store code** — find it in GBP under your location's settings, or in Merchant Center under Settings > Linked accounts > Business Profiles
+- Note your **store code** - find it in GBP under your location's settings, or in Merchant Center under Settings > Linked accounts > Business Profiles
 
 ### 2. Link GBP to Merchant Center
 
@@ -39,13 +39,13 @@ During setup, Google asks how your website handles in-store availability. Choose
 **Choose this option.** Google sends customers directly to YOUR product pages on YOUR domain.
 
 Your product pages must meet these requirements:
-- **Show in-store availability** — a section, badge, or indicator showing whether the product is available at your physical location. This can appear after the customer clicks a link like "Check store availability" or enters a postcode. For single-store merchants, a static "Available at [Store Name] Showroom" badge on in-stock products is sufficient.
-- **Show the omnichannel price** — the price on your landing page must match what you submit in your primary data source
-- **Be crawlable by Google Storebot** — standard server-rendered pages work; no special configuration needed if you're already indexed
+- **Show in-store availability** - a section, badge, or indicator showing whether the product is available at your physical location. This can appear after the customer clicks a link like "Check store availability" or enters a postcode. For single-store merchants, a static "Available at [Store Name] Showroom" badge on in-stock products is sufficient.
+- **Show the omnichannel price** - the price on your landing page must match what you submit in your primary data source
+- **Be crawlable by Google Storebot** - standard server-rendered pages work; no special configuration needed if you're already indexed
 
 You'll provide a sample product URL showing in-store availability for Google to verify.
 
-> **Do NOT select "Product pages without in-store availability"** — that option makes Google host a generic page for your products instead of sending customers to your site.
+> **Do NOT select "Product pages without in-store availability"** - that option makes Google host a generic page for your products instead of sending customers to your site.
 
 #### "Store-specific product pages with availability and price"
 
@@ -145,7 +145,7 @@ When a product is saved and pushed to Merchant Center (in `onChange` mode):
 2. After successful push, the plugin checks local availability
 3. In-stock products get a local inventory entry inserted for your store
 4. Not-in-stock products get their local inventory entry deleted
-5. Local inventory sync is non-critical — failures are logged but never block the product push
+5. Local inventory sync is non-critical - failures are logged but never block the product push
 
 ### Nightly Reconciliation
 
@@ -173,7 +173,7 @@ const report = await service.reconcileLocalInventory({ payload })
 
 ## API Details
 
-Uses Google's **Inventories sub-API** (Merchant API v1). Same service account credentials as product sync — no additional scopes needed.
+Uses Google's **Inventories sub-API** (Merchant API v1). Same service account credentials as product sync - no additional scopes needed.
 
 ### Request Format (v1)
 

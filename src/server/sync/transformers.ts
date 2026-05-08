@@ -126,6 +126,9 @@ const STRING_VALUE_ARRAY_FIELDS = new Set([
   'promotionIds',
 ])
 
+// MC fields whose wire shape is string[] but Payload stores them as [{ url }].
+const URL_ARRAY_FIELDS = new Set(['additionalImageLinks', 'videoLinks'])
+
 const normalizeArrayFields = (attrs: MCProductAttributes): MCProductAttributes => {
   const result = { ...attrs }
 
@@ -138,11 +141,10 @@ const normalizeArrayFields = (attrs: MCProductAttributes): MCProductAttributes =
     }
   }
 
-  // additionalImageLinks uses {url: "..."} instead of {value: "..."}
-  if (Array.isArray(result.additionalImageLinks) && result.additionalImageLinks.length > 0) {
-    const first = result.additionalImageLinks[0]
-    if (typeof first === 'object' && first !== null && 'url' in first) {
-      result.additionalImageLinks = (result.additionalImageLinks as unknown as Array<Record<string, unknown>>)
+  for (const field of URL_ARRAY_FIELDS) {
+    const value = (result as Record<string, unknown>)[field]
+    if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'object' && value[0] !== null) {
+      ;(result as Record<string, unknown>)[field] = (value as Array<Record<string, unknown>>)
         .map((item) => (typeof item.url === 'string' ? item.url : ''))
         .filter((v) => v.length > 0)
     }
@@ -209,7 +211,9 @@ export const buildProductInput = (
 //
 // MC v1 API returns some fields as plain string arrays (productTypes, gtins,
 // promotionIds, etc.) but Payload stores them as arrays of { value: string }.
-// Similarly, additionalImageLinks comes as string[] but we store [{ url }].
+// Similarly, additionalImageLinks and videoLinks come as string[] but we
+// store them as [{ url }]. URL_ARRAY_FIELDS (declared above) drives both
+// forward and reverse handling so the two stay in sync.
 // ---------------------------------------------------------------------------
 
 const STRING_ARRAY_FIELDS = new Set([
@@ -338,8 +342,8 @@ export const reverseTransformProduct = (
       continue
     }
 
-    // Convert additionalImageLinks string array to array-of-objects
-    if (key === 'additionalImageLinks' && Array.isArray(value)) {
+    // Convert URL string arrays (additionalImageLinks, videoLinks) to [{ url }]
+    if (URL_ARRAY_FIELDS.has(key) && Array.isArray(value)) {
       productAttributes[key] = value.map((v: unknown) => ({ url: String(v) }))
       continue
     }

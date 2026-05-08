@@ -83,12 +83,12 @@ export const seed = async (payload: Payload) => {
         data: {
           ...product,
           availability: 'in_stock',
-          merchantCenter: {
+          mc: {
             enabled: true,
             identity: {
               offerId: product.sku,
             },
-            productAttributes: {
+            attrs: {
               availability: 'IN_STOCK',
               condition: 'NEW',
               imageLink: `https://www.finesgallery.com/images/products/${product.sku.toLowerCase()}.jpg`,
