@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-07-09
+
+### Fixed
+
+- Merchant Center push bookkeeping now writes through Payload's database adapter when available, avoiding product collection hooks and draft version creation for sync metadata updates.
+- Postgres/SQLite adapter writes include Payload's `updatedAt: null` timestamp-skip signal, and MongoDB adapter writes pass `timestamps: false`, preventing Merchant Center bookkeeping from surfacing as a staff-facing content edit on supported adapters.
+- Direct sync-state writes use an ID `where` selector plus `upsert: false` options so missing products are treated as no-ops instead of falling back to a full `payload.update`.
+- Product sync hooks now also honor host-app `context.skipCollectionHooks` during bulk/internal writes.
+- `deepMerge` now handles cyclic and deeply nested source objects without overflowing the stack, while still correctly merging repeated sibling object references.
+
+### Internal
+
+- Added regression coverage for direct write arguments, missing-row behavior, `skipCollectionHooks`, cyclic/deep merge inputs, and repeated source object references.
+
 ## [1.2.0] - 2026-05-08
 
 ### Added

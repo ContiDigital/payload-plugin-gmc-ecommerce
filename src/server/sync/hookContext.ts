@@ -10,5 +10,10 @@ export const buildInternalSyncContext = (
 })
 
 export const shouldSkipSyncHooks = (context?: RequestContext): boolean => {
-  return context?.[GMC_SKIP_SYNC_HOOKS_CONTEXT_KEY] === true
+  // Many host apps use `skipCollectionHooks` on bulk/internal writes. Treat it
+  // the same as the plugin's own opt-out flag for GMC hooks.
+  return (
+    context?.[GMC_SKIP_SYNC_HOOKS_CONTEXT_KEY] === true ||
+    context?.skipCollectionHooks === true
+  )
 }

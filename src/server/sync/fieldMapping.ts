@@ -113,32 +113,52 @@ export const applyFieldMappings = (
 // Deep merge: target values are overwritten by source values
 // ---------------------------------------------------------------------------
 
+// Bound recursion so cyclic or pathologically deep product documents cannot
+// blow the call stack. When recursion is unsafe, source still wins.
+const MAX_MERGE_DEPTH = 100
+
 export const deepMerge = (
   target: Record<string, unknown>,
   source: Record<string, unknown>,
+  seen: WeakSet<object> = new WeakSet(),
+  depth = 0,
 ): Record<string, unknown> => {
   const result: Record<string, unknown> = { ...target }
 
-  for (const [key, value] of Object.entries(source)) {
-    if (value === undefined) {
-      continue
-    }
+  if (depth >= MAX_MERGE_DEPTH) {
+    // Too deep to keep merging safely — take source wholesale.
+    return { ...result, ...source }
+  }
 
-    if (
-      typeof value === 'object' &&
-      value !== null &&
-      !Array.isArray(value) &&
-      typeof result[key] === 'object' &&
-      result[key] !== null &&
-      !Array.isArray(result[key])
-    ) {
-      result[key] = deepMerge(
-        result[key] as Record<string, unknown>,
-        value as Record<string, unknown>,
-      )
-    } else {
-      result[key] = value
+  seen.add(source)
+
+  try {
+    for (const [key, value] of Object.entries(source)) {
+      if (value === undefined) {
+        continue
+      }
+
+      if (
+        typeof value === 'object' &&
+        value !== null &&
+        !Array.isArray(value) &&
+        typeof result[key] === 'object' &&
+        result[key] !== null &&
+        !Array.isArray(result[key]) &&
+        !seen.has(value)
+      ) {
+        result[key] = deepMerge(
+          result[key] as Record<string, unknown>,
+          value as Record<string, unknown>,
+          seen,
+          depth + 1,
+        )
+      } else {
+        result[key] = value
+      }
     }
+  } finally {
+    seen.delete(source)
   }
 
   return result

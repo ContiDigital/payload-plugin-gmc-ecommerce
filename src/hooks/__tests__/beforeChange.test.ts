@@ -189,4 +189,27 @@ describe('createBeforeChangeHook', () => {
 
     expect(result[MC_FIELD_GROUP_NAME]).toEqual({ enabled: true })
   })
+
+  test('skips dirty tracking when the host app skips collection hooks', () => {
+    const hook = createBeforeChangeHook(mockOptions())
+    const result = hook({
+      collection: {} as never,
+      context: { skipCollectionHooks: true },
+      data: {
+        title: 'Bulk update',
+      },
+      operation: 'update',
+      originalDoc: {
+        id: '1',
+        mc: {
+          enabled: true,
+          syncMeta: { dirty: false, state: 'success' },
+        },
+        sku: 'SKU-4',
+      },
+      req: {} as never,
+    }) as Record<string, unknown>
+
+    expect(result[MC_FIELD_GROUP_NAME]).toBeUndefined()
+  })
 })

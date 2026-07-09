@@ -1,4 +1,4 @@
-import type { Payload } from 'payload'
+import type { Payload, RequestContext } from 'payload'
 
 import type { NormalizedPluginOptions, ResolvedMCIdentity, SyncResult } from '../../types/index.js'
 import type { GoogleApiClient } from '../services/sub-services/googleApiClient.js'
@@ -179,15 +179,8 @@ export const pushProduct = async (args: {
       },
     }
 
-    await payload.update({
-      id: productId,
-      collection: collectionSlug as never,
-      context: buildInternalSyncContext(),
-      data: {
-        [MC_FIELD_GROUP_NAME]: persistedMCState,
-      } as never,
-      depth: 0,
-      overrideAccess: true,
+    await writeMCState(payload, collectionSlug, productId, {
+      [MC_FIELD_GROUP_NAME]: persistedMCState,
     })
 
     // 9. Sync local inventory (non-critical — failures are logged but don't fail the push)
@@ -458,14 +451,7 @@ const updateSyncMeta = async (
   const log = createPluginLogger(payload.logger, { operation: 'updateSyncMeta', productId })
 
   try {
-    await payload.update({
-      id: productId,
-      collection: collectionSlug as never,
-      context: buildInternalSyncContext(),
-      data: unflatten(updateData),
-      depth: 0,
-      overrideAccess: true,
-    })
+    await writeMCState(payload, collectionSlug, productId, unflatten(updateData))
   } catch (error) {
     log.error('Failed to update sync metadata — product state may be stale in admin UI', {
       collection: collectionSlug,
@@ -474,6 +460,105 @@ const updateSyncMeta = async (
       productId,
     })
   }
+}
+
+type DirectDBUpdateOne = (args: {
+  collection: string
+  data: Record<string, unknown>
+  options?: Record<string, unknown>
+  select?: Record<string, boolean>
+  where: { id: { equals: string } }
+}) => Promise<unknown>
+
+type PayloadWithDirectDB = {
+  db?: {
+    name?: string
+    packageName?: string
+    updateOne?: DirectDBUpdateOne
+  }
+} & Payload
+
+const shouldSuppressUpdatedAtWithNull = (payload: PayloadWithDirectDB): boolean => {
+  const adapterName = payload.db?.name
+  const packageName = payload.db?.packageName
+
+  return (
+    adapterName === 'postgres' ||
+    adapterName === 'sqlite' ||
+    packageName === '@payloadcms/db-postgres' ||
+    packageName === '@payloadcms/db-sqlite'
+  )
+}
+
+const directWriteOptionsForAdapter = (
+  payload: PayloadWithDirectDB,
+): Record<string, unknown> => {
+  const options: Record<string, unknown> = { upsert: false }
+
+  if (
+    payload.db?.name === 'mongodb' ||
+    payload.db?.packageName === '@payloadcms/db-mongodb'
+  ) {
+    options.timestamps = false
+  }
+
+  return options
+}
+
+// Persist plugin-owned MC state without treating bookkeeping as a content edit.
+// The direct adapter path avoids collection hooks and draft version creation.
+// Drizzle adapters used by Payload 3.84+ also honor `updatedAt: null` as a
+// timestamp-skip signal; Mongo receives `timestamps: false` via adapter options.
+const writeMCState = async (
+  payload: Payload,
+  collectionSlug: string,
+  productId: string,
+  data: Record<string, unknown>,
+): Promise<void> => {
+  const log = createPluginLogger(payload.logger, { operation: 'writeMCState', productId })
+
+  try {
+    const dbPayload = payload as PayloadWithDirectDB
+    const db = dbPayload.db
+    if (typeof db?.updateOne === 'function') {
+      const directData = shouldSuppressUpdatedAtWithNull(dbPayload)
+        ? { ...data, updatedAt: null }
+        : data
+
+      const result = await db.updateOne({
+        collection: collectionSlug,
+        data: directData,
+        options: directWriteOptionsForAdapter(dbPayload),
+        select: { id: true },
+        where: { id: { equals: productId } },
+      })
+
+      if (result === null) {
+        log.warn('Skipped MC-state write because product no longer exists', {
+          collection: collectionSlug,
+        })
+      }
+
+      return
+    }
+  } catch (error) {
+    log.error('Direct MC-state write failed; falling back to payload.update', {
+      collection: collectionSlug,
+      error: error instanceof Error ? error.message : String(error),
+      productId,
+    })
+  }
+
+  await payload.update({
+    id: productId,
+    collection: collectionSlug as never,
+    context: buildInternalSyncContext({
+      skipCollectionHooks: true,
+    } as RequestContext),
+    data: data as never,
+    depth: 0,
+    overrideAccess: true,
+  })
 }
 
 // ---------------------------------------------------------------------------

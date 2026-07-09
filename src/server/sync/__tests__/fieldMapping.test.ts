@@ -408,4 +408,51 @@ describe('deepMerge', () => {
 
     expect(result.a).toBeNull()
   })
+
+  test('does not recurse forever when the source contains a cycle', () => {
+    const source: Record<string, unknown> = { title: 'Cyclic Product' }
+    source.self = source
+
+    const result = deepMerge({ existing: true }, source)
+
+    expect(result.existing).toBe(true)
+    expect(result.title).toBe('Cyclic Product')
+    expect(result.self).toBe(source)
+  })
+
+  test('merges repeated source objects that are not on the current recursion path', () => {
+    const shared = { fromSource: true }
+    const target = {
+      first: { keepFirst: true },
+      second: { keepSecond: true },
+    }
+    const source = {
+      first: shared,
+      second: shared,
+    }
+
+    const result = deepMerge(target, source)
+
+    expect(result).toEqual({
+      first: { fromSource: true, keepFirst: true },
+      second: { fromSource: true, keepSecond: true },
+    })
+  })
+
+  test('caps recursion for pathologically deep objects', () => {
+    const buildDeepObject = (): Record<string, unknown> => {
+      const root: Record<string, unknown> = {}
+      let current = root
+
+      for (let i = 0; i < 150; i++) {
+        current.next = {}
+        current = current.next as Record<string, unknown>
+      }
+
+      current.value = 'bottom'
+      return root
+    }
+
+    expect(() => deepMerge(buildDeepObject(), buildDeepObject())).not.toThrow()
+  })
 })

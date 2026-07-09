@@ -151,6 +151,10 @@ describe('pushSync', () => {
     })
     expect(payload.update).toHaveBeenCalledTimes(2)
     expect(payload.update).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      context: expect.objectContaining({
+        'gmc:skip-sync-hooks': true,
+        skipCollectionHooks: true,
+      }),
       data: expect.objectContaining({
         [MC_FIELD_GROUP_NAME]: expect.objectContaining({
           syncMeta: expect.objectContaining({
@@ -579,5 +583,270 @@ describe('pushSync', () => {
       productId: 'prod-3',
       success: true,
     })
+  })
+})
+
+describe('updateSyncMeta write path', () => {
+  test('writes sync metadata through db.updateOne with timestamp suppression', async () => {
+    const identity = buildIdentity()
+    const dbUpdateOne = vi.fn().mockResolvedValue({})
+    const payload = {
+      db: {
+        name: 'postgres',
+        packageName: '@payloadcms/db-postgres',
+        updateOne: dbUpdateOne,
+      },
+      findByID: vi.fn().mockResolvedValue({ id: 'prod-1' }),
+      logger: {
+        error: vi.fn(),
+        warn: vi.fn(),
+      },
+      update: vi.fn().mockResolvedValue({}),
+    }
+    const retryService = {
+      execute: vi.fn((fn: () => Promise<unknown>) => fn()),
+    }
+    const apiClient = {
+      getProduct: vi.fn().mockResolvedValue({ data: { name: 'snapshot-1' } }),
+      insertProductInput: vi.fn().mockResolvedValue({}),
+    }
+
+    resolveIdentity.mockReturnValue({ ok: true, value: identity })
+    prepareProductForSync.mockResolvedValue({
+      action: 'insert',
+      input: {
+        contentLanguage: 'en',
+        feedLabel: 'US',
+        offerId: 'SKU-1',
+        productAttributes: {
+          availability: 'IN_STOCK',
+          imageLink: 'https://example.com/image.jpg',
+          link: 'https://example.com/product',
+          title: 'Product 1',
+        },
+      },
+      product: { id: 'prod-1' },
+    })
+    validateRequiredProductInput.mockReturnValue([])
+
+    const result = await pushProduct({
+      apiClient: apiClient as never,
+      options: buildOptions(),
+      payload: payload as never,
+      productId: 'prod-1',
+      retryService: retryService as never,
+    })
+
+    expect(result).toMatchObject({ action: 'insert', productId: 'prod-1', success: true })
+    expect(dbUpdateOne).toHaveBeenCalledTimes(2)
+    expect(dbUpdateOne).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      data: expect.objectContaining({ updatedAt: null }),
+      options: expect.objectContaining({ upsert: false }),
+      select: { id: true },
+      where: { id: { equals: 'prod-1' } },
+    }))
+    expect(dbUpdateOne).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      collection: 'products',
+      data: expect.objectContaining({
+        [MC_FIELD_GROUP_NAME]: expect.objectContaining({
+          snapshot: { name: 'snapshot-1' },
+          syncMeta: expect.objectContaining({
+            dirty: false,
+            lastError: null,
+            lastSyncedAt: expect.any(String),
+            state: 'success',
+          }),
+        }),
+        updatedAt: null,
+      }),
+      options: expect.objectContaining({ upsert: false }),
+      select: { id: true },
+      where: { id: { equals: 'prod-1' } },
+    }))
+    expect(dbUpdateOne.mock.calls[0][0]).not.toHaveProperty('id')
+    expect(payload.update).not.toHaveBeenCalled()
+  })
+
+  test('uses Mongo timestamp options without writing updatedAt null', async () => {
+    const identity = buildIdentity()
+    const dbUpdateOne = vi.fn().mockResolvedValue({})
+    const payload = {
+      db: {
+        name: 'mongodb',
+        packageName: '@payloadcms/db-mongodb',
+        updateOne: dbUpdateOne,
+      },
+      findByID: vi.fn().mockResolvedValue({ id: 'prod-1' }),
+      logger: {
+        error: vi.fn(),
+        warn: vi.fn(),
+      },
+      update: vi.fn().mockResolvedValue({}),
+    }
+    const retryService = {
+      execute: vi.fn((fn: () => Promise<unknown>) => fn()),
+    }
+    const apiClient = {
+      getProduct: vi.fn().mockResolvedValue({ data: { name: 'snapshot-1' } }),
+      insertProductInput: vi.fn().mockResolvedValue({}),
+    }
+
+    resolveIdentity.mockReturnValue({ ok: true, value: identity })
+    prepareProductForSync.mockResolvedValue({
+      action: 'insert',
+      input: {
+        contentLanguage: 'en',
+        feedLabel: 'US',
+        offerId: 'SKU-1',
+        productAttributes: {
+          availability: 'IN_STOCK',
+          imageLink: 'https://example.com/image.jpg',
+          link: 'https://example.com/product',
+          title: 'Product 1',
+        },
+      },
+      product: { id: 'prod-1' },
+    })
+    validateRequiredProductInput.mockReturnValue([])
+
+    await pushProduct({
+      apiClient: apiClient as never,
+      options: buildOptions(),
+      payload: payload as never,
+      productId: 'prod-1',
+      retryService: retryService as never,
+    })
+
+    expect(dbUpdateOne).toHaveBeenCalledTimes(2)
+    expect(dbUpdateOne).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      data: expect.not.objectContaining({ updatedAt: expect.anything() }),
+      options: expect.objectContaining({
+        timestamps: false,
+        upsert: false,
+      }),
+    }))
+    expect(payload.update).not.toHaveBeenCalled()
+  })
+
+  test('falls back to payload.update when db.updateOne throws', async () => {
+    const identity = buildIdentity()
+    const dbUpdateOne = vi.fn().mockRejectedValue(new Error('adapter exploded'))
+    const payload = {
+      db: {
+        name: 'postgres',
+        packageName: '@payloadcms/db-postgres',
+        updateOne: dbUpdateOne,
+      },
+      findByID: vi.fn().mockResolvedValue({ id: 'prod-1' }),
+      logger: {
+        error: vi.fn(),
+        warn: vi.fn(),
+      },
+      update: vi.fn().mockResolvedValue({}),
+    }
+    const retryService = {
+      execute: vi.fn((fn: () => Promise<unknown>) => fn()),
+    }
+    const apiClient = {
+      getProduct: vi.fn().mockResolvedValue({ data: { name: 'snapshot-1' } }),
+      insertProductInput: vi.fn().mockResolvedValue({}),
+    }
+
+    resolveIdentity.mockReturnValue({ ok: true, value: identity })
+    prepareProductForSync.mockResolvedValue({
+      action: 'insert',
+      input: {
+        contentLanguage: 'en',
+        feedLabel: 'US',
+        offerId: 'SKU-1',
+        productAttributes: {
+          availability: 'IN_STOCK',
+          imageLink: 'https://example.com/image.jpg',
+          link: 'https://example.com/product',
+          title: 'Product 1',
+        },
+      },
+      product: { id: 'prod-1' },
+    })
+    validateRequiredProductInput.mockReturnValue([])
+
+    await pushProduct({
+      apiClient: apiClient as never,
+      options: buildOptions(),
+      payload: payload as never,
+      productId: 'prod-1',
+      retryService: retryService as never,
+    })
+
+    expect(dbUpdateOne).toHaveBeenCalledTimes(2)
+    expect(payload.update).toHaveBeenCalledTimes(2)
+    expect(payload.update).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      context: expect.objectContaining({
+        'gmc:skip-sync-hooks': true,
+        skipCollectionHooks: true,
+      }),
+    }))
+  })
+
+  test('does not fall back when db.updateOne reports a missing product', async () => {
+    const identity = buildIdentity()
+    const dbUpdateOne = vi.fn().mockResolvedValue(null)
+    const payload = {
+      db: {
+        name: 'postgres',
+        packageName: '@payloadcms/db-postgres',
+        updateOne: dbUpdateOne,
+      },
+      findByID: vi.fn().mockResolvedValue({ id: 'prod-1' }),
+      logger: {
+        error: vi.fn(),
+        warn: vi.fn(),
+      },
+      update: vi.fn().mockResolvedValue({}),
+    }
+    const retryService = {
+      execute: vi.fn((fn: () => Promise<unknown>) => fn()),
+    }
+    const apiClient = {
+      getProduct: vi.fn().mockResolvedValue({ data: { name: 'snapshot-1' } }),
+      insertProductInput: vi.fn().mockResolvedValue({}),
+    }
+
+    resolveIdentity.mockReturnValue({ ok: true, value: identity })
+    prepareProductForSync.mockResolvedValue({
+      action: 'insert',
+      input: {
+        contentLanguage: 'en',
+        feedLabel: 'US',
+        offerId: 'SKU-1',
+        productAttributes: {
+          availability: 'IN_STOCK',
+          imageLink: 'https://example.com/image.jpg',
+          link: 'https://example.com/product',
+          title: 'Product 1',
+        },
+      },
+      product: { id: 'prod-1' },
+    })
+    validateRequiredProductInput.mockReturnValue([])
+
+    await pushProduct({
+      apiClient: apiClient as never,
+      options: buildOptions(),
+      payload: payload as never,
+      productId: 'prod-1',
+      retryService: retryService as never,
+    })
+
+    expect(dbUpdateOne).toHaveBeenCalledTimes(2)
+    expect(payload.update).not.toHaveBeenCalled()
+    expect(payload.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        collection: 'products',
+        operation: 'writeMCState',
+        productId: 'prod-1',
+      }),
+      '[GMC] Skipped MC-state write because product no longer exists',
+    )
   })
 })

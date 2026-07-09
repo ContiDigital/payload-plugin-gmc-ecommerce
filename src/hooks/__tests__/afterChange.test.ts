@@ -187,4 +187,26 @@ describe('createAfterChangeHook', () => {
     expect(queueProductPushJob).not.toHaveBeenCalled()
     expect(pushProduct).not.toHaveBeenCalled()
   })
+
+  test('does not queue a push when the host app skips collection hooks', async () => {
+    const hook = createAfterChangeHook(mockOptions())
+
+    await hook({
+      collection: {} as never,
+      context: { skipCollectionHooks: true },
+      doc: {
+        id: 'prod-4',
+        [MC_FIELD_GROUP_NAME]: {
+          enabled: true,
+          syncMeta: { dirty: true },
+        },
+      },
+      operation: 'update',
+      previousDoc: {} as never,
+      req: { payload: {} } as never,
+    })
+
+    expect(queueProductPushJob).not.toHaveBeenCalled()
+    expect(pushProduct).not.toHaveBeenCalled()
+  })
 })

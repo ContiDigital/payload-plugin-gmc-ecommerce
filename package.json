@@ -1,6 +1,6 @@
 {
   "name": "payload-plugin-gmc-ecommerce",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Google Merchant Center integration plugin for Payload CMS - full product sync, field mapping, and admin UI",
   "license": "MIT",
   "repository": {
@@ -63,6 +63,7 @@
     "lint": "eslint src --max-warnings=0",
     "lint:fix": "eslint src --fix",
     "pack:smoke": "bash ./scripts/pack-smoke.sh",
+    "prepare": "pnpm build",
     "prepack": "pnpm build",
     "release:check": "pnpm lint && pnpm exec tsc --noEmit && pnpm test:coverage && pnpm build && pnpm pack:smoke",
     "test": "pnpm test:int",
