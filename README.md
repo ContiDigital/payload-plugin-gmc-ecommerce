@@ -20,7 +20,7 @@ This plugin powers the [Fine's Gallery](https://finesgallery.com) Google Shoppin
 
 The plugin manages Fine's entire Merchant Center catalog - syncing thousands of products, segmenting them into paid Shopping campaigns via `customLabel` fields, and providing a simple way for non-technical users to manage everything from the admin panel.
 
-Read more for how Fine's Gallery uses Google Shopping to generate $200+k in monthly revenue: [Google Shopping for High-Ticket Ecommerce: The Fine's Gallery Playbook](https://www.petertconti.com/blog/google-shopping-for-high-ticket-ecommerce-the-fines-gallery-playbook)
+Read more for how Fine's Gallery built Google Shopping into its primary revenue channel: [Google Shopping for High-Ticket Ecommerce: The Fine's Gallery Playbook](https://www.petertconti.com/blog/google-shopping-for-high-ticket-ecommerce-the-fines-gallery-playbook)
 
 ## Requirements
 
