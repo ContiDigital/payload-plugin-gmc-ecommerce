@@ -351,6 +351,24 @@ When a product is saved and `mode` is `onChange`:
 3. The push runs in the background: resolve identity, apply field mappings, apply `beforePush`, insert product input, fetch snapshot, update sync metadata.
 4. If the push fails, the error is written to `mc.syncMeta.lastError` and `mc.syncMeta.state` is set to `'error'`.
 
+### Drafts and Versioned Product Collections
+
+If your products collection has `versions: { drafts: true }`, the plugin treats the **published (live) row** as the source of truth and never writes across the draft boundary:
+
+- **What gets pushed to Merchant Center** is the live row. `pushProduct` reads the product without `draft: true`, so a pending draft's unpublished content is never sent to Google.
+- **Sync bookkeeping** (`mc.syncMeta.*`, `mc.snapshot`, `mc.attrs.*`) is written with an explicit `draft: false`, and only when there is **no pending draft** in front of the live row.
+- **When a pending draft does exist**, the write is skipped and logged:
+
+  ```
+  [GMC] MC state not persisted: pending draft; will persist on next publish/sync
+  ```
+
+  `mc.syncMeta.dirty` stays `true`, so the state is persisted on the next publish or scheduled sync. Nothing is lost; the admin UI's sync panel simply shows the previous state until then.
+
+This matters because Payload's update operation resolves its base document from the *latest* version. Merging bookkeeping onto a published document that has a newer draft would copy that draft's content — and its `_status: 'draft'` — onto the live row, unpublishing it. See CHANGELOG 1.2.2.
+
+> **Note:** In `onChange` mode the `afterChange` hook does not distinguish a draft save from a publish, so saving a draft on a Merchant-Center-enabled product triggers a push. That push is harmless — it re-sends the already-published content — but it does consume MC API quota. Use `scheduled` mode if draft-heavy editing is making the push volume noisy.
+
 ### Rate Limiter Behavior Under Load
 
 If many products save simultaneously (e.g., a bulk update triggers 1000 onChange pushes):

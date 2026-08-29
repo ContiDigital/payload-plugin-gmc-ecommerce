@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-08-29
+
+### Fixed
+
+- **Critical: a bookkeeping write could unpublish a live product.** When a product had a pending draft version, the plugin's sync-state write reached `payload.update()` without a `draft` argument. Payload resolves that operation's base document with `getLatestCollectionVersion`, which returns the *latest* version — the draft — and then writes the merged result, `_status: 'draft'` included, straight onto the live row. A staff (or API) "save draft" on a published product followed by an `onChange` push therefore unpublished it. Sync state is now written only when there is no pending draft, always with an explicit `draft: false`, and `_status` is never sent.
+- **Critical: the direct database-adapter write corrupted array fields.** `payload.db.updateOne()` routes through `upsertRow`, which documents itself as a full-row replace that "does not support partial updates". Two failures were reproduced against a real drizzle adapter: (1) array rows were written without the `id` that Payload's `baseIDField` `beforeChange` hook normally generates, so `mc.attrs.productTypes` inserts hit `insert into mc_product_types (_order, _parent_id, id, value) values ($1, $2, default, $3)` against a `varchar PRIMARY KEY NOT NULL` column and failed; and (2) `transformForWrite` registers *every* array field of the collection for deletion, including ones absent from the payload, so a partial `mc` write truncated unrelated array fields on the same collection — non-transactionally, so the deletes survived the failed insert. The direct-adapter path has been removed.
+- Pull sync (single and bulk) and initial sync wrote MC state the same unguarded way and had the same unpublish hazard. All four write sites now share one draft-safe writer.
+
+### Changed
+
+- Sync-state persistence lives in `src/server/sync/mcStateWriter.ts` (`writeMCState`, `hasPendingDraft`, `collectionHasDrafts`). When a pending draft exists the write is skipped and logged as `MC state not persisted: pending draft; will persist on next publish/sync`; `mc.syncMeta.dirty` stays `true`, so the next publish or scheduled sync persists it. An indeterminate draft state (unreadable version timeline) skips the same way rather than risking a clobber.
+- Because the direct-adapter path is gone, sync-state writes once again go through `payload.update()` — as they did in 1.2.0 and earlier — so they bump `updatedAt` and append a version on versioned collections. Correctness over write volume: the adapter shortcut is not safe on any adapter that lacks the `shouldUseOptimizedUpsertRow` fast path (Payload < ~3.80), where it truncated array fields even for scalar-only writes.
+
+### Internal
+
+- New unit suite `src/server/sync/__tests__/mcStateWriter.test.ts` covers drafts detection (including a localized `_status` object), the pending-draft refusal, the `draft: false` write shape, indeterminate draft state, and deleted-product handling.
+- New real-adapter suite `dev/draft-safety.int.spec.ts` (sqlite, `versions.drafts: true`, plus an unrelated array field on the same collection) proves: the production data shape — `mc.attrs.productTypes` included — now persists and the product stays published; a pending draft is never merged onto the live row; and, as a standing record of why the shortcut was removed, that `db.updateOne` both throws on `mc_product_types.id` and truncates the unrelated array.
+- `pushSync.test.ts`'s direct-write assertions were replaced with draft-safety assertions at the `pushProduct` level.
+
 ## [1.2.1] - 2026-07-09
 
 ### Fixed

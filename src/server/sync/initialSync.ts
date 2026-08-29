@@ -12,8 +12,8 @@ import type { RetryService } from '../services/sub-services/retryService.js'
 import { MC_FIELD_GROUP_NAME } from '../../constants.js'
 import { GoogleApiError } from '../services/sub-services/googleApiClient.js'
 import { asProductDoc } from '../utilities/recordUtils.js'
-import { buildInternalSyncContext } from './hookContext.js'
 import { resolveIdentity } from './identityResolver.js'
+import { writeMCState } from './mcStateWriter.js'
 import { prepareProductForSync, validateRequiredProductInput } from './productPreparation.js'
 
 type InitialSyncOptions = {
@@ -292,25 +292,18 @@ const processInitialSyncProduct = async (args: {
     }
 
     // Persist MC state on the document
-    await payload.update({
-      id: productId,
-      collection: collectionSlug as never,
-      context: buildInternalSyncContext(),
-      data: {
-        [MC_FIELD_GROUP_NAME]: {
-          ...doc[MC_FIELD_GROUP_NAME],
-          snapshot,
-          syncMeta: {
-            lastAction: 'initialSync',
-            lastError: null,
-            lastSyncedAt: new Date().toISOString(),
-            state: 'success',
-            syncSource: 'initial',
-          },
+    await writeMCState(payload, collectionSlug, productId, {
+      [MC_FIELD_GROUP_NAME]: {
+        ...doc[MC_FIELD_GROUP_NAME],
+        snapshot,
+        syncMeta: {
+          lastAction: 'initialSync',
+          lastError: null,
+          lastSyncedAt: new Date().toISOString(),
+          state: 'success',
+          syncSource: 'initial',
         },
-      } as never,
-      depth: 0,
-      overrideAccess: true,
+      },
     })
 
     return { result: 'succeeded' }

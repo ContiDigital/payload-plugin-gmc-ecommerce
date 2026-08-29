@@ -586,32 +586,9 @@ describe('pushSync', () => {
   })
 })
 
-describe('updateSyncMeta write path', () => {
-  test('writes sync metadata through db.updateOne with timestamp suppression', async () => {
-    const identity = buildIdentity()
-    const dbUpdateOne = vi.fn().mockResolvedValue({})
-    const payload = {
-      db: {
-        name: 'postgres',
-        packageName: '@payloadcms/db-postgres',
-        updateOne: dbUpdateOne,
-      },
-      findByID: vi.fn().mockResolvedValue({ id: 'prod-1' }),
-      logger: {
-        error: vi.fn(),
-        warn: vi.fn(),
-      },
-      update: vi.fn().mockResolvedValue({}),
-    }
-    const retryService = {
-      execute: vi.fn((fn: () => Promise<unknown>) => fn()),
-    }
-    const apiClient = {
-      getProduct: vi.fn().mockResolvedValue({ data: { name: 'snapshot-1' } }),
-      insertProductInput: vi.fn().mockResolvedValue({}),
-    }
-
-    resolveIdentity.mockReturnValue({ ok: true, value: identity })
+describe('MC-state persistence is draft-safe', () => {
+  const buildPushMocks = () => {
+    resolveIdentity.mockReturnValue({ ok: true, value: buildIdentity() })
     prepareProductForSync.mockResolvedValue({
       action: 'insert',
       input: {
@@ -622,12 +599,40 @@ describe('updateSyncMeta write path', () => {
           availability: 'IN_STOCK',
           imageLink: 'https://example.com/image.jpg',
           link: 'https://example.com/product',
+          productTypes: ['Statues > Marble'],
           title: 'Product 1',
         },
       },
       product: { id: 'prod-1' },
     })
     validateRequiredProductInput.mockReturnValue([])
+
+    return {
+      apiClient: {
+        getProduct: vi.fn().mockResolvedValue({ data: { name: 'snapshot-1' } }),
+        insertProductInput: vi.fn().mockResolvedValue({}),
+      },
+      retryService: { execute: vi.fn((fn: () => Promise<unknown>) => fn()) },
+    }
+  }
+
+  const buildPayload = (args: { drafts: boolean; latestStatus?: string }) => {
+    const findVersions = vi.fn().mockResolvedValue(
+      args.latestStatus ? { docs: [{ version: { _status: args.latestStatus } }] } : { docs: [] },
+    )
+
+    return {
+      collections: { products: { config: { versions: { drafts: args.drafts } } } },
+      db: { findVersions, updateOne: vi.fn() },
+      findByID: vi.fn().mockResolvedValue({ id: 'prod-1' }),
+      logger: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
+      update: vi.fn().mockResolvedValue({}),
+    }
+  }
+
+  test('writes bookkeeping with draft:false and never touches the raw adapter', async () => {
+    const { apiClient, retryService } = buildPushMocks()
+    const payload = buildPayload({ drafts: true, latestStatus: 'published' })
 
     const result = await pushProduct({
       apiClient: apiClient as never,
@@ -638,197 +643,65 @@ describe('updateSyncMeta write path', () => {
     })
 
     expect(result).toMatchObject({ action: 'insert', productId: 'prod-1', success: true })
-    expect(dbUpdateOne).toHaveBeenCalledTimes(2)
-    expect(dbUpdateOne).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      data: expect.objectContaining({ updatedAt: null }),
-      options: expect.objectContaining({ upsert: false }),
-      select: { id: true },
-      where: { id: { equals: 'prod-1' } },
-    }))
-    expect(dbUpdateOne).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      collection: 'products',
-      data: expect.objectContaining({
-        [MC_FIELD_GROUP_NAME]: expect.objectContaining({
-          snapshot: { name: 'snapshot-1' },
-          syncMeta: expect.objectContaining({
-            dirty: false,
-            lastError: null,
-            lastSyncedAt: expect.any(String),
-            state: 'success',
-          }),
-        }),
-        updatedAt: null,
-      }),
-      options: expect.objectContaining({ upsert: false }),
-      select: { id: true },
-      where: { id: { equals: 'prod-1' } },
-    }))
-    expect(dbUpdateOne.mock.calls[0][0]).not.toHaveProperty('id')
-    expect(payload.update).not.toHaveBeenCalled()
-  })
-
-  test('uses Mongo timestamp options without writing updatedAt null', async () => {
-    const identity = buildIdentity()
-    const dbUpdateOne = vi.fn().mockResolvedValue({})
-    const payload = {
-      db: {
-        name: 'mongodb',
-        packageName: '@payloadcms/db-mongodb',
-        updateOne: dbUpdateOne,
-      },
-      findByID: vi.fn().mockResolvedValue({ id: 'prod-1' }),
-      logger: {
-        error: vi.fn(),
-        warn: vi.fn(),
-      },
-      update: vi.fn().mockResolvedValue({}),
-    }
-    const retryService = {
-      execute: vi.fn((fn: () => Promise<unknown>) => fn()),
-    }
-    const apiClient = {
-      getProduct: vi.fn().mockResolvedValue({ data: { name: 'snapshot-1' } }),
-      insertProductInput: vi.fn().mockResolvedValue({}),
-    }
-
-    resolveIdentity.mockReturnValue({ ok: true, value: identity })
-    prepareProductForSync.mockResolvedValue({
-      action: 'insert',
-      input: {
-        contentLanguage: 'en',
-        feedLabel: 'US',
-        offerId: 'SKU-1',
-        productAttributes: {
-          availability: 'IN_STOCK',
-          imageLink: 'https://example.com/image.jpg',
-          link: 'https://example.com/product',
-          title: 'Product 1',
-        },
-      },
-      product: { id: 'prod-1' },
-    })
-    validateRequiredProductInput.mockReturnValue([])
-
-    await pushProduct({
-      apiClient: apiClient as never,
-      options: buildOptions(),
-      payload: payload as never,
-      productId: 'prod-1',
-      retryService: retryService as never,
-    })
-
-    expect(dbUpdateOne).toHaveBeenCalledTimes(2)
-    expect(dbUpdateOne).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      data: expect.not.objectContaining({ updatedAt: expect.anything() }),
-      options: expect.objectContaining({
-        timestamps: false,
-        upsert: false,
-      }),
-    }))
-    expect(payload.update).not.toHaveBeenCalled()
-  })
-
-  test('falls back to payload.update when db.updateOne throws', async () => {
-    const identity = buildIdentity()
-    const dbUpdateOne = vi.fn().mockRejectedValue(new Error('adapter exploded'))
-    const payload = {
-      db: {
-        name: 'postgres',
-        packageName: '@payloadcms/db-postgres',
-        updateOne: dbUpdateOne,
-      },
-      findByID: vi.fn().mockResolvedValue({ id: 'prod-1' }),
-      logger: {
-        error: vi.fn(),
-        warn: vi.fn(),
-      },
-      update: vi.fn().mockResolvedValue({}),
-    }
-    const retryService = {
-      execute: vi.fn((fn: () => Promise<unknown>) => fn()),
-    }
-    const apiClient = {
-      getProduct: vi.fn().mockResolvedValue({ data: { name: 'snapshot-1' } }),
-      insertProductInput: vi.fn().mockResolvedValue({}),
-    }
-
-    resolveIdentity.mockReturnValue({ ok: true, value: identity })
-    prepareProductForSync.mockResolvedValue({
-      action: 'insert',
-      input: {
-        contentLanguage: 'en',
-        feedLabel: 'US',
-        offerId: 'SKU-1',
-        productAttributes: {
-          availability: 'IN_STOCK',
-          imageLink: 'https://example.com/image.jpg',
-          link: 'https://example.com/product',
-          title: 'Product 1',
-        },
-      },
-      product: { id: 'prod-1' },
-    })
-    validateRequiredProductInput.mockReturnValue([])
-
-    await pushProduct({
-      apiClient: apiClient as never,
-      options: buildOptions(),
-      payload: payload as never,
-      productId: 'prod-1',
-      retryService: retryService as never,
-    })
-
-    expect(dbUpdateOne).toHaveBeenCalledTimes(2)
+    expect(payload.db.updateOne).not.toHaveBeenCalled()
     expect(payload.update).toHaveBeenCalledTimes(2)
-    expect(payload.update).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      context: expect.objectContaining({
-        'gmc:skip-sync-hooks': true,
-        skipCollectionHooks: true,
+
+    for (const [call] of payload.update.mock.calls) {
+      expect(call).toMatchObject({
+        id: 'prod-1',
+        collection: 'products',
+        context: expect.objectContaining({
+          'gmc:skip-sync-hooks': true,
+          skipCollectionHooks: true,
+        }),
+        depth: 0,
+        draft: false,
+        overrideAccess: true,
+      })
+      expect(call.data).not.toHaveProperty('_status')
+    }
+
+    // The final write carries the full MC state, arrays included.
+    expect(payload.update.mock.calls[1][0].data).toMatchObject({
+      [MC_FIELD_GROUP_NAME]: expect.objectContaining({
+        snapshot: { name: 'snapshot-1' },
+        syncMeta: expect.objectContaining({ dirty: false, lastError: null, state: 'success' }),
       }),
-    }))
+    })
+    expect(
+      payload.update.mock.calls[1][0].data[MC_FIELD_GROUP_NAME][
+        MC_PRODUCT_ATTRIBUTES_FIELD_NAME
+      ].productTypes,
+    ).toEqual([{ value: 'Statues > Marble' }])
   })
 
-  test('does not fall back when db.updateOne reports a missing product', async () => {
-    const identity = buildIdentity()
-    const dbUpdateOne = vi.fn().mockResolvedValue(null)
-    const payload = {
-      db: {
-        name: 'postgres',
-        packageName: '@payloadcms/db-postgres',
-        updateOne: dbUpdateOne,
-      },
-      findByID: vi.fn().mockResolvedValue({ id: 'prod-1' }),
-      logger: {
-        error: vi.fn(),
-        warn: vi.fn(),
-      },
-      update: vi.fn().mockResolvedValue({}),
-    }
-    const retryService = {
-      execute: vi.fn((fn: () => Promise<unknown>) => fn()),
-    }
-    const apiClient = {
-      getProduct: vi.fn().mockResolvedValue({ data: { name: 'snapshot-1' } }),
-      insertProductInput: vi.fn().mockResolvedValue({}),
-    }
+  test('refuses every bookkeeping write while a pending draft sits in front of the live row', async () => {
+    const { apiClient, retryService } = buildPushMocks()
+    const payload = buildPayload({ drafts: true, latestStatus: 'draft' })
 
-    resolveIdentity.mockReturnValue({ ok: true, value: identity })
-    prepareProductForSync.mockResolvedValue({
-      action: 'insert',
-      input: {
-        contentLanguage: 'en',
-        feedLabel: 'US',
-        offerId: 'SKU-1',
-        productAttributes: {
-          availability: 'IN_STOCK',
-          imageLink: 'https://example.com/image.jpg',
-          link: 'https://example.com/product',
-          title: 'Product 1',
-        },
-      },
-      product: { id: 'prod-1' },
+    const result = await pushProduct({
+      apiClient: apiClient as never,
+      options: buildOptions(),
+      payload: payload as never,
+      productId: 'prod-1',
+      retryService: retryService as never,
     })
-    validateRequiredProductInput.mockReturnValue([])
+
+    // The Merchant Center push itself still ran against the published row.
+    expect(result).toMatchObject({ action: 'insert', productId: 'prod-1', success: true })
+    expect(apiClient.insertProductInput).toHaveBeenCalledTimes(1)
+
+    expect(payload.update).not.toHaveBeenCalled()
+    expect(payload.db.updateOne).not.toHaveBeenCalled()
+    expect(payload.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ collection: 'products', productId: 'prod-1' }),
+      '[GMC] MC state not persisted: pending draft; will persist on next publish/sync',
+    )
+  })
+
+  test('does not query the version timeline for a collection without drafts', async () => {
+    const { apiClient, retryService } = buildPushMocks()
+    const payload = buildPayload({ drafts: false })
 
     await pushProduct({
       apiClient: apiClient as never,
@@ -838,15 +711,27 @@ describe('updateSyncMeta write path', () => {
       retryService: retryService as never,
     })
 
-    expect(dbUpdateOne).toHaveBeenCalledTimes(2)
+    expect(payload.db.findVersions).not.toHaveBeenCalled()
+    expect(payload.update).toHaveBeenCalledTimes(2)
+  })
+
+  test('a pending draft also blocks the error and refresh bookkeeping paths', async () => {
+    const { retryService } = buildPushMocks()
+    const payload = buildPayload({ drafts: true, latestStatus: 'draft' })
+    const apiClient = {
+      getProduct: vi.fn().mockRejectedValue(new Error('mc unavailable')),
+      insertProductInput: vi.fn().mockRejectedValue(new Error('mc unavailable')),
+    }
+
+    const result = await pushProduct({
+      apiClient: apiClient as never,
+      options: buildOptions(),
+      payload: payload as never,
+      productId: 'prod-1',
+      retryService: retryService as never,
+    })
+
+    expect(result).toMatchObject({ success: false })
     expect(payload.update).not.toHaveBeenCalled()
-    expect(payload.logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        collection: 'products',
-        operation: 'writeMCState',
-        productId: 'prod-1',
-      }),
-      '[GMC] Skipped MC-state write because product no longer exists',
-    )
   })
 })

@@ -17,8 +17,8 @@ import { createPluginLogger } from '../utilities/logger.js'
 import { asProductDoc } from '../utilities/recordUtils.js'
 import { checkPullConflict, extractMCProductLastModified } from './conflictResolver.js'
 import { deepMerge } from './fieldMapping.js'
-import { buildInternalSyncContext } from './hookContext.js'
 import { resolveIdentity } from './identityResolver.js'
+import { writeMCState } from './mcStateWriter.js'
 import { productAttributesContainRemoteSubset, reverseTransformProduct } from './transformers.js'
 
 // ---------------------------------------------------------------------------
@@ -100,33 +100,26 @@ export const pullProduct = async (args: {
     const mergedProductAttributes = deepMerge(localAttrs ?? {}, productAttributes)
     const populatedFields = Object.keys(productAttributes)
 
-    await payload.update({
-      id: productId,
-      collection: collectionSlug as never,
-      context: buildInternalSyncContext(),
-      data: {
-        [MC_FIELD_GROUP_NAME]: {
-          customAttributes,
-          enabled: true,
-          identity: {
-            contentLanguage: identity.contentLanguage,
-            feedLabel: identity.feedLabel,
-            offerId: identity.offerId,
-          },
-          [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: mergedProductAttributes,
-          snapshot: mcProduct,
-          syncMeta: {
-            dirty: false,
-            lastAction: 'pullSync',
-            lastError: null,
-            lastSyncedAt: new Date().toISOString(),
-            state: 'success',
-            syncSource: 'pull',
-          },
+    await writeMCState(payload, collectionSlug, productId, {
+      [MC_FIELD_GROUP_NAME]: {
+        customAttributes,
+        enabled: true,
+        identity: {
+          contentLanguage: identity.contentLanguage,
+          feedLabel: identity.feedLabel,
+          offerId: identity.offerId,
         },
-      } as never,
-      depth: 0,
-      overrideAccess: true,
+        [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: mergedProductAttributes,
+        snapshot: mcProduct,
+        syncMeta: {
+          dirty: false,
+          lastAction: 'pullSync',
+          lastError: null,
+          lastSyncedAt: new Date().toISOString(),
+          state: 'success',
+          syncSource: 'pull',
+        },
+      },
     })
 
     return {
@@ -265,11 +258,11 @@ export const pullAll = async (args: {
 
           const { customAttributes, productAttributes } = reverseTransformProduct(fullProduct)
 
-          await payload.update({
-            id: typeof payloadProduct.id === 'string' ? payloadProduct.id : String(payloadProduct.id),
-            collection: collectionSlug as never,
-            context: buildInternalSyncContext(),
-            data: {
+          await writeMCState(
+            payload,
+            collectionSlug,
+            typeof payloadProduct.id === 'string' ? payloadProduct.id : String(payloadProduct.id),
+            {
               [MC_FIELD_GROUP_NAME]: {
                 customAttributes,
                 enabled: true,
@@ -289,10 +282,8 @@ export const pullAll = async (args: {
                   syncSource: 'pull',
                 },
               },
-            } as never,
-            depth: 0,
-            overrideAccess: true,
-          })
+            },
+          )
 
           report.matched++
           report.succeeded++

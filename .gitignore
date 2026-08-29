@@ -48,3 +48,6 @@ yarn-error.log*
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+
+# packed tarballs (local hand-off builds)
+/.pack/
