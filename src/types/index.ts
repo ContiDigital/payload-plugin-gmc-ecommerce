@@ -86,8 +86,20 @@ export type MCStructuredContent = {
 // Merchant Center shipping
 // ---------------------------------------------------------------------------
 
+/**
+ * Google's documented shipping sub-attributes. Text feeds serialize these in a
+ * fixed positional order, so a sub-attribute added by Google later must be
+ * mapped deliberately rather than appended.
+ */
 export type MCShipping = {
   country?: string
+  locationGroupName?: string
+  locationId?: string
+  maxHandlingTime?: string
+  maxTransitTime?: string
+  minHandlingTime?: string
+  minTransitTime?: string
+  postalCode?: string
   price?: MCPrice
   region?: string
   service?: string
@@ -226,6 +238,11 @@ export type MCProductInput = {
   contentLanguage: string
   customAttributes?: MCCustomAttribute[]
   feedLabel: string
+  /**
+   * Merchant API v1 replacement for the Content API `LOCAL` channel: true marks
+   * an offer sold only in physical stores.
+   */
+  legacyLocal?: boolean
   offerId: string
   productAttributes?: MCProductAttributes
 }

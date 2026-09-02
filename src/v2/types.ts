@@ -354,6 +354,11 @@ export type GmcFeedFormatResult = {
   body: Uint8Array
   contentType: string
   extension: string
+  /**
+   * Attributes the format could not represent. Serialization omits them rather
+   * than failing a whole feed, and the caller surfaces them once per build.
+   */
+  warnings?: GmcProjectionWarning[]
 }
 
 export type GmcFeedFormatAdapter = {

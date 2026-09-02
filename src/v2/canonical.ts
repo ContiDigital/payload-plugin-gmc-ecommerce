@@ -25,6 +25,21 @@ export type GmcValidationIssue = {
   path: string
 }
 
+const issue = (code: string, path: string, message: string): GmcValidationIssue => ({
+  code,
+  message,
+  path,
+})
+
+const addIssue = (
+  issues: GmcValidationIssue[],
+  code: string,
+  path: string,
+  message: string,
+): void => {
+  issues.push(issue(code, path, message))
+}
+
 export class GmcProjectionValidationError extends TypeError {
   readonly issues: GmcValidationIssue[]
 
@@ -72,36 +87,38 @@ const canonicalizeWarnings = (value: unknown): GmcProjectionWarning[] => {
   }
   if (!Array.isArray(value) || value.length > MAX_PROJECTION_WARNINGS) {
     throw new GmcProjectionValidationError([
-      {
-        code: 'count',
-        message: `must be an array containing at most ${MAX_PROJECTION_WARNINGS} warnings`,
-        path: 'projection.warnings',
-      },
+      issue(
+        'count',
+        'projection.warnings',
+        `must be an array containing at most ${MAX_PROJECTION_WARNINGS} warnings`,
+      ),
     ])
   }
   const issues: GmcValidationIssue[] = []
   const warnings = value.map((entry, index): GmcProjectionWarning => {
     const prefix = `projection.warnings[${index}]`
     if (!isRecord(entry) || Object.getPrototypeOf(entry) !== Object.prototype) {
-      issues.push({ code: 'type', message: 'must be a plain object', path: prefix })
+      addIssue(issues, 'type', prefix, 'must be a plain object')
       return { code: 'INVALID', message: 'Invalid warning' }
     }
     const code = typeof entry.code === 'string' ? entry.code.trim() : ''
     const message = typeof entry.message === 'string' ? entry.message.trim() : ''
     const path = typeof entry.path === 'string' ? entry.path.trim() : entry.path
     if (!code || code.length > MAX_WARNING_CODE_LENGTH || !/^[\w.:-]+$/.test(code)) {
-      issues.push({
-        code: 'warning_code',
-        message: `must contain 1-${MAX_WARNING_CODE_LENGTH} safe characters`,
-        path: `${prefix}.code`,
-      })
+      addIssue(
+        issues,
+        'warning_code',
+        `${prefix}.code`,
+        `must contain 1-${MAX_WARNING_CODE_LENGTH} safe characters`,
+      )
     }
     if (!message || message.length > MAX_WARNING_MESSAGE_LENGTH || hasControlCharacters(message)) {
-      issues.push({
-        code: 'warning_message',
-        message: `must contain 1-${MAX_WARNING_MESSAGE_LENGTH} safe characters`,
-        path: `${prefix}.message`,
-      })
+      addIssue(
+        issues,
+        'warning_message',
+        `${prefix}.message`,
+        `must contain 1-${MAX_WARNING_MESSAGE_LENGTH} safe characters`,
+      )
     }
     if (
       path !== undefined &&
@@ -110,11 +127,12 @@ const canonicalizeWarnings = (value: unknown): GmcProjectionWarning[] => {
         path.length > MAX_WARNING_PATH_LENGTH ||
         hasControlCharacters(path))
     ) {
-      issues.push({
-        code: 'warning_path',
-        message: `must contain 1-${MAX_WARNING_PATH_LENGTH} safe characters when supplied`,
-        path: `${prefix}.path`,
-      })
+      addIssue(
+        issues,
+        'warning_path',
+        `${prefix}.path`,
+        `must contain 1-${MAX_WARNING_PATH_LENGTH} safe characters when supplied`,
+      )
     }
     return {
       code,
@@ -236,59 +254,66 @@ const requireString = (
   value: unknown,
 ): value is string => {
   if (typeof value !== 'string' || value.trim().length === 0) {
-    issues.push({ code: 'required', message: 'must be a non-empty string', path })
+    addIssue(issues, 'required', path, 'must be a non-empty string')
     return false
   }
   return true
 }
 
+/**
+ * Validates the transport shape of a URL the projection actually supplied.
+ * Character ceilings and per-field cardinality are Merchant Center
+ * merchandising policy, not wire contract: Google reports them as item issues
+ * against a published offer, so enforcing them here would strand offers that
+ * Google itself would have accepted.
+ */
 const validateUrl = (issues: GmcValidationIssue[], path: string, value: unknown): void => {
   if (!requireString(issues, path, value)) {
     return
   }
-
   try {
     const url = new URL(value)
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       throw new TypeError('unsupported protocol')
     }
   } catch {
-    issues.push({ code: 'url', message: 'must be an absolute HTTP(S) URL', path })
+    addIssue(issues, 'url', path, 'must be an absolute HTTP(S) URL')
   }
-  if (value.length > 2_000) {
-    issues.push({ code: 'length', message: 'must not exceed 2000 characters', path })
+}
+
+const validateStringArray = (issues: GmcValidationIssue[], path: string, value: unknown): void => {
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
+    addIssue(issues, 'type', path, 'must contain strings')
   }
 }
 
 const validatePrice = (issues: GmcValidationIssue[], path: string, value: unknown): void => {
   if (!isRecord(value)) {
-    issues.push({ code: 'price', message: 'must be a price object', path })
+    addIssue(issues, 'price', path, 'must be a price object')
     return
   }
 
   for (const field of Object.keys(value)) {
     if (!PRICE_FIELDS.has(field)) {
-      issues.push({
-        code: 'field',
-        message: 'is not a supported Price field',
-        path: `${path}.${field}`,
-      })
+      addIssue(issues, 'field', `${path}.${field}`, 'is not a supported Price field')
     }
   }
 
   if (!isGmcNonNegativeInt64String(value.amountMicros)) {
-    issues.push({
-      code: 'amount_micros',
-      message: 'amountMicros must be a non-negative signed int64 string',
-      path: `${path}.amountMicros`,
-    })
+    addIssue(
+      issues,
+      'amount_micros',
+      `${path}.amountMicros`,
+      'amountMicros must be a non-negative signed int64 string',
+    )
   }
   if (typeof value.currencyCode !== 'string' || !/^[A-Z]{3}$/.test(value.currencyCode)) {
-    issues.push({
-      code: 'currency',
-      message: 'currencyCode must be a three-letter uppercase ISO 4217 code',
-      path: `${path}.currencyCode`,
-    })
+    addIssue(
+      issues,
+      'currency',
+      `${path}.currencyCode`,
+      'currencyCode must be a three-letter uppercase ISO 4217 code',
+    )
   }
 }
 
@@ -308,31 +333,91 @@ const validateIdentity = (
     requireString(issues, `${prefix}.contentLanguage`, input.contentLanguage) &&
     !/^[a-z]{2}$/.test(input.contentLanguage)
   ) {
-    issues.push({
-      code: 'content_language',
-      message: 'must be a lowercase ISO 639-1 language code',
-      path: `${prefix}.contentLanguage`,
-    })
+    addIssue(
+      issues,
+      'content_language',
+      `${prefix}.contentLanguage`,
+      'must be a lowercase ISO 639-1 language code',
+    )
   }
   if (
     requireString(issues, `${prefix}.feedLabel`, input.feedLabel) &&
     !/^[A-Z0-9_-]{1,20}$/.test(input.feedLabel)
   ) {
-    issues.push({
-      code: 'feed_label',
-      message: 'must contain 1-20 uppercase letters, digits, hyphens, or underscores',
-      path: `${prefix}.feedLabel`,
-    })
+    addIssue(
+      issues,
+      'feed_label',
+      `${prefix}.feedLabel`,
+      'must contain 1-20 uppercase letters, digits, hyphens, or underscores',
+    )
   }
   if (requireString(issues, `${prefix}.offerId`, input.offerId) && input.offerId.length > 50) {
-    issues.push({
-      code: 'offer_id',
-      message: 'must not exceed 50 characters',
-      path: `${prefix}.offerId`,
-    })
+    addIssue(issues, 'offer_id', `${prefix}.offerId`, 'must not exceed 50 characters')
   }
 }
 
+/** Single-value URL attributes; every one is optional in the Merchant API. */
+const URL_ATTRIBUTE_FIELDS = [
+  'adsRedirect',
+  'canonicalLink',
+  'displayAdsLink',
+  'imageLink',
+  'link',
+  'linkTemplate',
+  'mobileLink',
+  'mobileLinkTemplate',
+  'virtualModelLink',
+] as const
+
+const REPEATED_URL_ATTRIBUTE_FIELDS = [
+  'additionalImageLinks',
+  'lifestyleImageLinks',
+  'videoLinks',
+] as const
+
+const STRING_ARRAY_ATTRIBUTE_FIELDS = ['gtins', 'productHighlights', 'sizeTypes'] as const
+
+const TIMESTAMP_ATTRIBUTE_FIELDS = ['availabilityDate', 'disclosureDate', 'expirationDate'] as const
+
+const INT64_ATTRIBUTE_FIELDS = [
+  'maxHandlingTime',
+  'minHandlingTime',
+  'multipack',
+  'sellOnGoogleQuantity',
+] as const
+
+const PRICE_ATTRIBUTE_FIELDS = [
+  'autoPricingMinPrice',
+  'costOfGoodsSold',
+  'maximumRetailPrice',
+  'price',
+  'salePrice',
+] as const
+
+const STRUCTURED_TEXT_FIELDS = [
+  ['description', 'structuredDescription'],
+  ['title', 'structuredTitle'],
+] as const
+
+const AVAILABILITY_VALUES = [
+  'BACKORDER',
+  'IN_STOCK',
+  'LIMITED_AVAILABILITY',
+  'OUT_OF_STOCK',
+  'PREORDER',
+]
+const CONDITION_VALUES = ['NEW', 'REFURBISHED', 'USED']
+const DIGITAL_SOURCE_TYPES = [
+  'DEFAULT',
+  'DIGITAL_SOURCE_TYPE_UNSPECIFIED',
+  'TRAINED_ALGORITHMIC_MEDIA',
+]
+
+/**
+ * Checks only what Google's transport cannot accept: enum vocabulary, protobuf
+ * wire shapes, and mutually exclusive attributes. A supplemental feed row is a
+ * legitimate ProductInput, so nothing here is required beyond identity.
+ */
 const validateAttributes = (
   issues: GmcValidationIssue[],
   input: GmcApiProductInput,
@@ -340,395 +425,191 @@ const validateAttributes = (
 ): void => {
   const rawAttributes = input.productAttributes
   if (!isRecord(rawAttributes)) {
-    issues.push({
-      code: rawAttributes === undefined ? 'required' : 'type',
-      message: 'productAttributes must be a plain object',
-      path: `${prefix}.productAttributes`,
-    })
+    addIssue(
+      issues,
+      rawAttributes === undefined ? 'required' : 'type',
+      `${prefix}.productAttributes`,
+      'productAttributes must be a plain object',
+    )
     return
   }
   const attrs = rawAttributes
+  const attributePath = (name: string): string => `${prefix}.productAttributes.${name}`
 
-  const textAlternative = (
-    name: 'description' | 'title',
-    structuredName: 'structuredDescription' | 'structuredTitle',
-    maxLength: number,
-  ): void => {
-    const plain = attrs[name]
-    const structured = attrs[structuredName]
-    if (plain === undefined && structured === undefined) {
-      issues.push({
-        code: 'required',
-        message: `requires either ${name} or ${structuredName}`,
-        path: `${prefix}.productAttributes.${name}`,
-      })
-      return
-    }
-    if (plain !== undefined && structured !== undefined) {
-      issues.push({
-        code: 'exclusive',
-        message: `must not be supplied with ${structuredName}`,
-        path: `${prefix}.productAttributes.${name}`,
-      })
-    }
-    if (
-      plain !== undefined &&
-      requireString(issues, `${prefix}.productAttributes.${name}`, plain) &&
-      plain.length > maxLength
-    ) {
-      issues.push({
-        code: 'length',
-        message: `must not exceed ${maxLength} characters`,
-        path: `${prefix}.productAttributes.${name}`,
-      })
-    }
-  }
-  textAlternative('title', 'structuredTitle', 150)
-  textAlternative('description', 'structuredDescription', 5_000)
-  validateUrl(issues, `${prefix}.productAttributes.link`, attrs.link)
-  validateUrl(issues, `${prefix}.productAttributes.imageLink`, attrs.imageLink)
-
-  for (const [name, value] of [
-    ['adsRedirect', attrs.adsRedirect],
-    ['canonicalLink', attrs.canonicalLink],
-    ['displayAdsLink', attrs.displayAdsLink],
-    ['linkTemplate', attrs.linkTemplate],
-    ['mobileLink', attrs.mobileLink],
-    ['mobileLinkTemplate', attrs.mobileLinkTemplate],
-    ['virtualModelLink', attrs.virtualModelLink],
-  ] as const) {
-    if (value !== undefined) {
-      validateUrl(issues, `${prefix}.productAttributes.${name}`, value)
+  for (const [name, structuredName] of STRUCTURED_TEXT_FIELDS) {
+    if (attrs[name] !== undefined && attrs[structuredName] !== undefined) {
+      addIssue(
+        issues,
+        'exclusive',
+        attributePath(name),
+        `must not be supplied with ${structuredName}`,
+      )
     }
   }
 
-  for (const [name, value, maxCount] of [
-    ['additionalImageLinks', attrs.additionalImageLinks, 10],
-    ['lifestyleImageLinks', attrs.lifestyleImageLinks, 10],
-    ['videoLinks', attrs.videoLinks, 10],
-  ] as const) {
+  for (const name of URL_ATTRIBUTE_FIELDS) {
+    if (attrs[name] !== undefined) {
+      validateUrl(issues, attributePath(name), attrs[name])
+    }
+  }
+
+  for (const name of REPEATED_URL_ATTRIBUTE_FIELDS) {
+    const value = attrs[name]
     if (value === undefined) {
       continue
     }
     if (!Array.isArray(value)) {
-      issues.push({
-        code: 'type',
-        message: 'must contain URL strings',
-        path: `${prefix}.productAttributes.${name}`,
-      })
+      addIssue(issues, 'type', attributePath(name), 'must contain URL strings')
       continue
     }
-    if (value.length > maxCount) {
-      issues.push({
-        code: 'count',
-        message: `must not contain more than ${maxCount} URLs`,
-        path: `${prefix}.productAttributes.${name}`,
-      })
-    }
     value.forEach((url, index) => {
-      validateUrl(issues, `${prefix}.productAttributes.${name}[${index}]`, url)
+      validateUrl(issues, `${attributePath(name)}[${index}]`, url)
     })
   }
 
-  if (attrs.gtins !== undefined) {
-    if (!Array.isArray(attrs.gtins) || attrs.gtins.some((gtin) => typeof gtin !== 'string')) {
-      issues.push({
-        code: 'type',
-        message: 'must contain strings',
-        path: `${prefix}.productAttributes.gtins`,
-      })
-    } else if (attrs.gtins.length > 10) {
-      issues.push({
-        code: 'count',
-        message: 'must not contain more than 10 values',
-        path: `${prefix}.productAttributes.gtins`,
-      })
+  for (const name of STRING_ARRAY_ATTRIBUTE_FIELDS) {
+    if (attrs[name] !== undefined) {
+      validateStringArray(issues, attributePath(name), attrs[name])
     }
   }
 
-  if (attrs.sizeTypes !== undefined) {
-    if (
-      !Array.isArray(attrs.sizeTypes) ||
-      attrs.sizeTypes.some((sizeType) => typeof sizeType !== 'string')
-    ) {
-      issues.push({
-        code: 'type',
-        message: 'must contain strings',
-        path: `${prefix}.productAttributes.sizeTypes`,
-      })
-    } else if (attrs.sizeTypes.length > 2) {
-      issues.push({
-        code: 'count',
-        message: 'must not contain more than 2 values',
-        path: `${prefix}.productAttributes.sizeTypes`,
-      })
+  for (const name of TIMESTAMP_ATTRIBUTE_FIELDS) {
+    if (attrs[name] !== undefined && !isGmcRfc3339Timestamp(attrs[name])) {
+      addIssue(issues, 'timestamp', attributePath(name), 'must be an RFC 3339 protobuf Timestamp')
     }
   }
 
-  for (const [name, value] of [
-    ['availabilityDate', attrs.availabilityDate],
-    ['disclosureDate', attrs.disclosureDate],
-    ['expirationDate', attrs.expirationDate],
-  ] as const) {
-    if (value !== undefined && !isGmcRfc3339Timestamp(value)) {
-      issues.push({
-        code: 'timestamp',
-        message: 'must be an RFC 3339 protobuf Timestamp',
-        path: `${prefix}.productAttributes.${name}`,
-      })
+  for (const name of INT64_ATTRIBUTE_FIELDS) {
+    if (attrs[name] !== undefined && !isGmcNonNegativeInt64String(attrs[name])) {
+      addIssue(issues, 'integer', attributePath(name), 'must be a non-negative signed int64 string')
     }
+  }
+
+  for (const name of PRICE_ATTRIBUTE_FIELDS) {
+    if (attrs[name] !== undefined) {
+      validatePrice(issues, attributePath(name), attrs[name])
+    }
+  }
+  // Google prices one offer in one currency; a mismatched sale price is a
+  // transport error rather than a merchandising warning.
+  if (
+    validPrice(attrs.price) &&
+    validPrice(attrs.salePrice) &&
+    attrs.salePrice.currencyCode !== attrs.price.currencyCode
+  ) {
+    addIssue(
+      issues,
+      'currency',
+      attributePath('salePrice.currencyCode'),
+      'must match price currency',
+    )
   }
 
   if (
-    requireString(issues, `${prefix}.productAttributes.availability`, attrs.availability) &&
-    ![
-      'BACKORDER',
-      'IN_STOCK',
-      'LIMITED_AVAILABILITY',
-      'OUT_OF_STOCK',
-      'PREORDER',
-    ].includes(attrs.availability)
+    attrs.availability !== undefined &&
+    (!requireString(issues, attributePath('availability'), attrs.availability) ||
+      !AVAILABILITY_VALUES.includes(attrs.availability))
   ) {
-    issues.push({
-      code: 'availability',
-      message: 'must be a Merchant API availability enum',
-      path: `${prefix}.productAttributes.availability`,
-    })
-  }
-  if (
-    (attrs.availability === 'BACKORDER' || attrs.availability === 'PREORDER') &&
-    attrs.availabilityDate === undefined
-  ) {
-    issues.push({
-      code: 'dependency',
-      message: `is required when availability is ${attrs.availability}`,
-      path: `${prefix}.productAttributes.availabilityDate`,
-    })
-  }
-
-  validatePrice(issues, `${prefix}.productAttributes.price`, attrs.price)
-  if (attrs.salePrice !== undefined) {
-    validatePrice(issues, `${prefix}.productAttributes.salePrice`, attrs.salePrice)
-  }
-  if (attrs.autoPricingMinPrice !== undefined) {
-    validatePrice(
+    addIssue(
       issues,
-      `${prefix}.productAttributes.autoPricingMinPrice`,
-      attrs.autoPricingMinPrice,
+      'availability',
+      attributePath('availability'),
+      'must be a Merchant API availability enum',
     )
   }
-  if (attrs.maximumRetailPrice !== undefined) {
-    validatePrice(
+  if (attrs.condition !== undefined && !CONDITION_VALUES.includes(attrs.condition)) {
+    addIssue(
       issues,
-      `${prefix}.productAttributes.maximumRetailPrice`,
-      attrs.maximumRetailPrice,
+      'condition',
+      attributePath('condition'),
+      'must be a Merchant API condition enum',
     )
-  }
-  if (attrs.costOfGoodsSold !== undefined) {
-    validatePrice(issues, `${prefix}.productAttributes.costOfGoodsSold`, attrs.costOfGoodsSold)
-  }
-  if (validPrice(attrs.price) && validPrice(attrs.salePrice)) {
-    if (attrs.salePrice.currencyCode !== attrs.price.currencyCode) {
-      issues.push({
-        code: 'currency',
-        message: 'currency must match price currency',
-        path: `${prefix}.productAttributes.salePrice.currencyCode`,
-      })
-    } else if (BigInt(attrs.salePrice.amountMicros) > BigInt(attrs.price.amountMicros)) {
-      issues.push({
-        code: 'price_order',
-        message: 'must not exceed price',
-        path: `${prefix}.productAttributes.salePrice.amountMicros`,
-      })
-    }
-  }
-
-  for (const [name, value] of [
-    ['maxHandlingTime', attrs.maxHandlingTime],
-    ['minHandlingTime', attrs.minHandlingTime],
-    ['multipack', attrs.multipack],
-    ['sellOnGoogleQuantity', attrs.sellOnGoogleQuantity],
-  ] as const) {
-    if (value !== undefined && !isGmcNonNegativeInt64String(value)) {
-      issues.push({
-        code: 'integer',
-        message: 'must be a non-negative signed int64 string',
-        path: `${prefix}.productAttributes.${name}`,
-      })
-    }
   }
 
   const interval = attrs.salePriceEffectiveDate
   if (interval !== undefined) {
     if (!attrs.salePrice) {
-      issues.push({
-        code: 'dependency',
-        message: 'requires salePrice',
-        path: `${prefix}.productAttributes.salePriceEffectiveDate`,
-      })
+      addIssue(issues, 'dependency', attributePath('salePriceEffectiveDate'), 'requires salePrice')
     }
     if (!isRecord(interval)) {
-      issues.push({
-        code: 'type',
-        message: 'must be an Interval object',
-        path: `${prefix}.productAttributes.salePriceEffectiveDate`,
-      })
+      addIssue(
+        issues,
+        'type',
+        attributePath('salePriceEffectiveDate'),
+        'must be an Interval object',
+      )
     } else {
-      const start = interval.startTime
-      const end = interval.endTime
-      const parsedStart = start === undefined ? undefined : parseGmcRfc3339Timestamp(start)
-      const parsedEnd = end === undefined ? undefined : parseGmcRfc3339Timestamp(end)
-      if (start !== undefined && parsedStart === null) {
-        issues.push({
-          code: 'timestamp',
-          message: 'must be an RFC 3339 protobuf Timestamp',
-          path: `${prefix}.productAttributes.salePriceEffectiveDate.startTime`,
-        })
-      }
-      if (end !== undefined && parsedEnd === null) {
-        issues.push({
-          code: 'timestamp',
-          message: 'must be an RFC 3339 protobuf Timestamp',
-          path: `${prefix}.productAttributes.salePriceEffectiveDate.endTime`,
-        })
-      }
-      if (
-        parsedStart !== undefined &&
-        parsedStart !== null &&
-        parsedEnd !== undefined &&
-        parsedEnd !== null &&
-        parsedStart > parsedEnd
-      ) {
-        issues.push({
-          code: 'interval',
-          message: 'startTime must not be after endTime',
-          path: `${prefix}.productAttributes.salePriceEffectiveDate`,
-        })
-      }
-    }
-  }
-
-  if (attrs.productHighlights !== undefined) {
-    if (
-      !Array.isArray(attrs.productHighlights) ||
-      attrs.productHighlights.some((highlight) => typeof highlight !== 'string')
-    ) {
-      issues.push({
-        code: 'type',
-        message: 'must contain strings',
-        path: `${prefix}.productAttributes.productHighlights`,
-      })
-    } else if (attrs.productHighlights.length < 2 || attrs.productHighlights.length > 100) {
-      issues.push({
-        code: 'count',
-        message: 'must contain between 2 and 100 values when supplied',
-        path: `${prefix}.productAttributes.productHighlights`,
-      })
-    } else {
-      attrs.productHighlights.forEach((highlight, index) => {
-        if (highlight.trim().length === 0 || highlight.length > 150) {
-          issues.push({
-            code: 'length',
-            message: 'must contain 1-150 characters',
-            path: `${prefix}.productAttributes.productHighlights[${index}]`,
-          })
+      const bounds = (['startTime', 'endTime'] as const).map((field) => {
+        const value = interval[field]
+        const parsed = value === undefined ? undefined : parseGmcRfc3339Timestamp(value)
+        if (parsed === null) {
+          addIssue(
+            issues,
+            'timestamp',
+            attributePath(`salePriceEffectiveDate.${field}`),
+            'must be an RFC 3339 protobuf Timestamp',
+          )
         }
+        return parsed
       })
+      const [start, end] = bounds
+      if (start != null && end != null && start > end) {
+        addIssue(
+          issues,
+          'interval',
+          attributePath('salePriceEffectiveDate'),
+          'startTime must not be after endTime',
+        )
+      }
     }
   }
 
   if (attrs.productDetails !== undefined) {
     if (!Array.isArray(attrs.productDetails)) {
-      issues.push({
-        code: 'type',
-        message: 'must contain product detail objects',
-        path: `${prefix}.productAttributes.productDetails`,
-      })
+      addIssue(
+        issues,
+        'type',
+        attributePath('productDetails'),
+        'must contain product detail objects',
+      )
     } else {
-      if (attrs.productDetails.length > 100) {
-        issues.push({
-          code: 'count',
-          message: 'must not contain more than 100 product details',
-          path: `${prefix}.productAttributes.productDetails`,
-        })
-      }
       attrs.productDetails.forEach((detail, index) => {
-        const path = `${prefix}.productAttributes.productDetails[${index}]`
+        const path = `${attributePath('productDetails')}[${index}]`
         if (!isRecord(detail)) {
-          issues.push({ code: 'type', message: 'must be an object', path })
+          addIssue(issues, 'type', path, 'must be an object')
           return
         }
-        if (
-          detail.sectionName !== undefined &&
-          requireString(issues, `${path}.sectionName`, detail.sectionName) &&
-          detail.sectionName.length > 150
-        ) {
-          issues.push({
-            code: 'length',
-            message: 'must not exceed 150 characters',
-            path: `${path}.sectionName`,
-          })
+        if (detail.sectionName !== undefined) {
+          requireString(issues, `${path}.sectionName`, detail.sectionName)
         }
         for (const field of ['attributeName', 'attributeValue'] as const) {
-          if (
-            requireString(issues, `${path}.${field}`, detail[field]) &&
-            detail[field].length > 150
-          ) {
-            issues.push({
-              code: 'length',
-              message: 'must not exceed 150 characters',
-              path: `${path}.${field}`,
-            })
-          }
+          requireString(issues, `${path}.${field}`, detail[field])
         }
       })
     }
   }
 
-  for (const [name, value, maxLength] of [
-    ['structuredDescription', attrs.structuredDescription, 5_000],
-    ['structuredTitle', attrs.structuredTitle, 150],
-  ] as const) {
+  for (const name of ['structuredDescription', 'structuredTitle'] as const) {
+    const value = attrs[name]
     if (value === undefined) {
       continue
     }
     if (!isRecord(value)) {
-      issues.push({
-        code: 'type',
-        message: 'must be an object',
-        path: `${prefix}.productAttributes.${name}`,
-      })
+      addIssue(issues, 'type', attributePath(name), 'must be an object')
       continue
     }
-    if (
-      requireString(issues, `${prefix}.productAttributes.${name}.content`, value.content) &&
-      value.content.length > maxLength
-    ) {
-      issues.push({
-        code: 'length',
-        message: `must not exceed ${maxLength} characters`,
-        path: `${prefix}.productAttributes.${name}.content`,
-      })
-    }
+    requireString(issues, attributePath(`${name}.content`), value.content)
     if (
       value.digitalSourceType !== undefined &&
-      !['DEFAULT', 'DIGITAL_SOURCE_TYPE_UNSPECIFIED', 'TRAINED_ALGORITHMIC_MEDIA'].includes(
-        String(value.digitalSourceType),
-      )
+      !DIGITAL_SOURCE_TYPES.includes(String(value.digitalSourceType))
     ) {
-      issues.push({
-        code: 'enum',
-        message: 'has an unsupported digitalSourceType',
-        path: `${prefix}.productAttributes.${name}.digitalSourceType`,
-      })
+      addIssue(
+        issues,
+        'enum',
+        attributePath(`${name}.digitalSourceType`),
+        'has an unsupported digitalSourceType',
+      )
     }
-  }
-  if (attrs.condition !== undefined && !['NEW', 'REFURBISHED', 'USED'].includes(attrs.condition)) {
-    issues.push({
-      code: 'condition',
-      message: 'must be a Merchant API condition enum',
-      path: `${prefix}.productAttributes.condition`,
-    })
   }
 
   if (input.customAttributes !== undefined) {
@@ -836,13 +717,7 @@ export const canonicalizeProductInput = (args: {
     projectedInput = normalizeProjectedInput(args.input)
   } catch (error) {
     if (error instanceof GmcJsonValueError) {
-      throw new GmcProjectionValidationError([
-        {
-          code: 'json',
-          message: error.message,
-          path: error.path,
-        },
-      ])
+      throw new GmcProjectionValidationError([issue('json', error.path, error.message)])
     }
     throw error
   }
@@ -853,36 +728,39 @@ export const canonicalizeProductInput = (args: {
     'contentLanguage',
     'customAttributes',
     'feedLabel',
+    'legacyLocal',
     'offerId',
     'productAttributes',
   ])
   for (const field of Object.keys(input)) {
     if (!supportedInputFields.has(field)) {
-      issues.push({
-        code: 'field',
-        message: 'is not a supported writable ProductInput field',
-        path: `input.${field}`,
-      })
+      addIssue(issues, 'field', `input.${field}`, 'is not a supported writable ProductInput field')
     }
   }
   validateIdentity(issues, input, 'input')
   validateAttributes(issues, input, 'input')
 
+  if (input.legacyLocal !== undefined && typeof input.legacyLocal !== 'boolean') {
+    addIssue(issues, 'type', 'input.legacyLocal', 'must be a boolean when supplied')
+  }
+
   if (dataSourceOverride !== undefined && dataSourceOverride.trim().length === 0) {
-    issues.push({
-      code: 'data_source_override',
-      message: 'must be a non-empty data source resource name when supplied',
-      path: 'input.dataSourceOverride',
-    })
+    addIssue(
+      issues,
+      'data_source_override',
+      'input.dataSourceOverride',
+      'must be a non-empty data source resource name when supplied',
+    )
   }
 
   if (args.sourceVersion !== undefined) {
     if (!isGmcNonNegativeInt64String(args.sourceVersion)) {
-      issues.push({
-        code: 'source_version',
-        message: 'must be a non-negative signed int64 string',
-        path: 'sourceVersion',
-      })
+      addIssue(
+        issues,
+        'source_version',
+        'sourceVersion',
+        'must be a non-negative signed int64 string',
+      )
     }
   }
 
@@ -908,11 +786,7 @@ export const canonicalizeProductInput = (args: {
   const byteLength = Buffer.byteLength(serializedInput, 'utf8')
   if (byteLength > MAX_CANONICAL_PRODUCT_BYTES) {
     throw new GmcProjectionValidationError([
-      {
-        code: 'size',
-        message: `must not exceed ${MAX_CANONICAL_PRODUCT_BYTES} serialized bytes`,
-        path: 'input',
-      },
+      issue('size', 'input', `must not exceed ${MAX_CANONICAL_PRODUCT_BYTES} serialized bytes`),
     ])
   }
 
@@ -929,29 +803,25 @@ export const canonicalizeProjection = (
 ): { products: GmcCanonicalProduct[]; warnings: GmcProjectionWarning[] } => {
   if (!projection || !Array.isArray(projection.products)) {
     throw new GmcProjectionValidationError([
-      {
-        code: 'required',
-        message: 'projection.products must be an array',
-        path: 'projection.products',
-      },
+      issue('required', 'projection.products', 'projection.products must be an array'),
     ])
   }
   if (projection.sourceVersion !== undefined && typeof projection.sourceVersion !== 'string') {
     throw new GmcProjectionValidationError([
-      {
-        code: 'type',
-        message: 'projection.sourceVersion must be a string when provided',
-        path: 'projection.sourceVersion',
-      },
+      issue(
+        'type',
+        'projection.sourceVersion',
+        'projection.sourceVersion must be a string when provided',
+      ),
     ])
   }
   if (projection.products.length > GMC_V2_MAX_PRODUCTS_PER_PROJECTION) {
     throw new GmcProjectionValidationError([
-      {
-        code: 'count',
-        message: `must not contain more than ${GMC_V2_MAX_PRODUCTS_PER_PROJECTION} products`,
-        path: 'projection.products',
-      },
+      issue(
+        'count',
+        'projection.products',
+        `must not contain more than ${GMC_V2_MAX_PRODUCTS_PER_PROJECTION} products`,
+      ),
     ])
   }
   const warnings = canonicalizeWarnings(projection.warnings)
@@ -963,11 +833,11 @@ export const canonicalizeProjection = (
       const key = getProcessedIdentityKey(product.identity)
       if (seen.has(key)) {
         throw new GmcProjectionValidationError([
-          {
-            code: 'duplicate_identity',
-            message: 'projection contains the same Google identity more than once',
-            path: `projection.products[${index}]`,
-          },
+          issue(
+            'duplicate_identity',
+            `projection.products[${index}]`,
+            'projection contains the same Google identity more than once',
+          ),
         ])
       }
       seen.add(key)

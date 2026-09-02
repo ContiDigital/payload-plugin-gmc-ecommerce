@@ -530,6 +530,12 @@ const createFeedEndpoint = (feed: GmcFeedConfig, options: NormalizedGmcV2Options
         selector: feed.selector,
       })
       const built = await buildCanonicalFeed({ feed, products })
+      for (const warning of built.warnings) {
+        req.payload.logger.warn(
+          { code: warning.code, feedId: feed.id, path: warning.path },
+          warning.message,
+        )
+      }
       return feedResponse({
         body: built.body,
         checksum: built.checksum,

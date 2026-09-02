@@ -8,6 +8,7 @@ import type {
   GmcFeedFormatAdapter,
   GmcFeedFormatResult,
   GmcFeedSelector,
+  GmcProjectionWarning,
 } from '../types.js'
 
 import { getIdentityKey } from '../canonical.js'
@@ -20,6 +21,8 @@ export type GmcBuiltFeed = {
   feedId: string
   generatedAt: string
   productCount: number
+  /** Attributes the format could not represent; never empty-checked for correctness. */
+  warnings: GmcProjectionWarning[]
 } & GmcFeedFormatResult
 
 /** Every immutable descriptor field an at-least-once replay must re-verify. */
@@ -35,6 +38,7 @@ export const GMC_ARTIFACT_DESCRIPTOR_FIELDS = [
 export type GmcPublishedFeedArtifact = {
   artifact: GmcArtifactDescriptor
   promotion: 'promoted' | 'stale'
+  warnings: GmcProjectionWarning[]
 }
 
 const hasControlCharacters = (value: string): boolean => {
@@ -230,6 +234,7 @@ export const buildCanonicalFeed = async (args: {
     feedId: args.feed.id,
     generatedAt,
     productCount: products.length,
+    warnings: serialized.warnings ?? [],
   }
 }
 
@@ -289,5 +294,5 @@ export const publishFeedArtifact = async (args: {
   if (promotion !== 'promoted' && promotion !== 'stale') {
     throw new TypeError('Feed artifact store returned an invalid promotion result')
   }
-  return { artifact: descriptor, promotion }
+  return { artifact: descriptor, promotion, warnings: built.warnings }
 }

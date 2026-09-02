@@ -81,14 +81,14 @@ describe('serializeCanonicalTsv', () => {
     expect(row[header.indexOf('additional_image_link')]).toBe(
       'https://example.com/a%2Cb.jpg,https://example.com/c.jpg',
     )
-    expect(row[header.indexOf('shipping')]).toBe('US:"New York, NY":"Ground: standard":5.00 USD')
+    expect(row[header.indexOf('shipping')]).toBe('US:New York, NY::::Ground: standard:5.00 USD')
     expect(row[header.indexOf('product_highlight')]).toBe('Hand carved,"Indoor, outdoor display"')
     expect(row[header.indexOf('product_detail')]).toBe(
       'Specifications:Finish:"Hand-polished, satin"',
     )
   })
 
-  it('quotes scalar inch marks without wrapping repeated or grouped attributes', async () => {
+  it('leaves scalar cells unquoted and quotes only delimited sub-values', async () => {
     const value = canonical('sku-a', '12" Teflon Mirror')
     value.input.customAttributes = [{ name: 'display note', value: 'Fits 24" openings' }]
 
@@ -102,9 +102,77 @@ describe('serializeCanonicalTsv', () => {
     const header = headerLine.split('\t')
     const row = rowLine.split('\t')
 
-    expect(row[header.indexOf('title')]).toBe('"12"" Teflon Mirror"')
-    expect(row[header.indexOf('display_note')]).toBe('"Fits 24"" openings"')
-    expect(row[header.indexOf('shipping')]).toBe('US:"New York, NY":"Ground: standard":5.00 USD')
+    // Tab is the only delimiter a single-value column has, so Google documents
+    // no quoting for it: a quoted scalar would be published verbatim.
+    expect(row[header.indexOf('title')]).toBe('12" Teflon Mirror')
+    expect(row[header.indexOf('display_note')]).toBe('Fits 24" openings')
+    expect(row[header.indexOf('product_highlight')]).toBe('Hand carved,"Indoor, outdoor display"')
+  })
+
+  it('orders rows by code unit rather than by the runtime locale collation', async () => {
+    const result = await serializeCanonicalTsv({
+      feedId: 'primary',
+      generatedAt: '2026-08-29T12:00:00.000Z',
+      products: [canonical('a', 'a'), canonical('\u00e9', 'e-acute'), canonical('Z', 'Z')],
+      selector: { contentLanguage: 'en', feedLabel: 'US' },
+    })
+    const lines = new TextDecoder().decode(result.body).trimEnd().split('\n')
+    const header = lines[0].split('\t')
+    const ids = lines.slice(1).map((line) => line.split('\t')[header.indexOf('id')])
+
+    expect(ids).toEqual(['Z', 'a', '\u00e9'])
+  })
+
+  it('serializes every documented shipping sub-attribute in Google order', async () => {
+    const value = canonical('sku-a', 'A')
+    Object.assign(value.input.productAttributes ?? {}, {
+      shipping: [
+        {
+          country: 'US',
+          locationGroupName: 'west',
+          locationId: '21137',
+          maxHandlingTime: '3',
+          maxTransitTime: '5',
+          minHandlingTime: '1',
+          minTransitTime: '2',
+          postalCode: '80302',
+          price: { amountMicros: '6490000', currencyCode: 'USD' },
+          region: 'CA',
+          service: 'Ground',
+        },
+        { country: 'CA', price: { amountMicros: '0', currencyCode: 'CAD' } },
+      ],
+    })
+
+    const result = await serializeCanonicalTsv({
+      feedId: 'primary',
+      generatedAt: '2026-08-29T12:00:00.000Z',
+      products: [value],
+      selector: { contentLanguage: 'en', feedLabel: 'US' },
+    })
+    const [headerLine, rowLine] = new TextDecoder().decode(result.body).trimEnd().split('\n')
+    const header = headerLine.split('\t')
+    const row = rowLine.split('\t')
+
+    expect(row[header.indexOf('shipping')]).toBe(
+      'US:CA:80302:21137:west:Ground:6.49 USD:1:3:2:5,CA::::::0.00 CAD',
+    )
+  })
+
+  it('fails closed on a shipping sub-attribute with no documented column position', () => {
+    const value = canonical('sku-a', 'A')
+    Object.assign(value.input.productAttributes ?? {}, {
+      shipping: [{ country: 'US', handlingCutoffTime: '1530' }],
+    })
+
+    expect(() =>
+      serializeCanonicalTsv({
+        feedId: 'primary',
+        generatedAt: '2026-08-29T12:00:00.000Z',
+        products: [value],
+        selector: { contentLanguage: 'en', feedLabel: 'US' },
+      }),
+    ).toThrow(/cannot serialize shipping sub-attribute.*handlingCutoffTime/i)
   })
 
   it('serializes structured text alternatives with provenance', async () => {
@@ -131,6 +199,47 @@ describe('serializeCanonicalTsv', () => {
     expect(row[header.indexOf('structured_description')]).toBe(
       'trained_algorithmic_media:"Structured: description"',
     )
+    expect(row[header.indexOf('structured_title')]).toBe('default:Structured title')
+  })
+
+  it('emits unspecified-provenance structured text without a leading separator', async () => {
+    const value = canonical('sku-a', 'A')
+    delete value.input.productAttributes?.title
+    Object.assign(value.input.productAttributes ?? {}, {
+      structuredTitle: {
+        content: 'Structured title',
+        digitalSourceType: 'DIGITAL_SOURCE_TYPE_UNSPECIFIED',
+      },
+    })
+    const result = await serializeCanonicalTsv({
+      feedId: 'primary',
+      generatedAt: '2026-08-29T12:00:00.000Z',
+      products: [value],
+      selector: { contentLanguage: 'en', feedLabel: 'US' },
+    })
+    const [headerLine, rowLine] = new TextDecoder().decode(result.body).trimEnd().split('\n')
+    const header = headerLine.split('\t')
+    const row = rowLine.split('\t')
+
+    expect(row[header.indexOf('structured_title')]).toBe('Structured title')
+  })
+
+  it('quotes an unspecified-provenance structured value that carries a separator', async () => {
+    const value = canonical('sku-a', 'A')
+    delete value.input.productAttributes?.title
+    Object.assign(value.input.productAttributes ?? {}, {
+      structuredTitle: { content: 'Lamp: brass' },
+    })
+    const result = await serializeCanonicalTsv({
+      feedId: 'primary',
+      generatedAt: '2026-08-29T12:00:00.000Z',
+      products: [value],
+      selector: { contentLanguage: 'en', feedLabel: 'US' },
+    })
+    const [headerLine, rowLine] = new TextDecoder().decode(result.body).trimEnd().split('\n')
+    const header = headerLine.split('\t')
+
+    expect(rowLine.split('\t')[header.indexOf('structured_title')]).toBe('"Lamp: brass"')
   })
 
   it('translates Merchant API enums to their text-feed spellings', async () => {
@@ -138,12 +247,7 @@ describe('serializeCanonicalTsv', () => {
     Object.assign(value.input.productAttributes ?? {}, {
       availability: 'LIMITED_AVAILABILITY',
       energyEfficiencyClass: 'APPP',
-      excludedDestinations: [
-        'SHOPPING_ADS',
-        'FREE_LISTINGS',
-        'DISPLAY_ADS',
-        'YOUTUBE_AFFILIATE',
-      ],
+      excludedDestinations: ['SHOPPING_ADS', 'FREE_LISTINGS', 'DISPLAY_ADS', 'YOUTUBE_AFFILIATE'],
       includedDestinations: ['LOCAL_INVENTORY_ADS', 'YOUTUBE_SHOPPING', 'VEHICLE_ADS'],
       maxEnergyEfficiencyClass: 'D',
       minEnergyEfficiencyClass: 'AP',
@@ -173,7 +277,7 @@ describe('serializeCanonicalTsv', () => {
     expect(row[header.indexOf('availability')]).toBe('in_stock')
     expect(row[header.indexOf('pause')]).toBe('ads')
     expect(row[header.indexOf('pickup_method')]).toBe('ship_to_store')
-    expect(row[header.indexOf('pickup_sla')]).toBe('2-day')
+    expect(row[header.indexOf('pickup_SLA')]).toBe('2-day')
     expect(row[header.indexOf('size_system')]).toBe('US')
     expect(row[header.indexOf('size_type')]).toBe('regular,tall')
     expect(row[header.indexOf('energy_efficiency_class')]).toBe('A+++')
@@ -201,7 +305,7 @@ describe('serializeCanonicalTsv', () => {
 
     expect(row[header.indexOf('age_group')]).toBe('')
     expect(row[header.indexOf('gender')]).toBe('')
-    expect(row[header.indexOf('pickup_sla')]).toBe('multi-week')
+    expect(row[header.indexOf('pickup_SLA')]).toBe('multi-week')
   })
 
   it('fails closed on unknown strongly typed API enums', () => {
@@ -287,33 +391,47 @@ describe('serializeCanonicalTsv', () => {
     ).toThrow(/cannot serialize grouped custom attribute.*shipping/i)
   })
 
-  it('fails closed instead of silently dropping an unsupported strongly typed field', () => {
-    const value = canonical('sku-a', 'A')
-    Object.assign(value.input.productAttributes ?? {}, {
-      warranty: { duration: '1', unit: 'YEAR' },
-    })
+  it('warns once per unmapped attribute name instead of failing the whole feed', async () => {
+    const first = canonical('sku-a', 'A')
+    const second = canonical('sku-b', 'B')
+    for (const value of [first, second]) {
+      Object.assign(value.input.productAttributes ?? {}, {
+        warranty: { duration: '1', unit: 'YEAR' },
+      })
+      Object.assign(value.input, { legacyLocal: true })
+    }
 
-    expect(() =>
-      serializeCanonicalTsv({
-        feedId: 'primary',
-        generatedAt: '2026-08-29T12:00:00.000Z',
-        products: [value],
-        selector: { contentLanguage: 'en', feedLabel: 'US' },
-      }),
-    ).toThrow(/cannot serialize.*warranty/i)
+    const result = await serializeCanonicalTsv({
+      feedId: 'primary',
+      generatedAt: '2026-08-29T12:00:00.000Z',
+      products: [first, second],
+      selector: { contentLanguage: 'en', feedLabel: 'US' },
+    })
+    const text = new TextDecoder().decode(result.body)
+
+    expect(text).not.toContain('warranty')
+    expect(result.warnings).toEqual([
+      {
+        code: 'GMC_TSV_UNMAPPED_ATTRIBUTE',
+        message: expect.stringContaining('legacyLocal'),
+        path: 'input.legacyLocal',
+      },
+      {
+        code: 'GMC_TSV_UNMAPPED_ATTRIBUTE',
+        message: expect.stringContaining('warranty'),
+        path: 'input.productAttributes.warranty',
+      },
+    ])
   })
 
-  it('fails closed instead of silently dropping an unsupported ProductInput root field', () => {
-    const value = canonical('sku-a', 'A')
-    Object.assign(value.input, { futureInputField: 'api-only' })
+  it('reports no warnings for a fully mapped feed', async () => {
+    const result = await serializeCanonicalTsv({
+      feedId: 'primary',
+      generatedAt: '2026-08-29T12:00:00.000Z',
+      products: [canonical('sku-a', 'A')],
+      selector: { contentLanguage: 'en', feedLabel: 'US' },
+    })
 
-    expect(() =>
-      serializeCanonicalTsv({
-        feedId: 'primary',
-        generatedAt: '2026-08-29T12:00:00.000Z',
-        products: [value],
-        selector: { contentLanguage: 'en', feedLabel: 'US' },
-      }),
-    ).toThrow(/cannot serialize ProductInput field.*futureInputField/i)
+    expect(result.warnings).toEqual([])
   })
 })

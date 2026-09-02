@@ -2,10 +2,11 @@ import type {
   MCArrayField,
   MCPrice,
   MCProductAttributes,
+  MCShipping,
   MCShippingDimension,
   MCUrlArrayField,
 } from '../../types/index.js'
-import type { GmcCanonicalProduct, GmcFeedFormatAdapter } from '../types.js'
+import type { GmcCanonicalProduct, GmcFeedFormatAdapter, GmcProjectionWarning } from '../types.js'
 
 import { getIdentityKey, priceToFeedValue } from '../canonical.js'
 
@@ -79,7 +80,7 @@ export const GMC_TSV_COLUMNS = [
   'max_handling_time',
   'sell_on_google_quantity',
   'pickup_method',
-  'pickup_sla',
+  'pickup_SLA',
   'link_template',
   'mobile_link_template',
   'virtual_model_link',
@@ -189,6 +190,9 @@ export const GMC_TSV_PRODUCT_ATTRIBUTE_FIELDS = [
 ] as const satisfies readonly (keyof MCProductAttributes)[]
 
 const supportedProductAttributeFields = new Set<string>(GMC_TSV_PRODUCT_ATTRIBUTE_FIELDS)
+const builtInColumnsByLowerCaseName = new Map<string, string>(
+  GMC_TSV_COLUMNS.map((column) => [column.toLowerCase(), column]),
+)
 const supportedProductInputFields = new Set([
   'contentLanguage',
   'customAttributes',
@@ -200,14 +204,12 @@ const supportedProductInputFields = new Set([
 const cleanCell = (value: string): string => value.replace(/[\t\r\n]+/g, ' ').trim()
 
 /**
- * Encode one non-repeated, non-grouped TSV value. Google quoted fields use
- * RFC-4180-style doubled quotes; group/repeated values are escaped one
- * subvalue at a time by delimitedPart instead and must not be wrapped whole.
+ * Encode one non-repeated, non-grouped TSV value. A tab is the only delimiter
+ * such a cell has, and Google documents quoting only for sub-values of
+ * repeated and grouped attributes, so a scalar is emitted verbatim: wrapping
+ * it would publish the quotes as part of the value.
  */
-const scalarValue = (value: string): string => {
-  const cleaned = cleanCell(value)
-  return cleaned.includes('"') ? `"${cleaned.replace(/"/g, '""')}"` : cleaned
-}
+const scalarValue = (value: string): string => cleanCell(value)
 
 const customColumnName = (value: string): string => {
   const normalized = cleanCell(value)
@@ -461,26 +463,79 @@ const structuredValue = (value: MCProductAttributes['structuredTitle'] | undefin
       : value.digitalSourceType === 'DEFAULT'
         ? 'default'
         : ''
-  return groupValue([source, value.content])
+  // An unspecified provenance has no documented spelling, and a leading colon
+  // would be read as an empty first sub-attribute rather than as "absent". The
+  // content is still a group sub-value, so it keeps Google's quoting rule.
+  return source ? groupValue([source, value.content]) : delimitedPart(value.content ?? '', /[,:"]/)
 }
 
-const productRow = (product: GmcCanonicalProduct): Record<string, string> => {
-  const unsupportedInput = Object.keys(product.input).filter(
-    (field) => !supportedProductInputFields.has(field),
-  )
-  if (unsupportedInput.length > 0) {
-    throw new TypeError(
-      `TSV feed cannot serialize ProductInput field${unsupportedInput.length === 1 ? '' : 's'}: ${unsupportedInput.sort().join(', ')}`,
-    )
+/**
+ * Google's documented positional order for the shipping attribute. Absent
+ * sub-attributes hold their place with an empty value; trailing empties are
+ * dropped because Google does not require trailing separators.
+ */
+const SHIPPING_SUB_ATTRIBUTES = [
+  'country',
+  'region',
+  'postalCode',
+  'locationId',
+  'locationGroupName',
+  'service',
+  'price',
+  'minHandlingTime',
+  'maxHandlingTime',
+  'minTransitTime',
+  'maxTransitTime',
+] as const satisfies readonly (keyof MCShipping)[]
+
+const supportedShippingSubAttributes = new Set<string>(SHIPPING_SUB_ATTRIBUTES)
+
+const shippingValue = (shipping: MCShipping[] | undefined): string => {
+  return (shipping ?? [])
+    .map((entry) => {
+      const unsupported = Object.keys(entry).filter(
+        (field) => !supportedShippingSubAttributes.has(field),
+      )
+      if (unsupported.length > 0) {
+        throw new TypeError(
+          `TSV feed cannot serialize shipping sub-attribute${unsupported.length === 1 ? '' : 's'}: ${unsupported.sort().join(', ')}`,
+        )
+      }
+      const parts = SHIPPING_SUB_ATTRIBUTES.map((field) => {
+        if (field === 'price') {
+          return entry.price ? priceToFeedValue(entry.price) : ''
+        }
+        return entry[field] === undefined ? '' : cleanCell(String(entry[field]))
+      })
+      while (parts.length > 0 && parts[parts.length - 1] === '') {
+        parts.pop()
+      }
+      return parts.join(':')
+    })
+    .join(',')
+}
+
+/**
+ * Google publishes new attributes between releases of this package. An
+ * attribute with no documented column is reported once per build and omitted:
+ * failing the whole feed would take a working catalog offline for a field the
+ * text format cannot carry anyway. Enum values with no documented text
+ * spelling still throw, because emitting the wrong value is worse than none.
+ */
+const productRow = (
+  product: GmcCanonicalProduct,
+  reportUnmapped: (path: string, name: string) => void,
+): Record<string, string> => {
+  for (const field of Object.keys(product.input)) {
+    if (!supportedProductInputFields.has(field)) {
+      reportUnmapped(`input.${field}`, field)
+    }
   }
   const attrs = product.input.productAttributes ?? {}
-  const unsupported = Object.keys(attrs).filter(
-    (field) => !supportedProductAttributeFields.has(field),
-  )
-  if (unsupported.length > 0) {
-    throw new TypeError(
-      `TSV feed cannot serialize ProductAttributes field${unsupported.length === 1 ? '' : 's'}: ${unsupported.sort().join(', ')}`,
-    )
+  for (const field of Object.keys(attrs)) {
+    if (!supportedProductAttributeFields.has(field)) {
+      reportUnmapped(`input.productAttributes.${field}`, field)
+    }
   }
   const row: Record<string, string> = {
     id: scalarValue(product.identity.offerId),
@@ -566,7 +621,7 @@ const productRow = (product: GmcCanonicalProduct): Record<string, string> => {
       PICKUP_METHOD_FEED_VALUES,
       attrs.pickupMethod,
     ),
-    pickup_sla: mappedEnumValue(
+    pickup_SLA: mappedEnumValue(
       'PickupSla',
       'PICKUP_SLA_UNSPECIFIED',
       PICKUP_SLA_FEED_VALUES,
@@ -593,16 +648,7 @@ const productRow = (product: GmcCanonicalProduct): Record<string, string> => {
         )
       : '',
     sell_on_google_quantity: scalarValue(attrs.sellOnGoogleQuantity ?? ''),
-    shipping: (attrs.shipping ?? [])
-      .map((shipping) =>
-        groupValue([
-          shipping.country,
-          shipping.region,
-          shipping.service,
-          shipping.price ? priceToFeedValue(shipping.price) : undefined,
-        ]),
-      )
-      .join(','),
+    shipping: shippingValue(attrs.shipping),
     shipping_height: dimensionValue(attrs.shippingHeight),
     shipping_label: scalarValue(attrs.shippingLabel ?? ''),
     shipping_length: dimensionValue(attrs.shippingLength),
@@ -627,8 +673,11 @@ const productRow = (product: GmcCanonicalProduct): Record<string, string> => {
         `TSV feed cannot serialize grouped custom attribute: ${cleanCell(attribute.name) || '(unnamed)'}`,
       )
     }
-    const name = customColumnName(attribute.name)
-    if (GMC_TSV_COLUMNS.includes(name as never) && row[name]) {
+    // Column names are matched case-insensitively so a generic attribute still
+    // resolves onto a built-in column Google spells with capitals (pickup_SLA).
+    const normalized = customColumnName(attribute.name)
+    const name = builtInColumnsByLowerCaseName.get(normalized) ?? normalized
+    if (builtInColumnsByLowerCaseName.has(normalized) && row[name]) {
       throw new TypeError(`Custom attribute ${name} collides with a built-in TSV column`)
     }
     // Merchant API replaces underscores in generic attribute names with
@@ -641,15 +690,33 @@ const productRow = (product: GmcCanonicalProduct): Record<string, string> => {
   return row
 }
 
+/**
+ * Code-unit ordering, never `localeCompare`: the artifact checksum is a
+ * promotion fence, so two hosts on different ICU locales must serialize the
+ * same catalog to the same bytes.
+ */
+const byCodeUnit = (left: string, right: string): number =>
+  left < right ? -1 : left > right ? 1 : 0
+
 export const serializeCanonicalTsv: GmcFeedFormatAdapter['serialize'] = (context) => {
+  const unmapped = new Map<string, GmcProjectionWarning>()
+  const reportUnmapped = (path: string, name: string): void => {
+    if (!unmapped.has(name)) {
+      unmapped.set(name, {
+        code: 'GMC_TSV_UNMAPPED_ATTRIBUTE',
+        message: `Attribute ${name} has no documented text-feed column and was omitted from feed ${context.feedId}`,
+        path,
+      })
+    }
+  }
   const rows = [...context.products]
     .sort((left, right) =>
-      getIdentityKey(left.identity).localeCompare(getIdentityKey(right.identity)),
+      byCodeUnit(getIdentityKey(left.identity), getIdentityKey(right.identity)),
     )
-    .map(productRow)
+    .map((product) => productRow(product, reportUnmapped))
   const customColumns = [...new Set(rows.flatMap((row) => Object.keys(row)))]
     .filter((column) => !GMC_TSV_COLUMNS.includes(column as never))
-    .sort()
+    .sort(byCodeUnit)
   const columns = [...GMC_TSV_COLUMNS, ...customColumns]
   const lines = [
     columns.join('\t'),
@@ -662,6 +729,9 @@ export const serializeCanonicalTsv: GmcFeedFormatAdapter['serialize'] = (context
     body: new TextEncoder().encode(`${lines.join('\n')}\n`),
     contentType: 'text/tab-separated-values; charset=utf-8',
     extension: 'tsv',
+    warnings: [...unmapped.values()].sort((left, right) =>
+      byCodeUnit(left.path ?? '', right.path ?? ''),
+    ),
   }
 }
 

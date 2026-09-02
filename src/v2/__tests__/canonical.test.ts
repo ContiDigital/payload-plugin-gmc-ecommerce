@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import type { MCProductAttributes } from '../../types/index.js'
 import type { GmcProjectedProductInput } from '../types.js'
 
 import {
@@ -22,6 +23,65 @@ const product = (offerId = 'sku-1'): GmcProjectedProductInput => ({
     title: 'A product',
   },
 })
+
+/**
+ * Frozen realistic offer whose digest is pinned below. Never edit this fixture:
+ * a new normalization question needs a new fixture, not a new golden value.
+ */
+const GOLDEN_FIXTURE: GmcProjectedProductInput = {
+  contentLanguage: 'en',
+  customAttributes: [
+    { name: 'care_instructions', value: 'Wipe with a dry cloth' },
+    {
+      name: 'dimensions_group',
+      groupValues: [
+        { name: 'height', value: '40 cm' },
+        { name: 'width', value: '18 cm' },
+      ],
+    },
+  ],
+  feedLabel: 'PRODUCTS',
+  offerId: 'golden-fixture-0001',
+  productAttributes: {
+    additionalImageLinks: [{ url: 'https://example.com/images/lamp-2.jpg' }],
+    availability: 'IN_STOCK',
+    brand: 'Golden Fixture Co',
+    color: 'Brass',
+    condition: 'NEW',
+    customLabel0: 'evergreen',
+    description: 'A brushed brass table lamp with a linen shade.',
+    googleProductCategory: '594',
+    gtins: [{ value: '00012345678905' }],
+    imageLink: 'https://example.com/images/lamp-1.jpg',
+    itemGroupId: 'lamp-group-1',
+    link: 'https://example.com/products/brass-lamp',
+    maxHandlingTime: '3',
+    minHandlingTime: '1',
+    multipack: 1,
+    price: { amountMicros: '129990000', currencyCode: 'USD' },
+    productDetails: [
+      { attributeName: 'Finish', attributeValue: 'Brushed brass', sectionName: 'Materials' },
+    ],
+    productHighlights: ['Hand finished in the UK', 'Dimmable LED compatible'],
+    productTypes: [{ value: 'Home > Lighting > Table lamps' }],
+    salePrice: { amountMicros: '99990000', currencyCode: 'USD' },
+    salePriceEffectiveDate: {
+      endTime: '2026-02-01T00:00:00Z',
+      startTime: '2026-01-01T00:00:00Z',
+    },
+    shipping: [
+      {
+        country: 'US',
+        price: { amountMicros: '4990000', currencyCode: 'USD' },
+        region: 'CA',
+        service: 'Standard',
+      },
+    ],
+    shippingWeight: { unit: 'kg', value: 2.4 },
+    sizeTypes: ['REGULAR'],
+    title: 'Brushed Brass Table Lamp',
+  },
+}
 
 describe('canonicalizeProductInput', () => {
   it('produces a deterministic digest without mutating the projection', () => {
@@ -223,7 +283,7 @@ describe('canonicalizeProductInput', () => {
     )
   })
 
-  it('rejects malformed sale intervals and incomplete product-highlight sets', () => {
+  it('rejects malformed sale intervals', () => {
     expect(() =>
       canonicalizeProductInput({
         input: {
@@ -238,7 +298,7 @@ describe('canonicalizeProductInput', () => {
           },
         },
       }),
-    ).toThrow(/requires salePrice.*RFC 3339.*between 2 and 100/s)
+    ).toThrow(/requires salePrice.*RFC 3339/s)
   })
 
   it('enforces exact known Price shapes and sale-price consistency', () => {
@@ -257,14 +317,23 @@ describe('canonicalizeProductInput', () => {
       /costOfGoodsSold\.amountMicros.*costOfGoodsSold\.currencyCode/s,
     )
 
-    for (const salePrice of [
-      { amountMicros: '13000000', currencyCode: 'USD' },
-      { amountMicros: '12000000', currencyCode: 'CAD' },
-    ]) {
-      const input = product()
-      input.productAttributes!.salePrice = salePrice
-      expect(() => canonicalizeProductInput({ input })).toThrow(/salePrice.*price|currency/s)
+    const mismatchedCurrency = product()
+    mismatchedCurrency.productAttributes!.salePrice = {
+      amountMicros: '12000000',
+      currencyCode: 'CAD',
     }
+    expect(() => canonicalizeProductInput({ input: mismatchedCurrency })).toThrow(
+      /salePrice\.currencyCode.*must match price currency/s,
+    )
+
+    // A sale price above the list price is a Merchant Center merchandising
+    // warning, not a wire error, so the projection is published as authored.
+    const higherSalePrice = product()
+    higherSalePrice.productAttributes!.salePrice = {
+      amountMicros: '13000000',
+      currencyCode: 'USD',
+    }
+    expect(() => canonicalizeProductInput({ input: higherSalePrice })).not.toThrow()
   })
 
   it('validates every Product Timestamp and Interval at protobuf nanosecond precision', () => {
@@ -305,26 +374,40 @@ describe('canonicalizeProductInput', () => {
     )
   })
 
-  it('enforces repeated URL, GTIN, size-type, highlight, and detail boundaries', () => {
+  it('enforces repeated wire shapes without imposing Google cardinality limits', () => {
     expect(() =>
       canonicalizeProductInput({
         input: {
           ...product(),
           productAttributes: {
             ...product().productAttributes,
-            additionalImageLinks: Array.from({ length: 11 }, (_, index) =>
-              index === 0 ? 'not-a-url' : `https://example.com/${index}.jpg`,
-            ),
-            gtins: Array.from({ length: 11 }, (_, index) => String(index)),
+            additionalImageLinks: ['not-a-url'],
+            gtins: [1 as never],
             productDetails: [
               { attributeName: '', attributeValue: 'Stone', sectionName: 'Material' },
             ],
-            productHighlights: ['A'.repeat(151), 'Second highlight'],
+          },
+        },
+      }),
+    ).toThrow(/absolute HTTP.*gtins must contain strings.*attributeName/s)
+
+    // Cardinality is Merchant Center policy; the plugin publishes what it is given.
+    expect(() =>
+      canonicalizeProductInput({
+        input: {
+          ...product(),
+          productAttributes: {
+            ...product().productAttributes,
+            additionalImageLinks: Array.from(
+              { length: 11 },
+              (_, index) => `https://example.com/${index}.jpg`,
+            ),
+            gtins: Array.from({ length: 11 }, (_, index) => String(index)),
             sizeTypes: ['REGULAR', 'PETITE', 'MATERNITY'],
           },
         },
       }),
-    ).toThrow(/10 URLs.*absolute HTTP.*10 values.*2 values.*1-150.*attributeName/s)
+    ).not.toThrow()
   })
 
   it('allows an omitted product-detail section and rejects non-RFC timestamps', () => {
@@ -349,20 +432,17 @@ describe('canonicalizeProductInput', () => {
     ]) {
       const input = product()
       input.productAttributes!.availability = availability
-      if (availability === 'BACKORDER' || availability === 'PREORDER') {
-        input.productAttributes!.availabilityDate = '2026-09-30T00:00:00Z'
-      }
       expect(() => canonicalizeProductInput({ input })).not.toThrow()
     }
   })
 
-  it('requires availabilityDate for preorder and backorder offers', () => {
+  it('publishes preorder and backorder offers without an availabilityDate', () => {
+    // Google surfaces the missing date as an item-level issue. Rejecting the
+    // projection here would strand an otherwise publishable offer.
     for (const availability of ['BACKORDER', 'PREORDER']) {
       const input = product()
       input.productAttributes!.availability = availability
-      expect(() => canonicalizeProductInput({ input })).toThrow(
-        new RegExp(`availabilityDate.*required.*${availability}`, 'i'),
-      )
+      expect(() => canonicalizeProductInput({ input })).not.toThrow()
     }
   })
 
@@ -376,7 +456,7 @@ describe('canonicalizeProductInput', () => {
     expect(() => canonicalizeProductInput({ input })).toThrow(/after Google normalization/i)
   })
 
-  it('requires one plain or provenance-bearing structured text value, never both', () => {
+  it('rejects a plain and a structured spelling of the same text value', () => {
     expect(() =>
       canonicalizeProductInput({
         input: {
@@ -502,6 +582,73 @@ describe('canonicalizeProductInput', () => {
         ],
       }).warnings,
     ).toEqual([{ code: 'CANONICAL_NOTE', message: 'Needs review', path: 'product.title' }])
+  })
+
+  it('canonicalizes a supplemental input carrying only identity and one attribute', () => {
+    const result = canonicalizeProductInput({
+      input: {
+        contentLanguage: 'en',
+        feedLabel: 'US',
+        offerId: 'supplemental-1',
+        productAttributes: { customLabel0: 'clearance' },
+      },
+    })
+
+    expect(result.identity.offerId).toBe('supplemental-1')
+    expect(result.input.productAttributes).toEqual({ customLabel0: 'clearance' })
+  })
+
+  it('accepts merchandising text Google truncates rather than rejects', () => {
+    const input = product()
+    input.productAttributes!.productDetails = [
+      { attributeName: 'A'.repeat(200), attributeValue: 'B'.repeat(600), sectionName: 'C'.repeat(200) },
+    ]
+    input.productAttributes!.title = 'T'.repeat(400)
+    input.productAttributes!.productHighlights = ['Only one highlight']
+
+    expect(() => canonicalizeProductInput({ input })).not.toThrow()
+  })
+
+  it('accepts the Merchant API v1 legacyLocal ProductInput field', () => {
+    const result = canonicalizeProductInput({
+      input: { ...product(), legacyLocal: true },
+    })
+
+    expect(result.input.legacyLocal).toBe(true)
+    expect(() =>
+      canonicalizeProductInput({ input: { ...product(), legacyLocal: 'yes' as never } }),
+    ).toThrow(/input\.legacyLocal must be a boolean/i)
+  })
+
+  it('passes unknown attributes through without a taxes field on the attribute type', () => {
+    // Merchant API v1 has no `taxes` attribute: the type must not offer one, and an
+    // unknown attribute must survive as opaque forward-compatible JSON.
+    const attributes: MCProductAttributes = {
+      // @ts-expect-error Merchant API v1 removed the Content API `taxes` attribute
+      taxes: [{ country: 'US', rate: 5 }],
+    }
+
+    const result = canonicalizeProductInput({
+      input: {
+        ...product(),
+        productAttributes: { ...product().productAttributes, ...attributes },
+      },
+    })
+
+    expect(result.input.productAttributes).toHaveProperty('taxes')
+  })
+
+  it('pins the canonical digest of a fixed realistic offer', () => {
+    const result = canonicalizeProductInput({
+      input: structuredClone(GOLDEN_FIXTURE),
+      sourceVersion: '7',
+    })
+
+    // Recorded from the released canonicalization. A change here means the
+    // canonical JSON changed and every stored publication digest is invalidated.
+    expect(result.digest).toBe(
+      '8054e33c0ed32142e7da4b578763d8a57d56b3b76325435e9c289dd5f403e3ab',
+    )
   })
 })
 
