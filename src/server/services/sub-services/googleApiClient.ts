@@ -78,7 +78,6 @@ export class GoogleApiError extends Error {
   public readonly apiMessage?: string
   public readonly fieldLocation?: string
   public readonly reason?: string
-  public readonly responseBody?: unknown
   public readonly retryAfterMs?: number
   public readonly statusCode: number
 
@@ -86,8 +85,10 @@ export class GoogleApiError extends Error {
     super(message)
     this.name = 'GoogleApiError'
     this.statusCode = statusCode
-    this.responseBody = responseBody
     this.retryAfterMs = retryAfterMs
+    // Extract only what's needed and let the (possibly large, possibly
+    // sensitive) response body be garbage collected — it must not be
+    // retained on the error for the lifetime of a durable retry/queue entry.
     const info = merchantErrorInfoFrom(responseBody)
     this.apiMessage = info.apiMessage
     this.fieldLocation = info.fieldLocation
@@ -109,13 +110,8 @@ export class GoogleTransportError extends Error {
   }
 }
 
-const MAX_MERCHANT_RESPONSE_BYTES = 64 * 1024 * 1024
+const MAX_MERCHANT_RESPONSE_BYTES = 8 * 1024 * 1024
 const MAX_OAUTH_RESPONSE_BYTES = 64 * 1024
-const MAX_ACCESS_TOKEN_LENGTH = 64 * 1024
-const MAX_TOKEN_LIFETIME_SECONDS = 7 * 24 * 60 * 60
-const MAX_CREDENTIAL_FILE_BYTES = 1024 * 1024
-const MAX_PRIVATE_KEY_BYTES = 1024 * 1024
-const MAX_CLIENT_EMAIL_LENGTH = 320
 
 const hasControlCharacters = (value: string): boolean =>
   [...value].some((character) => {
@@ -225,11 +221,7 @@ const exchangeForAccessToken = async (
 
   if (credentialResolution.type === 'keyFilename') {
     const fs = await import('fs/promises')
-    if (
-      typeof credentialResolution.path !== 'string' ||
-      !credentialResolution.path.trim() ||
-      credentialResolution.path.length > 4_096
-    ) {
+    if (typeof credentialResolution.path !== 'string' || !credentialResolution.path.trim()) {
       throw new TypeError('Google service-account credential path is invalid')
     }
     let stat: Awaited<ReturnType<typeof fs.stat>>
@@ -240,10 +232,8 @@ const exchangeForAccessToken = async (
         cause: error,
       })
     }
-    if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_CREDENTIAL_FILE_BYTES) {
-      throw new TypeError(
-        `Google service-account credential file must contain 1-${MAX_CREDENTIAL_FILE_BYTES} bytes`,
-      )
+    if (!stat.isFile() || stat.size <= 0) {
+      throw new TypeError('Google service-account credential file must be a non-empty file')
     }
     let raw: string
     try {
@@ -272,10 +262,8 @@ const exchangeForAccessToken = async (
   if (
     !clientEmail.trim() ||
     clientEmail !== clientEmail.trim() ||
-    clientEmail.length > MAX_CLIENT_EMAIL_LENGTH ||
     hasControlCharacters(clientEmail) ||
-    !privateKey.trim() ||
-    Buffer.byteLength(privateKey, 'utf8') > MAX_PRIVATE_KEY_BYTES
+    !privateKey.trim()
   ) {
     throw new TypeError('Google service-account credentials are incomplete')
   }
@@ -339,12 +327,10 @@ const exchangeForAccessToken = async (
       typeof record.access_token !== 'string' ||
       record.access_token.trim().length === 0 ||
       record.access_token !== record.access_token.trim() ||
-      record.access_token.length > MAX_ACCESS_TOKEN_LENGTH ||
       hasControlCharacters(record.access_token) ||
       typeof record.expires_in !== 'number' ||
       !Number.isSafeInteger(record.expires_in) ||
-      record.expires_in <= 0 ||
-      record.expires_in > MAX_TOKEN_LIFETIME_SECONDS
+      record.expires_in <= 0
     ) {
       throw new TypeError('Google OAuth token response is malformed')
     }

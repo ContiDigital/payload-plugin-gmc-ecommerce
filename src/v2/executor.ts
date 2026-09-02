@@ -35,7 +35,6 @@ import {
 } from './commands.js'
 import {
   assertGmcApiDataSourceAcceptsIdentity,
-  assertGmcApiPrimaryDataSource,
   assertGmcApiPrimaryDataSourceTopology,
   GmcProcessedProductNotReadyError,
   GmcProductDataSourceConflictError,
@@ -309,14 +308,15 @@ export const createGmcCommandExecutor = (
     if (!dataSource || dataSource.expiresAt <= Date.now()) {
       let read = dataSourceReads.get(args.dataSourceName)
       if (!read) {
-        read = merchantCall('dataSources.get', async () =>
-          assertGmcApiPrimaryDataSource(
-            await transport.getApiPrimaryDataSource({
-              dataSourceName: args.dataSourceName,
-              payload: args.payload,
-            }),
-            args.dataSourceName,
-          ),
+        // The transport already validates the response through
+        // `parseGmcApiPrimaryDataSource` (which itself calls
+        // `assertGmcApiPrimaryDataSource` on its normalized output) — do not
+        // re-validate the already-validated, already-normalized result here.
+        read = merchantCall('dataSources.get', () =>
+          transport.getApiPrimaryDataSource({
+            dataSourceName: args.dataSourceName,
+            payload: args.payload,
+          }),
         )
         dataSourceReads.set(args.dataSourceName, read)
       }

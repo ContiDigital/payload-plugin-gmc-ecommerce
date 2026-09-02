@@ -21,6 +21,7 @@ import {
   createProductPublishCommand,
   getGmcCommandSubject,
 } from './commands.js'
+import { classifyGmcCommandError } from './errors.js'
 import { createGmcCommandExecutor } from './executor.js'
 import { assertFeedArtifactIntegrity, buildCanonicalFeed } from './feed/buildFeed.js'
 import { isGmcNonNegativeInt64String } from './merchantWire.js'
@@ -551,6 +552,12 @@ const createWorkerEndpoint = (options: NormalizedGmcV2Options): Endpoint => {
   }
   return handled({
     handler: async (req) => {
+      // Authorize before spending any work on the request body: an untrusted
+      // caller must not be able to make the plugin parse, validate, or size
+      // any part of a body it hasn't earned the right to submit.
+      if (!(await workerAccess({ payload: req.payload, req }))) {
+        throw new AccessDeniedError()
+      }
       const body = await readJsonBody(req)
       assertExactRequestFields(body, ['command', 'operationId', 'rootOperationId', 'sourceVersion'])
       try {
@@ -559,21 +566,35 @@ const createWorkerEndpoint = (options: NormalizedGmcV2Options): Endpoint => {
         throw new GmcHttpError(400, error instanceof Error ? error.message : 'Invalid GMC command')
       }
       const operationId = requireOperationId(body.operationId)
-      if (!(await workerAccess({ command: body.command, payload: req.payload, req }))) {
-        throw new AccessDeniedError()
-      }
       const rootOperationId =
         body.rootOperationId === undefined ? undefined : requireOperationId(body.rootOperationId)
       const sourceVersion = parseLegacySourceVersion(body.sourceVersion)
-      return jsonResponse(
-        await execute({
-          command: body.command,
-          operationId,
-          payload: req.payload,
-          rootOperationId,
-          sourceVersion,
-        }),
-      )
+      try {
+        return jsonResponse(
+          await execute({
+            command: body.command,
+            operationId,
+            payload: req.payload,
+            rootOperationId,
+            sourceVersion,
+          }),
+        )
+      } catch (error) {
+        // Never let an executor failure fall through to the generic error
+        // handler: a GoogleApiError's message could describe the *caller's*
+        // request in terms that leak Google's own wording as if it were this
+        // endpoint's validation response. Always answer with the durable
+        // classification's own bounded shape instead.
+        const classification = classifyGmcCommandError(error)
+        return jsonResponse(
+          {
+            code: classification.code,
+            message: classification.message,
+            retryable: classification.retryable,
+          },
+          classification.retryable ? 500 : 422,
+        )
+      }
     },
     method: 'post',
     path: `${options.api.basePath}/worker/execute`,

@@ -2,6 +2,7 @@ import {
   GoogleApiError,
   GoogleTransportError,
 } from '../server/services/sub-services/googleApiClient.js'
+import { RateLimitQueueOverflowError } from '../server/services/sub-services/rateLimiterService.js'
 import {
   GmcAsyncIdempotencyConflictError,
   GmcAsyncWorkflowConflictError,
@@ -40,7 +41,17 @@ export const classifyGmcCommandError = (error: unknown): GmcCommandErrorClassifi
     error instanceof SyntaxError ||
     error instanceof GmcAsyncIdempotencyConflictError ||
     error instanceof GmcAsyncWorkflowConflictError ||
-    error instanceof GmcIdentityOwnershipError
+    error instanceof GmcIdentityOwnershipError ||
+    error instanceof RateLimitQueueOverflowError
+  // An infrastructure component (e.g. the distributed rate-limit store) can
+  // assert its own retryability. Honor that before the TypeError-is-terminal
+  // rule below, since such a component may legitimately throw a TypeError
+  // subclass for a transient condition it detected itself.
+  const explicitRetryable =
+    error !== null &&
+    typeof error === 'object' &&
+    Object.prototype.hasOwnProperty.call(error, 'retryable') &&
+    (error as { retryable?: unknown }).retryable === true
 
   return {
     code:
@@ -53,8 +64,10 @@ export const classifyGmcCommandError = (error: unknown): GmcCommandErrorClassifi
     retryable:
       error instanceof GoogleTransportError
         ? true
-        : status === undefined
-          ? !deterministicFailure
-          : isRetryableMerchantApiError({ reason: merchantReason, statusCode: status }),
+        : explicitRetryable
+          ? true
+          : status === undefined
+            ? !deterministicFailure
+            : isRetryableMerchantApiError({ reason: merchantReason, statusCode: status }),
   }
 }

@@ -4,17 +4,16 @@ import {
   createGoogleApiClient,
   GoogleApiError,
 } from '../../server/services/sub-services/googleApiClient.js'
-import { canonicalJson } from '../canonical.js'
 import { parseGmcApiPrimaryDataSource } from '../dataSource.js'
 import { getMerchantProductId, getProcessedProductName, getProductInputName } from '../identity.js'
 import { isGmcNonNegativeInt64String } from '../merchantWire.js'
 
 const MAX_REMOTE_PAGE_SIZE = 1_000
-const MAX_REMOTE_STATUS_BYTES = 1_048_576
 
 const parseRemoteProduct = (
   value: Record<string, unknown>,
   options: NormalizedGmcV2Options,
+  dataSourceNamePattern: RegExp,
 ): GmcRemoteProduct => {
   const required = ['contentLanguage', 'dataSource', 'feedLabel', 'name', 'offerId'] as const
   for (const field of required) {
@@ -34,9 +33,7 @@ const parseRemoteProduct = (
   const resourceId = productName.slice(productNamePrefix.length)
   const encodedMerchantProductId = Buffer.from(merchantProductId, 'utf8').toString('base64url')
   if (
-    !new RegExp(`^accounts/${options.merchantId}/dataSources/[1-9]\\d{0,18}$`).test(
-      dataSourceName,
-    ) ||
+    !dataSourceNamePattern.test(dataSourceName) ||
     !isGmcNonNegativeInt64String(dataSourceName.split('/').at(-1)) ||
     !/^[a-z]{2}$/.test(value.contentLanguage as string) ||
     !/^[A-Z0-9_-]{1,20}$/.test(value.feedLabel as string) ||
@@ -68,12 +65,6 @@ const parseRemoteProduct = (
   ) {
     throw new TypeError('Merchant API product contains an invalid productStatus')
   }
-  if (
-    value.productStatus !== undefined &&
-    Buffer.byteLength(canonicalJson(value.productStatus), 'utf8') > MAX_REMOTE_STATUS_BYTES
-  ) {
-    throw new TypeError('Merchant API productStatus exceeds its safety limit')
-  }
   return {
     name: productName,
     dataSourceName,
@@ -95,6 +86,11 @@ export const createGoogleMerchantTransport = (
   options: NormalizedGmcV2Options,
 ): GmcMerchantTransport => {
   const client = createGoogleApiClient(options)
+  // Hoisted once per transport instance instead of recompiled on every
+  // remote product parsed (a single list page can contain hundreds).
+  const dataSourceNamePattern = new RegExp(
+    `^accounts/${options.merchantId}/dataSources/[1-9]\\d{0,18}$`,
+  )
 
   return {
     deleteLocalInventory: async ({ identity, payload, storeCode }) => {
@@ -135,7 +131,7 @@ export const createGoogleMerchantTransport = (
           getProcessedProductName(identity, options.merchantId),
           payload,
         )
-        return parseRemoteProduct(response.data, options)
+        return parseRemoteProduct(response.data, options, dataSourceNamePattern)
       } catch (error) {
         if (error instanceof GoogleApiError && error.statusCode === 404) {
           return null
@@ -184,7 +180,7 @@ export const createGoogleMerchantTransport = (
           if (!product || typeof product !== 'object' || Array.isArray(product)) {
             throw new TypeError('Merchant API product list contains a non-object product')
           }
-          return parseRemoteProduct(product, options)
+          return parseRemoteProduct(product, options, dataSourceNamePattern)
         }),
       }
     },

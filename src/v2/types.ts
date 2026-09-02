@@ -457,7 +457,13 @@ export type GmcArtifactFeedConfig = {
 export type GmcFeedConfig = GmcArtifactFeedConfig | GmcDynamicFeedConfig
 
 export type GmcWorkerAccessFn = (args: {
-  command: GmcCommand
+  /**
+   * The parsed command, when available. The worker endpoint calls this
+   * function before parsing the request body so it can reject unauthorized
+   * callers without spending any work on an untrusted payload — `command` is
+   * therefore always `undefined` at that call site.
+   */
+  command?: GmcCommand
   payload: Payload
   req: PayloadRequest
 }) => boolean | Promise<boolean>

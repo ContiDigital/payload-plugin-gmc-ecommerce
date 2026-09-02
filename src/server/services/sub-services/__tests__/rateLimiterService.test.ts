@@ -1,6 +1,11 @@
 import { describe, expect, test, vi } from 'vitest'
 
-import { createRateLimiterService } from '../rateLimiterService.js'
+import {
+  createRateLimiterService,
+  RateLimitQueueOverflowError,
+  RateLimitStoreError,
+} from '../rateLimiterService.js'
+import { createRetryService } from '../retryService.js'
 
 describe('createRateLimiterService', () => {
   test('bypasses queueing when disabled', async () => {
@@ -82,6 +87,27 @@ describe('createRateLimiterService', () => {
     await expect(queued).resolves.toBe('queued')
 
     vi.useRealTimers()
+  })
+
+  test('queue overflow is a terminal backpressure signal a durable retry service must not retry', async () => {
+    const limiter = createRateLimiterService({
+      enabled: true,
+      maxConcurrency: 0,
+      maxQueueSize: 0,
+      maxRequestsPerMinute: 10,
+    })
+    const retryService = createRetryService({
+      baseRetryDelayMs: 1,
+      jitterFactor: 0,
+      maxRetries: 2,
+      maxRetryDelayMs: 10,
+    })
+    const task = vi.fn(() => limiter.execute(() => Promise.resolve('unreachable')))
+
+    await expect(retryService.execute(task, { operation: 'insertProductInput' })).rejects.toThrow(
+      RateLimitQueueOverflowError,
+    )
+    expect(task).toHaveBeenCalledTimes(1)
   })
 
   test('uses the distributed store to coordinate outbound start slots', async () => {
@@ -167,7 +193,12 @@ describe('createRateLimiterService', () => {
       store: { claimSlot: vi.fn(() => Promise.reject(limiterError)) },
     })
 
-    await expect(limiter.execute(task)).rejects.toBe(limiterError)
+    await expect(limiter.execute(task)).rejects.toMatchObject({
+      name: 'RateLimitStoreError',
+      cause: limiterError,
+      code: 'GMC_RATE_LIMIT_STORE',
+      retryable: true,
+    })
     expect(task).not.toHaveBeenCalled()
     expect(limiter.getStats()).toMatchObject({ activeCount: 0, queueSize: 0 })
   })
@@ -189,6 +220,9 @@ describe('createRateLimiterService', () => {
       },
     })
 
+    await expect(limiter.execute(() => Promise.resolve('unsafe'))).rejects.toThrow(
+      RateLimitStoreError,
+    )
     await expect(limiter.execute(() => Promise.resolve('unsafe'))).rejects.toThrow(
       /invalid reservation/i,
     )

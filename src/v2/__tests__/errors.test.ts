@@ -5,6 +5,10 @@ import {
   GoogleTransportError,
 } from '../../server/services/sub-services/googleApiClient.js'
 import {
+  RateLimitQueueOverflowError,
+  RateLimitStoreError,
+} from '../../server/services/sub-services/rateLimiterService.js'
+import {
   GmcAsyncIdempotencyConflictError,
   GmcAsyncWorkflowConflictError,
 } from '../async.js'
@@ -60,6 +64,13 @@ describe('GMC durable error classification', () => {
         }),
       ),
     ).toMatchObject({ code: 'GMC_IDENTITY_OWNERSHIP_CONFLICT', retryable: false })
+    // The queue-overflow signal is a plugin-side backpressure decision, not a
+    // transient Google/infrastructure failure — a durable worker must not
+    // amplify it through retries.
+    expect(classifyGmcCommandError(new RateLimitQueueOverflowError(10))).toMatchObject({
+      code: 'GMC_RATE_LIMIT_QUEUE_OVERFLOW',
+      retryable: false,
+    })
   })
 
   it('retries only transient Google responses and unknown infrastructure errors', () => {
@@ -126,6 +137,18 @@ describe('GMC durable error classification', () => {
       ),
     ).toMatchObject({
       code: 'GMC_PROCESSED_PRODUCT_NOT_READY',
+      retryable: true,
+    })
+    // A distributed-store reservation failure is an infrastructure defect of
+    // the rate-limit safety boundary, not a validation/configuration bug —
+    // it must be retried even though it is thrown as an own-property
+    // `retryable: true` Error rather than a recognized subclass.
+    expect(
+      classifyGmcCommandError(
+        new RateLimitStoreError('Distributed rate-limit store returned an invalid reservation'),
+      ),
+    ).toMatchObject({
+      code: 'GMC_RATE_LIMIT_STORE',
       retryable: true,
     })
   })

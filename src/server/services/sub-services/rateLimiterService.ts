@@ -19,11 +19,27 @@ const DISTRIBUTED_RESET_MAX_WAIT_MS = 65_000
 const DISTRIBUTED_DENIAL_MIN_WAIT_MS = 100
 
 export class RateLimitQueueOverflowError extends Error {
-  public readonly statusCode = 429
+  public readonly code = 'GMC_RATE_LIMIT_QUEUE_OVERFLOW'
 
   constructor(queueSize: number) {
     super(`Rate limit queue overflow: ${queueSize} items in queue, refusing new work`)
     this.name = 'RateLimitQueueOverflowError'
+  }
+}
+
+/**
+ * The distributed rate-limit store's reservation was malformed, implausible,
+ * or unreachable. This is an infrastructure failure of the safety boundary
+ * itself, not a validation/configuration defect — a durable worker must retry
+ * it rather than treat it as terminal.
+ */
+export class RateLimitStoreError extends Error {
+  public readonly code = 'GMC_RATE_LIMIT_STORE'
+  public readonly retryable = true
+
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = 'RateLimitStoreError'
   }
 }
 
@@ -93,12 +109,19 @@ export const createRateLimiterService = (config: RateLimiterConfig) => {
     // Prune stale local timestamps to prevent unbounded growth
     pruneStartedAt(now)
 
-    const reservation = await config.store.claimSlot({
-      key: config.scopeKey ?? 'global',
-      limit: config.maxRequestsPerMinute,
-      scope: 'outbound',
-      windowMs: 60_000,
-    })
+    let reservation: Awaited<ReturnType<DistributedRateLimitStore['claimSlot']>>
+    try {
+      reservation = await config.store.claimSlot({
+        key: config.scopeKey ?? 'global',
+        limit: config.maxRequestsPerMinute,
+        scope: 'outbound',
+        windowMs: 60_000,
+      })
+    } catch (error) {
+      throw new RateLimitStoreError('Distributed rate-limit store is unavailable', {
+        cause: error,
+      })
+    }
     if (
       !reservation ||
       typeof reservation.allowed !== 'boolean' ||
@@ -106,7 +129,7 @@ export const createRateLimiterService = (config: RateLimiterConfig) => {
       reservation.count < 0 ||
       !Number.isSafeInteger(reservation.resetAt)
     ) {
-      throw new TypeError('Distributed rate-limit store returned an invalid reservation')
+      throw new RateLimitStoreError('Distributed rate-limit store returned an invalid reservation')
     }
 
     if (!reservation.allowed) {
@@ -116,7 +139,7 @@ export const createRateLimiterService = (config: RateLimiterConfig) => {
       // unbounded provider-controlled timeout. A small negative skew is
       // tolerated below by retrying at a bounded cadence.
       if (reservation.resetAt - now > DISTRIBUTED_RESET_MAX_WAIT_MS) {
-        throw new TypeError('Distributed rate-limit store returned an implausible reset time')
+        throw new RateLimitStoreError('Distributed rate-limit store returned an implausible reset time')
       }
       return {
         allowed: false,

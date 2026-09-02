@@ -1,8 +1,38 @@
 import type { Payload, PayloadRequest } from 'payload'
 
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { GmcFeedConfig, PayloadGmcEcommerceV2Options } from '../types.js'
+import type * as GmcExecutorModule from '../executor.js'
+import type {
+  GmcCommandExecutionContext,
+  GmcCommandExecutionResult,
+  GmcFeedConfig,
+  PayloadGmcEcommerceV2Options,
+} from '../types.js'
+
+// Only the two "executor error mapping" tests below set `current`; every
+// other test leaves it null so `createGmcCommandExecutor` behaves exactly as
+// the real module — this lets a single deterministic executor failure be
+// injected without mocking away the executor's real dispatch-forwarding
+// behavior that other worker-endpoint tests depend on.
+const executorOverride = vi.hoisted(() => ({
+  current: null as
+    | ((args: GmcCommandExecutionContext) => Promise<GmcCommandExecutionResult>)
+    | null,
+}))
+vi.mock('../executor.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof GmcExecutorModule>()
+  return {
+    ...actual,
+    createGmcCommandExecutor: (
+      ...args: Parameters<typeof actual.createGmcCommandExecutor>
+    ): ReturnType<typeof actual.createGmcCommandExecutor> => {
+      const real = actual.createGmcCommandExecutor(...args)
+      return (executeArgs) =>
+        executorOverride.current ? executorOverride.current(executeArgs) : real(executeArgs)
+    },
+  }
+})
 
 import { GmcAsyncIdempotencyConflictError, GmcAsyncWorkflowConflictError } from '../async.js'
 import { normalizeGmcV2Options } from '../config.js'
@@ -101,6 +131,10 @@ const request = (args: {
   }) as unknown as PayloadRequest
 
 describe('GMC v2 endpoints', () => {
+  afterEach(() => {
+    executorOverride.current = null
+  })
+
   it('durably dispatches a non-mutating API-source deployment preflight', async () => {
     const test = build()
     const endpoint = test.endpoints.find((candidate) =>
@@ -424,11 +458,28 @@ describe('GMC v2 endpoints', () => {
     expect(test.dispatch).not.toHaveBeenCalled()
   })
 
+  it('rejects worker access before parsing the request body', async () => {
+    // workerAccess defaults to false in this suite's build(); an invalid,
+    // malformed body must never reach parsing/validation once access is
+    // denied — the caller should see 403, never a 400 that would confirm the
+    // shape of a body it wasn't authorized to submit.
+    const test = build({ exposeWorkerEndpoint: true })
+    const endpoint = test.endpoints.find((candidate) => candidate.path.endsWith('/worker/execute'))
+    const response = await endpoint?.handler(
+      request({
+        data: { command: { type: 'invalid' }, notAllowedField: true, operationId: 'operation-1' },
+        payload: test.payload,
+      }),
+    )
+
+    expect(response?.status).toBe(403)
+  })
+
   it('keeps worker execution unexposed by default and rejects malformed commands when enabled', async () => {
     expect(build().endpoints.some((endpoint) => endpoint.path.endsWith('/worker/execute'))).toBe(
       false,
     )
-    const test = build({ exposeWorkerEndpoint: true })
+    const test = build({ exposeWorkerEndpoint: true, workerAccess: true })
     const endpoint = test.endpoints.find((candidate) => candidate.path.endsWith('/worker/execute'))
     const response = await endpoint?.handler(
       request({
@@ -546,6 +597,62 @@ describe('GMC v2 endpoints', () => {
     })
     expect(ambiguousId?.status).toBe(400)
     expect(test.dispatch).not.toHaveBeenCalled()
+  })
+
+  it('maps a retryable executor failure to 500 with a classification body, not a leaked message', async () => {
+    executorOverride.current = () => Promise.reject(new Error('temporary infrastructure failure'))
+    const test = build({ exposeWorkerEndpoint: true, workerAccess: true })
+    const endpoint = test.endpoints.find((candidate) => candidate.path.endsWith('/worker/execute'))
+
+    const response = await endpoint?.handler(
+      request({
+        data: {
+          command: {
+            type: 'catalog.publish',
+            cause: 'manual',
+            requestedAt: '2026-08-29T12:00:00.000Z',
+            schemaVersion: 2,
+          },
+          operationId: 'operation-1',
+        },
+        payload: test.payload,
+      }),
+    )
+
+    expect(response?.status).toBe(500)
+    await expect(response?.json()).resolves.toEqual({
+      code: undefined,
+      message: 'temporary infrastructure failure',
+      retryable: true,
+    })
+  })
+
+  it('maps a terminal executor failure to 422 with a classification body', async () => {
+    executorOverride.current = () => Promise.reject(new TypeError('invalid canonical projection'))
+    const test = build({ exposeWorkerEndpoint: true, workerAccess: true })
+    const endpoint = test.endpoints.find((candidate) => candidate.path.endsWith('/worker/execute'))
+
+    const response = await endpoint?.handler(
+      request({
+        data: {
+          command: {
+            type: 'catalog.publish',
+            cause: 'manual',
+            requestedAt: '2026-08-29T12:00:00.000Z',
+            schemaVersion: 2,
+          },
+          operationId: 'operation-1',
+        },
+        payload: test.payload,
+      }),
+    )
+
+    expect(response?.status).toBe(422)
+    await expect(response?.json()).resolves.toEqual({
+      code: undefined,
+      message: 'invalid canonical projection',
+      retryable: false,
+    })
   })
 
   it('proxies durable operation status and reports measured adapter health', async () => {

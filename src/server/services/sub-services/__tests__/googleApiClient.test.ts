@@ -122,6 +122,47 @@ describe('createGoogleApiClient', () => {
     )
   })
 
+  test('builds the exact insert URL with a properly form-encoded dataSource query', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ access_token: 'access-1', expires_in: 3600 }), {
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ name: 'accounts/1/products/en~US~sku-1' }), { status: 200 }),
+      )
+
+    const client = createGoogleApiClient({ ...buildOptions(), merchantId: '1' })
+    await client.insertProductInput({}, null, 'accounts/1/dataSources/2')
+
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      'https://merchantapi.googleapis.com/products/v1/accounts/1/productInputs:insert?dataSource=accounts%2F1%2FdataSources%2F2',
+    )
+  })
+
+  test('builds the exact delete URL for a base64url-encoded product input name', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ access_token: 'access-1', expires_in: 3600 }), {
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+
+    const client = createGoogleApiClient({ ...buildOptions(), merchantId: '1' })
+    await client.deleteProductInput(
+      'accounts/1/productInputs/ZW5-VVN-c2t1LTE',
+      null,
+      'accounts/1/dataSources/2',
+    )
+
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      'https://merchantapi.googleapis.com/products/v1/accounts/1/productInputs/ZW5-VVN-c2t1LTE?dataSource=accounts%2F1%2FdataSources%2F2',
+    )
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: 'DELETE' })
+  })
+
   test('coalesces concurrent access-token exchanges', async () => {
     fetchMock
       .mockResolvedValueOnce(
@@ -265,7 +306,8 @@ describe('createGoogleApiClient', () => {
 
     const client = createGoogleApiClient(buildOptions())
 
-    await expect(client.reportQuery('SELECT * FROM product_view', null)).rejects.toEqual(
+    const error = await client.reportQuery('SELECT * FROM product_view', null).catch((caught: unknown) => caught)
+    expect(error).toEqual(
       expect.objectContaining<Partial<GoogleApiError>>({
         name: 'GoogleApiError',
         apiMessage: 'bad request',
@@ -274,6 +316,14 @@ describe('createGoogleApiClient', () => {
         statusCode: 400,
       }),
     )
+    // The raw Merchant response body must not be retained on the error — only
+    // the fields extracted for classification/display. `domain` above is a
+    // sibling field of the raw `details[0]` entry that was never extracted;
+    // its absence proves the whole response body wasn't kept verbatim.
+    expect(error).not.toHaveProperty('responseBody')
+    const serialized = JSON.stringify(error)
+    expect(serialized).not.toContain('responseBody')
+    expect(serialized).not.toContain('merchantapi.googleapis.com')
   })
 
   test('wraps OAuth and Merchant fetch failures as retryable transport errors', async () => {
@@ -306,7 +356,7 @@ describe('createGoogleApiClient', () => {
     )
   })
 
-  test('preserves status and text when Google returns a non-JSON error', async () => {
+  test('preserves status and discards the body when Google returns a non-JSON error', async () => {
     fetchMock
       .mockResolvedValueOnce(
         new Response(
@@ -321,13 +371,16 @@ describe('createGoogleApiClient', () => {
 
     const client = createGoogleApiClient(buildOptions())
 
-    await expect(client.getProduct('accounts/123/products/encoded', null)).rejects.toEqual(
+    const error = await client
+      .getProduct('accounts/123/products/encoded', null)
+      .catch((caught: unknown) => caught)
+    expect(error).toEqual(
       expect.objectContaining<Partial<GoogleApiError>>({
         name: 'GoogleApiError',
-        responseBody: 'upstream unavailable',
         statusCode: 503,
       }),
     )
+    expect(error).not.toHaveProperty('responseBody')
   })
 
   test('surfaces a bounded Retry-After hint on Merchant failures', async () => {
@@ -374,13 +427,16 @@ describe('createGoogleApiClient', () => {
 
     const client = createGoogleApiClient(buildOptions())
 
-    await expect(client.getProduct('accounts/123/products/encoded', null)).rejects.toEqual(
+    const error = await client
+      .getProduct('accounts/123/products/encoded', null)
+      .catch((caught: unknown) => caught)
+    expect(error).toEqual(
       expect.objectContaining<Partial<GoogleApiError>>({
         name: 'GoogleApiError',
-        responseBody: undefined,
         statusCode: 503,
       }),
     )
+    expect(error).not.toHaveProperty('responseBody')
   })
 
   test('refuses an oversized Merchant response before parsing or retaining it', async () => {
@@ -396,14 +452,14 @@ describe('createGoogleApiClient', () => {
       )
       .mockResolvedValueOnce(
         new Response('small body with a hostile declared size', {
-          headers: { 'Content-Length': String(64 * 1024 * 1024 + 1) },
+          headers: { 'Content-Length': String(8 * 1024 * 1024 + 1) },
           status: 200,
         }),
       )
 
     const client = createGoogleApiClient(buildOptions())
 
-    await expect(client.listProducts(null)).rejects.toThrow(/67108864 byte response limit/i)
+    await expect(client.listProducts(null)).rejects.toThrow(/8388608 byte response limit/i)
   })
 
   test('classifies an OAuth rejection without leaking its response into the message', async () => {
@@ -452,7 +508,7 @@ describe('createGoogleApiClient', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  test('rejects oversized credential material before signing or network I/O', async () => {
+  test('rejects a large but malformed private key via RSA validation before network I/O', async () => {
     const options = buildOptions()
     options.getCredentials = () =>
       Promise.resolve({
@@ -464,7 +520,7 @@ describe('createGoogleApiClient', () => {
       })
     const client = createGoogleApiClient(options)
 
-    await expect(client.listProducts(null)).rejects.toThrow(/credentials are incomplete/i)
+    await expect(client.listProducts(null)).rejects.toThrow(/private key is invalid/i)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
