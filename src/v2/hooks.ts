@@ -451,12 +451,14 @@ export const createGmcV2AfterChangeHook = (
   options: NormalizedGmcV2Options,
 ): CollectionAfterChangeHook => {
   return async ({ doc, operation, previousDoc, req }) => {
-    await warnOnceWithoutTransaction(req, options)
     const current = doc as Record<string, unknown>
     const previous = previousDoc as Record<string, unknown> | undefined
     // A draft autosave over a document that was already draft-only never
     // changes what is (or should be) live at Merchant Center; dispatching for
-    // it only churns the outbox with no observable catalog effect.
+    // it only churns the outbox with no observable catalog effect. Check this
+    // before the transaction gate: a save that dispatches nothing has no
+    // commit-then-crash-before-dispatch exposure, so it should not warn or
+    // fail closed on a missing ambient transaction either.
     if (
       operation === 'update' &&
       typeof current._status === 'string' &&
@@ -465,6 +467,7 @@ export const createGmcV2AfterChangeHook = (
     ) {
       return doc
     }
+    await warnOnceWithoutTransaction(req, options)
     const productId = getDocumentId(current)
     // Payload may provide a synthetic/partial previousDoc during create. It is
     // not an owned historical product and must never be interpreted as one.

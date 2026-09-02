@@ -808,6 +808,36 @@ describe('GMC v2 hooks: opt-in transactions and draft-churn suppression', () => 
     expect(dispatch).not.toHaveBeenCalled()
   })
 
+  it('skips a draft-only save without warning or failing closed even with no ambient transaction', async () => {
+    const dispatch = buildDispatch()
+    const strict = build(
+      {
+        name: 'test',
+        dispatch,
+        getOperation: vi.fn(() => Promise.resolve(null)),
+        health: vi.fn(() =>
+          Promise.resolve({ checkedAt: '2026-08-30T12:00:00.000Z', status: 'ok' as const }),
+        ),
+      },
+      { requireTransaction: true },
+    )
+    const warn = vi.fn()
+    const req = { payload: { logger: { warn } }, transactionID: undefined } as never
+
+    // A draft-only save has no observable Merchant effect, so it should
+    // dispatch nothing regardless of requireTransaction: it is never subject
+    // to the commit-then-crash-before-dispatch exposure that gate protects.
+    await createGmcV2AfterChangeHook(strict)({
+      doc: { ...doc, _status: 'draft' },
+      operation: 'update',
+      previousDoc: { ...doc, _status: 'draft' },
+      req,
+    } as never)
+
+    expect(dispatch).not.toHaveBeenCalled()
+    expect(warn).not.toHaveBeenCalled()
+  })
+
   it('still dispatches when a published document is saved as a draft', async () => {
     const dispatch = buildDispatch()
     const options = build({
