@@ -172,12 +172,12 @@ export const createPayloadLocalInventoryPublicationStateStore = (args: {
     existing: StateDocument,
     data: Record<string, unknown>,
   ): Promise<null | StateDocument> => {
-    return (await atomicUpdatePublicationState({
+    return await atomicUpdatePublicationState<StateDocument>({
       collectionSlug: args.collectionSlug,
-      data: { ...data, revision: existing.revision + 1 },
+      data,
       existing,
       payload,
-    })) as null | StateDocument
+    })
   }
 
   const claim = async (

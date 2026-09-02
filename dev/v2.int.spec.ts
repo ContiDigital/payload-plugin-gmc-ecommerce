@@ -272,7 +272,7 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
     ).resolves.toMatchObject({ id: deletable.id })
   })
 
-  it('persists claims, deletion fences, exact redelivery, and ownership protection', async () => {
+  it('persists claims, deletes, exact redelivery, and ownership protection', async () => {
     const store = createPayloadPublicationStateStore({
       collectionSlug: 'gmc-publications-v2',
       dataSourceName: 'accounts/123456/dataSources/987654321',
@@ -282,7 +282,6 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
     const claim = {
       desiredAt: '2026-08-29T12:00:00.000Z',
       desiredDigest: 'digest-1',
-      desiredVersion: '1',
       identity,
       operationId: 'state-operation-1',
       payload,
@@ -293,7 +292,6 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
     await store.markPublished({ ...claim, publishedAt: '2026-08-29T12:00:00.000Z' })
     expect(await store.claimPublication(claim)).toMatchObject({
       publishedDigest: 'digest-1',
-      publishedVersion: '1',
       status: 'published',
     })
     await expect(
@@ -304,13 +302,23 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
       }),
     ).rejects.toThrow(/already owned by product product-1/i)
 
-    await store.markDeletePending({
-      deleteVersion: '2',
-      identity,
-      operationId: 'state-delete-2',
-      payload,
-      productId: 'product-1',
-    })
+    await expect(
+      store.markDeletePending({
+        identity,
+        onlyIfDesiredBefore: '2026-08-29T12:00:00.000Z',
+        operationId: 'state-reconcile-boundary',
+        payload,
+        productId: 'product-1',
+      }),
+    ).resolves.toBeNull()
+    await expect(
+      store.markDeletePending({
+        identity,
+        operationId: 'state-delete-2',
+        payload,
+        productId: 'product-1',
+      }),
+    ).resolves.toMatchObject({ desiredAt: undefined, status: 'delete-pending' })
     await expect(
       store.markDeleted({
         identity,
@@ -318,32 +326,15 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
         payload,
         productId: 'product-1',
       }),
-    ).resolves.toMatchObject({ deleteVersion: '2', status: 'deleted' })
-    await expect(
-      store.markDeletePending({
-        deleteVersion: '4',
-        identity,
-        operationId: 'state-delete-4',
-        payload,
-        productId: 'product-1',
-      }),
-    ).resolves.toMatchObject({ deleteVersion: '4', status: 'deleted' })
+    ).resolves.toMatchObject({ publishedDigest: undefined, status: 'deleted' })
     await expect(
       store.claimPublication({
         ...claim,
-        desiredDigest: 'stale-digest',
-        desiredVersion: '3',
-        operationId: 'state-stale-publish-3',
-      }),
-    ).resolves.toMatchObject({ deleteVersion: '4', status: 'deleted' })
-    await expect(
-      store.claimPublication({
-        ...claim,
+        desiredAt: '2026-08-29T12:05:00.000Z',
         desiredDigest: 'digest-5',
-        desiredVersion: '5',
         operationId: 'state-publish-5',
       }),
-    ).resolves.toMatchObject({ desiredVersion: '5', status: 'publish-pending' })
+    ).resolves.toMatchObject({ desiredDigest: 'digest-5', status: 'publish-pending' })
   })
 
   it('atomically resolves two workers that read the same publication revision', async () => {
@@ -356,7 +347,6 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
     const baseClaim = {
       desiredAt: '2026-08-29T12:00:00.000Z',
       desiredDigest: 'digest-1',
-      desiredVersion: '1',
       identity,
       operationId: 'race-operation-1',
       payload,
@@ -393,7 +383,6 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
         ...baseClaim,
         desiredAt: '2026-08-29T12:01:00.000Z',
         desiredDigest: 'digest-2',
-        desiredVersion: '2',
         operationId: 'race-operation-2',
         payload: racingPayload,
       }),
@@ -401,7 +390,6 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
         ...baseClaim,
         desiredAt: '2026-08-29T12:02:00.000Z',
         desiredDigest: 'digest-3',
-        desiredVersion: '3',
         operationId: 'race-operation-3',
         payload: racingPayload,
       }),
@@ -409,7 +397,6 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
 
     await expect(store.get({ identity, payload })).resolves.toMatchObject({
       desiredDigest: 'digest-3',
-      desiredVersion: '3',
       operationId: 'race-operation-3',
       status: 'publish-pending',
     })

@@ -1,200 +1,77 @@
 import type { Payload } from 'payload'
 
-import type { GmcPublicationState } from '../types.js'
+/**
+ * Payload's Drizzle adapters derive a table name with the `to-snake-case`
+ * package (`create.js`: `this.tableNameMap.get(toSnakeCase(collection.slug))`).
+ * That package is a transitive dependency of the adapters, not of this plugin,
+ * so its algorithm is reproduced here rather than imported.
+ */
+const HAS_SPACE = /\s/
+const HAS_SEPARATOR = /[-.:_]/
+const HAS_CAMEL = /[a-z][A-Z]|[A-Z][a-z]/
+const SEPARATOR_SPLITTER = /[\W_]+(.|$)/g
+const CAMEL_SPLITTER = /(.)([A-Z]+)/g
 
-type StateDocument = {
-  createdAt?: string
-  dataSourceName: string
-  deleteVersion?: null | string
-  desiredAt?: null | string
-  desiredDigest?: null | string
-  desiredVersion?: null | string
-  error?: GmcPublicationState['error'] | null
+const unseparate = (value: string): string =>
+  value.replace(SEPARATOR_SPLITTER, (_match, next: string) => (next ? ` ${next}` : ''))
+
+const uncamelize = (value: string): string =>
+  value.replace(
+    CAMEL_SPLITTER,
+    (_match, previous: string, uppers: string) =>
+      `${previous} ${uppers.toLowerCase().split('').join(' ')}`,
+  )
+
+const toNoCase = (value: string): string => {
+  if (HAS_SPACE.test(value)) {
+    return value.toLowerCase()
+  }
+  if (HAS_SEPARATOR.test(value)) {
+    return (unseparate(value) || value).toLowerCase()
+  }
+  if (HAS_CAMEL.test(value)) {
+    return uncamelize(value).toLowerCase()
+  }
+  return value.toLowerCase()
+}
+
+const WHITESPACE = /\s/g
+
+const toSpaceCase = (value: string): string => unseparate(toNoCase(value)).trim()
+
+export const toSnakeCase = (value: string): string => toSpaceCase(value).replace(WHITESPACE, '_')
+
+export type AtomicStateRow = {
   id: number | string
-  key: string
-  merchantId: string
-  observedAt?: null | string
-  operationId: string
-  productId?: null | string
-  publishedAt?: null | string
-  publishedDigest?: null | string
-  publishedVersion?: null | string
-  remoteMissing?: boolean | null
-  remoteStatus?: null | Record<string, unknown>
-  remoteVersion?: null | string
   revision: number
-  status: GmcPublicationState['status']
-  storeCode?: string
-  updatedAt: string
-} & GmcPublicationState['identity']
+}
+
+type DrizzleUpdateBuilder = {
+  set: (values: Record<string, unknown>) => {
+    where: (condition: unknown) => {
+      returning: (fields: Record<string, unknown>) => PromiseLike<unknown[]>
+    }
+  }
+}
 
 type DatabaseAdapterShape = {
-  client?: {
-    execute: (statement: { args: unknown[]; sql: string }) => Promise<{
-      rows?: Array<Record<string, unknown>>
-    }>
+  drizzle?: {
+    update: (table: unknown) => DrizzleUpdateBuilder
   }
   name?: string
-  pool?: {
-    query: (
-      query: string,
-      values: unknown[],
-    ) => Promise<{
-      rows: Array<Record<string, unknown>>
-    }>
+  /**
+   * `DrizzleAdapter.operators` (`@payloadcms/drizzle` `types.d.ts`) exposes the
+   * adapter's own `drizzle-orm` comparison builders. Using them keeps the SQL
+   * expression in the same `drizzle-orm` copy that owns `db.drizzle`, and
+   * spares this plugin a direct `drizzle-orm` dependency.
+   */
+  operators?: {
+    and: (...conditions: unknown[]) => unknown
+    equals: (column: unknown, value: unknown) => unknown
   }
-  schemaName?: string
   tableNameMap?: Map<string, string>
+  tables?: Record<string, Record<string, unknown>>
   updateOne: (args: Record<string, unknown>) => Promise<unknown>
-}
-
-const FIELD_COLUMNS = {
-  deleteVersion: 'delete_version',
-  desiredAt: 'desired_at',
-  desiredDigest: 'desired_digest',
-  desiredVersion: 'desired_version',
-  error: 'error',
-  observedAt: 'observed_at',
-  operationId: 'operation_id',
-  productId: 'product_id',
-  publishedAt: 'published_at',
-  publishedDigest: 'published_digest',
-  publishedVersion: 'published_version',
-  remoteMissing: 'remote_missing',
-  remoteStatus: 'remote_status',
-  remoteVersion: 'remote_version',
-  revision: 'revision',
-  status: 'status',
-  updatedAt: 'updated_at',
-} as const
-
-const snakeCase = (value: string): string =>
-  value
-    .replace(/([a-z\d])([A-Z])/g, '$1_$2')
-    .replace(/[^A-Z\d]+/gi, '_')
-    .replace(/^_+|_+$/g, '')
-    .toLowerCase()
-
-const quoteIdentifier = (value: string): string => {
-  if (!/^[A-Z_]\w*$/i.test(value)) {
-    throw new TypeError(`Unsafe database identifier for GMC publication state: ${value}`)
-  }
-  return `"${value}"`
-}
-
-const resolveTableName = (db: DatabaseAdapterShape, collectionSlug: string): string => {
-  const logicalName = snakeCase(collectionSlug)
-  const tableName = db.tableNameMap?.get(logicalName) ?? logicalName
-  quoteIdentifier(tableName)
-  return tableName
-}
-
-const normalizeDate = (value: unknown): string | undefined => {
-  if (value === undefined || value === null) {
-    return undefined
-  }
-  if (value instanceof Date) {
-    return value.toISOString()
-  }
-  if (typeof value === 'string') {
-    return value
-  }
-  if (typeof value === 'number') {
-    return new Date(value).toISOString()
-  }
-  throw new TypeError('GMC publication state database returned an invalid date')
-}
-
-const normalizeString = (value: unknown, field: string): string => {
-  if (typeof value === 'string') {
-    return value
-  }
-  if (typeof value === 'number' || typeof value === 'bigint') {
-    return value.toString()
-  }
-  throw new TypeError(`GMC publication state database returned an invalid ${field}`)
-}
-
-const normalizeJson = (value: unknown): Record<string, unknown> | undefined => {
-  if (value === undefined || value === null) {
-    return undefined
-  }
-  if (typeof value === 'string') {
-    return JSON.parse(value) as Record<string, unknown>
-  }
-  return value as Record<string, unknown>
-}
-
-const fromRawRow = (row: Record<string, unknown>): StateDocument => ({
-  id: row.id as number | string,
-  contentLanguage: normalizeString(row.content_language, 'contentLanguage'),
-  createdAt: normalizeDate(row.created_at),
-  dataSourceName: normalizeString(row.data_source_name, 'dataSourceName'),
-  deleteVersion:
-    row.delete_version === null || row.delete_version === undefined
-      ? undefined
-      : normalizeString(row.delete_version, 'deleteVersion'),
-  desiredAt: normalizeDate(row.desired_at),
-  desiredDigest:
-    row.desired_digest === null || row.desired_digest === undefined
-      ? undefined
-      : normalizeString(row.desired_digest, 'desiredDigest'),
-  desiredVersion:
-    row.desired_version === null || row.desired_version === undefined
-      ? undefined
-      : normalizeString(row.desired_version, 'desiredVersion'),
-  error: normalizeJson(row.error) as GmcPublicationState['error'],
-  feedLabel: normalizeString(row.feed_label, 'feedLabel'),
-  key: normalizeString(row.key, 'key'),
-  merchantId: normalizeString(row.merchant_id, 'merchantId'),
-  observedAt: normalizeDate(row.observed_at),
-  offerId: normalizeString(row.offer_id, 'offerId'),
-  operationId: normalizeString(row.operation_id, 'operationId'),
-  productId:
-    row.product_id === null || row.product_id === undefined
-      ? undefined
-      : normalizeString(row.product_id, 'productId'),
-  publishedAt: normalizeDate(row.published_at),
-  publishedDigest:
-    row.published_digest === null || row.published_digest === undefined
-      ? undefined
-      : normalizeString(row.published_digest, 'publishedDigest'),
-  publishedVersion:
-    row.published_version === null || row.published_version === undefined
-      ? undefined
-      : normalizeString(row.published_version, 'publishedVersion'),
-  remoteMissing:
-    row.remote_missing === null || row.remote_missing === undefined
-      ? undefined
-      : Boolean(row.remote_missing),
-  remoteStatus: normalizeJson(row.remote_status),
-  remoteVersion:
-    row.remote_version === null || row.remote_version === undefined
-      ? undefined
-      : normalizeString(row.remote_version, 'remoteVersion'),
-  revision: Number(row.revision),
-  status: normalizeString(row.status, 'status') as GmcPublicationState['status'],
-  storeCode:
-    row.store_code === null || row.store_code === undefined
-      ? undefined
-      : normalizeString(row.store_code, 'storeCode'),
-  updatedAt: normalizeDate(row.updated_at) ?? new Date(0).toISOString(),
-})
-
-const sqlValue = (key: keyof typeof FIELD_COLUMNS, value: unknown, sqlite: boolean): unknown => {
-  if (value === undefined) {
-    throw new TypeError(`Atomic GMC state update cannot write undefined to ${key}`)
-  }
-  if (value === null) {
-    return null
-  }
-  if (key === 'error' || key === 'remoteStatus') {
-    return JSON.stringify(value)
-  }
-  if (sqlite && typeof value === 'boolean') {
-    return value ? 1 : 0
-  }
-  return value
 }
 
 /**
@@ -202,18 +79,28 @@ const sqlValue = (key: keyof typeof FIELD_COLUMNS, value: unknown, sqlite: boole
  * ID. That is intentionally hook-friendly, but it is not a compare-and-set.
  * Publication state requires the revision predicate to remain attached to the
  * write itself, so the default store uses each official adapter's atomic write
- * primitive. Custom Payload database adapters must provide a custom state
- * store instead of silently degrading concurrency safety.
+ * primitive: `db.updateOne` with a revision filter on Mongo, and a single
+ * `UPDATE ... WHERE id = ? AND revision = ? RETURNING` statement built through
+ * `db.drizzle` on Postgres and SQLite. Custom Payload database adapters must
+ * provide a custom state store instead of silently degrading concurrency
+ * safety.
+ *
+ * The returned document is the caller's `existing` row with `data` applied.
+ * Every column this store writes is written here, so the projection is exact
+ * and avoids depending on how each driver decodes `RETURNING *` values.
  */
-export const atomicUpdatePublicationState = async (args: {
+export const atomicUpdatePublicationState = async <T extends AtomicStateRow>(args: {
   collectionSlug: string
   data: Record<string, unknown>
-  existing: StateDocument
+  existing: T
   payload: Payload
-}): Promise<null | StateDocument> => {
+}): Promise<null | T> => {
   const db = args.payload.db as unknown as DatabaseAdapterShape
-  const updatedAt = new Date().toISOString()
-  const data = { ...args.data, updatedAt }
+  const data: Record<string, unknown> = {
+    ...args.data,
+    revision: args.existing.revision + 1,
+    updatedAt: new Date().toISOString(),
+  }
 
   if (db.name === 'mongoose') {
     const updated = await db.updateOne({
@@ -226,7 +113,7 @@ export const atomicUpdatePublicationState = async (args: {
         ],
       },
     })
-    return updated ? (updated as StateDocument) : null
+    return updated ? (updated as T) : null
   }
 
   if (db.name !== 'postgres' && db.name !== 'sqlite') {
@@ -234,41 +121,45 @@ export const atomicUpdatePublicationState = async (args: {
       `The default GMC publication state store does not support Payload database adapter ${db.name ?? 'unknown'}; configure publicationState.store with an atomic implementation`,
     )
   }
+  if (!db.drizzle || !db.operators) {
+    throw new TypeError(
+      `Payload ${db.name} adapter did not expose its initialized Drizzle instance and operators`,
+    )
+  }
 
-  const entries = Object.entries(data) as Array<[keyof typeof FIELD_COLUMNS, unknown]>
-  for (const [key] of entries) {
-    if (!(key in FIELD_COLUMNS)) {
-      throw new TypeError(`Unsupported GMC publication state update field: ${key}`)
+  const logicalName = toSnakeCase(args.collectionSlug)
+  const tableName = db.tableNameMap?.get(logicalName) ?? logicalName
+  const table = db.tables?.[tableName]
+  if (!table) {
+    throw new TypeError(`GMC publication state table ${tableName} is not registered`)
+  }
+
+  const columns: Record<string, unknown> = {}
+  for (const [field, value] of Object.entries(data)) {
+    if (value === undefined) {
+      throw new TypeError(`Atomic GMC state update cannot write undefined to ${field}`)
     }
-  }
-  const tableName = resolveTableName(db, args.collectionSlug)
-  const qualifiedTable =
-    db.name === 'postgres' && db.schemaName
-      ? `${quoteIdentifier(db.schemaName)}.${quoteIdentifier(tableName)}`
-      : quoteIdentifier(tableName)
-  const sqlite = db.name === 'sqlite'
-  const values = entries.map(([key, value]) => sqlValue(key, value, sqlite))
-  const setters = entries.map(
-    ([key], index) => `${quoteIdentifier(FIELD_COLUMNS[key])} = ${sqlite ? '?' : `$${index + 1}`}`,
-  )
-  const idIndex = entries.length + 1
-  const revisionIndex = entries.length + 2
-  const query = `UPDATE ${qualifiedTable} SET ${setters.join(', ')} WHERE "id" = ${sqlite ? '?' : `$${idIndex}`} AND "revision" = ${sqlite ? '?' : `$${revisionIndex}`} RETURNING *`
-  values.push(args.existing.id, args.existing.revision)
-
-  if (sqlite) {
-    if (!db.client) {
-      throw new TypeError('Payload SQLite adapter did not expose its initialized client')
+    if (!(field in table)) {
+      throw new TypeError(`Unsupported GMC publication state update field: ${field}`)
     }
-    const result = await db.client.execute({ args: values, sql: query })
-    const row = result.rows?.[0]
-    return row ? fromRawRow(row) : null
+    // Drizzle owns driver encoding for every column type this store writes:
+    // `json` fields are `jsonb` on Postgres and `text(..., { mode: 'json' })`
+    // on SQLite, so both accept a plain object and stringify it themselves.
+    // `date` fields are `timestamp(..., { mode: 'string' })` on Postgres and
+    // `text` on SQLite, so both accept an ISO string.
+    columns[field] = value
   }
 
-  if (!db.pool) {
-    throw new TypeError('Payload Postgres adapter did not expose its initialized primary pool')
-  }
-  const result = await db.pool.query(query, values)
-  const row = result.rows[0]
-  return row ? fromRawRow(row) : null
+  const rows = await db.drizzle
+    .update(table)
+    .set(columns)
+    .where(
+      db.operators.and(
+        db.operators.equals(table.id, args.existing.id),
+        db.operators.equals(table.revision, args.existing.revision),
+      ),
+    )
+    .returning({ id: table.id })
+
+  return rows.length > 0 ? ({ ...args.existing, ...data } as T) : null
 }

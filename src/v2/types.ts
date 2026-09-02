@@ -707,28 +707,29 @@ export const GMC_PUBLICATION_STATUSES = [
 export type GmcPublicationStatus = (typeof GMC_PUBLICATION_STATUSES)[number]
 
 export type GmcPublicationState = {
-  deleteVersion?: string
+  /** ISO timestamp of the newest accepted desired content for this identity. */
   desiredAt?: string
   desiredDigest?: string
-  desiredVersion?: string
   error?: { code?: string; message: string; retryable?: boolean }
   identity: MCProductIdentity
   operationId: string
   productId?: GmcDocumentID
   publishedAt?: string
   publishedDigest?: string
-  publishedVersion?: string
   remoteMissing?: boolean
   remoteStatus?: Record<string, unknown>
+  /** Google's own `versionNumber` for the last observed remote product. Informational. */
   remoteVersion?: string
+  revision: number
   status: GmcPublicationStatus
+  /** Set only for local-inventory rows; offer rows leave it undefined. */
+  storeCode?: string
   updatedAt: string
 }
 
 export type GmcPublicationClaim = {
   desiredAt: string
   desiredDigest: string
-  desiredVersion: string
   identity: MCProductIdentity
   operationId: string
   payload: Payload
@@ -753,10 +754,9 @@ export type GmcPublicationStateStore = {
     productId?: GmcDocumentID
   }) => Promise<GmcPublicationState>
   markDeletePending: (args: {
-    deleteIfDesiredBefore?: string
-    deleteIfDesiredVersionBefore?: string
-    deleteVersion?: string
     identity: MCProductIdentity
+    /** Skip the delete when the stored desired claim is at or after this ISO timestamp. */
+    onlyIfDesiredBefore?: string
     operationId: string
     payload: Payload
     productId?: GmcDocumentID

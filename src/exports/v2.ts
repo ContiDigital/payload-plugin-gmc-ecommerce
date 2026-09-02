@@ -94,7 +94,6 @@ export {
 export {
   createPayloadPublicationStateStore,
   GmcIdentityOwnershipError,
-  GmcSourceVersionConflictError,
 } from '../v2/state/payloadStateStore.js'
 export { createGoogleMerchantTransport } from '../v2/transport/googleTransport.js'
 export {

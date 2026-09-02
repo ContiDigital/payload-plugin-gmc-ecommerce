@@ -116,10 +116,9 @@ Deploy without enabling v2 hooks or endpoints:
 - dedicated ordered worker queue and DLQ;
 - singleton plugin executor and distributed rate limit where needed;
 - publication-state collection migration matching the plugin-owned contract:
-  unique indexed `key`; indexed `merchantId`, `dataSourceName`,
-  `contentLanguage`, `feedLabel`, `offerId`, `productId`, `status`,
-  `operationId`, `revision`, and `desiredAt`; plus `desiredDigest`,
-  `desiredVersion`, `deleteVersion`, `publishedDigest`, `publishedVersion`,
+  unique indexed `key`; indexed `productId`, `status`, and `storeCode`; plus
+  `merchantId`, `dataSourceName`, `contentLanguage`, `feedLabel`, `offerId`,
+  `operationId`, `revision`, `desiredAt`, `desiredDigest`, `publishedDigest`,
   `publishedAt`, `observedAt`, `remoteMissing`, `remoteVersion`,
   `remoteStatus`, and `error` with timestamps enabled and versions disabled;
 - local-inventory publication-state collection migration matching the plugin-owned contract:

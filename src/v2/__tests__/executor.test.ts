@@ -44,6 +44,7 @@ const state = (overrides: Partial<GmcPublicationState> = {}): GmcPublicationStat
   identity: oldIdentity,
   operationId: 'previous-operation',
   productId: 'product-1',
+  revision: 0,
   status: 'published',
   updatedAt: '2026-08-29T12:00:00.000Z',
   ...overrides,
@@ -69,7 +70,6 @@ const stateStore = (): GmcPublicationStateStore => ({
     Promise.resolve(
       state({
         desiredDigest: 'different-until-claimed',
-        desiredVersion: '100',
         identity: newIdentity,
         operationId: 'operation-1',
         status: 'publish-pending',
@@ -104,13 +104,11 @@ const stateStore = (): GmcPublicationStateStore => ({
     Promise.resolve(
       state({
         desiredDigest: claim.desiredDigest,
-        desiredVersion: claim.desiredVersion,
         identity: claim.identity,
         operationId: claim.operationId,
         productId: claim.productId,
         publishedAt: claim.publishedAt,
         publishedDigest: claim.desiredDigest,
-        publishedVersion: claim.desiredVersion,
         status: 'published',
       }),
     ),
@@ -592,10 +590,8 @@ describe('GMC v2 command executor', () => {
       Promise.resolve(
         state({
           desiredDigest: claim.desiredDigest,
-          desiredVersion: claim.desiredVersion,
           identity: claim.identity,
           publishedDigest: claim.desiredDigest,
-          publishedVersion: claim.desiredVersion,
           status: 'published',
         }),
       ),
@@ -603,33 +599,6 @@ describe('GMC v2 command executor', () => {
     const result = await test.execute({
       command,
       operationId: 'operation-2',
-      payload: test.payload,
-    })
-
-    expect(result.outcome).toBe('skipped')
-    expect(test.transport.insertProductInput).not.toHaveBeenCalled()
-  })
-
-  it('never resurrects an offer at or below a retained deletion fence', async () => {
-    const test = build()
-    const command = createOfferPublishCommand({
-      input: newInput,
-      productId: 'product-1',
-      sourceVersion: '100',
-    })
-    vi.mocked(test.stateStore.claimPublication).mockResolvedValueOnce(
-      state({
-        deleteVersion: '100',
-        desiredDigest: undefined,
-        desiredVersion: undefined,
-        identity: newIdentity,
-        status: 'deleted',
-      }),
-    )
-
-    const result = await test.execute({
-      command,
-      operationId: 'stale-publish',
       payload: test.payload,
     })
 
@@ -781,9 +750,12 @@ describe('GMC v2 command executor', () => {
     expect(test.transport.deleteProductInput).not.toHaveBeenCalled()
   })
 
-  it('uses the durable operation version as the fence for a direct offer delete', async () => {
+  it('forwards the reconciliation boundary as the delete ordering guard', async () => {
     const test = build()
-    const command = createOfferDeleteCommand({ identity: oldIdentity })
+    const command = createOfferDeleteCommand({
+      deleteIfDesiredBefore: '2026-08-29T12:00:00.000Z',
+      identity: oldIdentity,
+    })
 
     await test.execute({
       command,
@@ -793,7 +765,7 @@ describe('GMC v2 command executor', () => {
     })
 
     expect(test.stateStore.markDeletePending).toHaveBeenCalledWith(
-      expect.objectContaining({ deleteVersion: '900' }),
+      expect.objectContaining({ onlyIfDesiredBefore: '2026-08-29T12:00:00.000Z' }),
     )
   })
 
@@ -1013,10 +985,8 @@ describe('GMC v2 command executor', () => {
       Promise.resolve(
         state({
           desiredDigest: claim.desiredDigest,
-          desiredVersion: claim.desiredVersion,
           identity: claim.identity,
           publishedDigest: claim.desiredDigest,
-          publishedVersion: claim.desiredVersion,
           status: 'published',
         }),
       ),
@@ -1042,10 +1012,8 @@ describe('GMC v2 command executor', () => {
       Promise.resolve(
         state({
           desiredDigest: claim.desiredDigest,
-          desiredVersion: claim.desiredVersion,
           identity: claim.identity,
           publishedDigest: claim.desiredDigest,
-          publishedVersion: claim.desiredVersion,
           status: 'published',
         }),
       ),
@@ -1245,8 +1213,7 @@ describe('GMC v2 command executor', () => {
     })
     vi.mocked(test.stateStore.get).mockResolvedValueOnce(
       state({
-        desiredAt: '2026-08-29T11:59:59.000Z',
-        desiredVersion: '2000000000000002',
+        desiredAt: '2026-08-29T12:00:01.000Z',
         identity: oldIdentity,
       }),
     )
@@ -1540,13 +1507,12 @@ describe('GMC v2 command executor', () => {
     )
   })
 
-  it('skips a causally stale local inventory replacement after a newer offer publication', async () => {
+  it('skips a local inventory replacement whose base offer moved to another product', async () => {
     const test = build({ localInventory: true })
     vi.mocked(test.stateStore.get).mockResolvedValueOnce(
       state({
-        desiredVersion: '101',
         identity: newIdentity,
-        publishedVersion: '101',
+        productId: 'product-2',
         status: 'published',
       }),
     )
@@ -1678,15 +1644,13 @@ describe('GMC v2 command executor', () => {
     vi.mocked(test.stateStore.get)
       .mockResolvedValueOnce(
         state({
-          desiredVersion: '100',
           identity: newIdentity,
-          publishedVersion: '100',
+          publishedDigest: 'a'.repeat(64),
           status: 'published',
         }),
       )
       .mockResolvedValueOnce(
         state({
-          desiredVersion: '101',
           identity: newIdentity,
           operationId: 'newer-product-operation',
           status: 'publish-pending',
@@ -1729,7 +1693,6 @@ describe('GMC v2 command executor', () => {
     const test = build({ localInventory: true })
     vi.mocked(test.stateStore.get).mockResolvedValueOnce(
       state({
-        desiredVersion: '100',
         identity: newIdentity,
         status: 'failed',
       }),

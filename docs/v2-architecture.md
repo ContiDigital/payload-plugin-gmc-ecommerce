@@ -280,11 +280,11 @@ before transport, so a later desired claim wins even when the catalog changes
 during the scan. Reconciliation is the recovery mechanism for failures outside
 a host database transaction.
 
-Offer deletions also retain a monotonic `deleteVersion` in publication state.
-This is separate from FIFO ordering: it closes the race between reconciliation
-work under a catalog subject and an on-change publish under a product subject.
-An older or equal delayed publish is skipped; only a strictly newer canonical
-source version can clear the fence and recreate the offer.
+Publication state orders desired content by `desiredAt`, the host's own
+timestamp for the source change. A claim whose `desiredAt` predates the stored
+one is ignored, and a reconciliation delete carries the sweep's start time as
+`onlyIfDesiredBefore` so an identity claimed after the sweep began is never
+removed. There is no global source-version counter: ordering is per identity.
 
 Processed-status refresh follows the same bounded coordinator rule: multiple
 identities fan into one ordered `status.refresh` child per offer. A single

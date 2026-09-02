@@ -168,13 +168,6 @@ const compareSourceVersions = (left: string, right: string): number => {
   return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0
 }
 
-const isDeletionFenced = (state: { deleteVersion?: string }, sourceVersion: string): boolean => {
-  return (
-    state.deleteVersion !== undefined &&
-    compareSourceVersions(state.deleteVersion, sourceVersion) >= 0
-  )
-}
-
 const isSameLocalInventoryResource = (
   state: { identity: MCProductIdentity; storeCode: string },
   identity: MCProductIdentity,
@@ -207,13 +200,7 @@ const isLocalInventoryMutationFenced = async (args: {
   if (state.status !== 'published') {
     return true
   }
-  if (isDeletionFenced(state, args.sourceVersion)) {
-    return true
-  }
-  return (
-    state.desiredVersion !== undefined &&
-    compareSourceVersions(state.desiredVersion, args.sourceVersion) > 0
-  )
+  return false
 }
 
 const nextPayloadCursor = (args: {
@@ -564,27 +551,16 @@ export const createGmcCommandExecutor = (
       const desiredClaim = {
         desiredAt,
         desiredDigest: product.digest,
-        desiredVersion: product.sourceVersion,
         identity,
         operationId,
         payload,
         productId: command.productId,
       }
       const desiredState = await stateStore.claimPublication(desiredClaim)
-      if (isDeletionFenced(desiredState, product.sourceVersion)) {
-        continue
-      }
       if (
         command.cause !== 'reconcile' &&
         desiredState.status === 'published' &&
-        desiredState.publishedDigest === product.digest &&
-        desiredState.publishedVersion === product.sourceVersion
-      ) {
-        continue
-      }
-      if (
-        desiredState.desiredVersion !== undefined &&
-        compareSourceVersions(desiredState.desiredVersion, product.sourceVersion) > 0
+        desiredState.publishedDigest === product.digest
       ) {
         continue
       }
@@ -696,38 +672,16 @@ export const createGmcCommandExecutor = (
     const claim = {
       desiredAt: context.command.requestedAt,
       desiredDigest: product.digest,
-      desiredVersion: context.command.sourceVersion,
       identity: product.identity,
       operationId: context.operationId,
       payload: context.payload,
       productId: context.command.productId,
     }
     const state = await stateStore.claimPublication(claim)
-    if (isDeletionFenced(state, context.command.sourceVersion)) {
-      return {
-        commandType: context.command.type,
-        operationId: context.operationId,
-        outcome: 'skipped',
-        productCount: 1,
-      }
-    }
     const alreadyPublished =
-      state.status === 'published' &&
-      state.publishedDigest === product.digest &&
-      state.publishedVersion === context.command.sourceVersion
+      state.status === 'published' && state.publishedDigest === product.digest
 
     if (alreadyPublished && !context.command.verifyRemote) {
-      return {
-        commandType: context.command.type,
-        operationId: context.operationId,
-        outcome: 'skipped',
-        productCount: 1,
-      }
-    }
-    if (
-      state.desiredVersion !== undefined &&
-      compareSourceVersions(state.desiredVersion, context.command.sourceVersion) > 0
-    ) {
       return {
         commandType: context.command.type,
         operationId: context.operationId,
@@ -811,15 +765,9 @@ export const createGmcCommandExecutor = (
     } & GmcExecutionContext,
   ): Promise<GmcCommandExecutionResult> => {
     const identity = normalizeGmcIdentityRoute(context.command.identity, options)
-    // Child deletes carry their parent projection version. A directly queued
-    // delete has no parent version, so retain the durable operation's global
-    // sequence as its resurrection fence instead of leaving the fence unset.
-    const deleteVersion = context.command.sourceVersion ?? context.sourceVersion
     const pending = await stateStore.markDeletePending({
-      deleteIfDesiredBefore: context.command.deleteIfDesiredBefore,
-      deleteIfDesiredVersionBefore: context.command.deleteIfDesiredVersionBefore,
-      deleteVersion,
       identity,
+      onlyIfDesiredBefore: context.command.deleteIfDesiredBefore,
       operationId: context.operationId,
       payload: context.payload,
       productId: context.command.expectedProductId,
@@ -1070,12 +1018,8 @@ export const createGmcCommandExecutor = (
       if (
         state &&
         state.status !== 'deleted' &&
-        ((startedVersion !== undefined &&
-          state.desiredVersion !== undefined &&
-          compareSourceVersions(state.desiredVersion, startedVersion) >= 0) ||
-          (startedVersion === undefined &&
-            state.desiredAt !== undefined &&
-            state.desiredAt >= startedAt))
+        state.desiredAt !== undefined &&
+        state.desiredAt >= startedAt
       ) {
         await stateStore.markObserved({
           identity: remote.identity,

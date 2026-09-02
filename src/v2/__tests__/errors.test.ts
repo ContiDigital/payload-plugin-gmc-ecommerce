@@ -16,10 +16,7 @@ import {
 import { classifyGmcCommandError } from '../errors.js'
 import { GmcFeedLimitError } from '../feed/limits.js'
 import { GmcLocalInventorySourceVersionConflictError } from '../state/localInventoryPayloadStateStore.js'
-import {
-  GmcIdentityOwnershipError,
-  GmcSourceVersionConflictError,
-} from '../state/payloadStateStore.js'
+import { GmcIdentityOwnershipError } from '../state/payloadStateStore.js'
 
 describe('GMC durable error classification', () => {
   it('marks validation and explicit configuration failures terminal', () => {
@@ -64,14 +61,6 @@ describe('GMC durable error classification', () => {
         }),
       ),
     ).toMatchObject({ code: 'GMC_IDENTITY_OWNERSHIP_CONFLICT', retryable: false })
-    expect(
-      classifyGmcCommandError(
-        new GmcSourceVersionConflictError({
-          identityKey: 'en/US/sku-1',
-          sourceVersion: '42',
-        }),
-      ),
-    ).toMatchObject({ code: 'GMC_SOURCE_VERSION_CONFLICT', retryable: false })
     expect(
       classifyGmcCommandError(
         new GmcLocalInventorySourceVersionConflictError({
