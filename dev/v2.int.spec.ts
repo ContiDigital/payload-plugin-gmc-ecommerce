@@ -147,6 +147,11 @@ beforeAll(async () => {
         },
       ],
     },
+    // This suite writes with `disableTransaction: true` to exercise the
+    // fail-closed path; requireTransaction must be opted in explicitly for
+    // that assertion to keep its meaning now that ambient transactions are
+    // opt-in by default.
+    requireTransaction: true,
   }
 
   const config = await buildConfig({

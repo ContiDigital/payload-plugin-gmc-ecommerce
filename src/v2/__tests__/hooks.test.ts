@@ -1,11 +1,12 @@
 import type { Payload, PayloadRequest } from 'payload'
 
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { GmcAsyncAdapter, PayloadGmcEcommerceV2Options } from '../types.js'
 
 import { normalizeGmcV2Options } from '../config.js'
 import {
+  __resetTransactionWarningsForTests,
   createGmcV2AfterChangeHook,
   createGmcV2AfterDeleteHook,
   createGmcV2DependencyAfterChangeHook,
@@ -13,38 +14,40 @@ import {
   createGmcV2GlobalDependencyAfterChangeHook,
 } from '../hooks.js'
 
-const build = (adapter: GmcAsyncAdapter) =>
-  normalizeGmcV2Options({
-    access: () => true,
-    async: adapter,
-    dataSourceId: '987654321',
-    feeds: [
+const rawOptions = (adapter: GmcAsyncAdapter): PayloadGmcEcommerceV2Options => ({
+  access: () => true,
+  async: adapter,
+  dataSourceId: '987654321',
+  feeds: [
+    {
+      id: 'primary',
+      access: 'public',
+      delivery: 'dynamic',
+      path: '/feeds/google.tsv',
+      selector: { contentLanguage: 'en', feedLabel: 'US' },
+    },
+  ],
+  getCredentials: () =>
+    Promise.resolve({
+      type: 'json',
+      credentials: { client_email: 'test@example.com', private_key: 'secret' },
+    }),
+  merchantId: '123456',
+  products: {
+    collection: 'products',
+    project: () => ({ products: [], sourceVersion: '1' }),
+    resolveIdentities: ({ doc }) => [
       {
-        id: 'primary',
-        access: 'public',
-        delivery: 'dynamic',
-        path: '/feeds/google.tsv',
-        selector: { contentLanguage: 'en', feedLabel: 'US' },
+        contentLanguage: 'en',
+        feedLabel: 'US',
+        offerId: String(doc.sku),
       },
     ],
-    getCredentials: () =>
-      Promise.resolve({
-        type: 'json',
-        credentials: { client_email: 'test@example.com', private_key: 'secret' },
-      }),
-    merchantId: '123456',
-    products: {
-      collection: 'products',
-      project: () => ({ products: [], sourceVersion: '1' }),
-      resolveIdentities: ({ doc }) => [
-        {
-          contentLanguage: 'en',
-          feedLabel: 'US',
-          offerId: String(doc.sku),
-        },
-      ],
-    },
-  } satisfies PayloadGmcEcommerceV2Options)
+  },
+})
+
+const build = (adapter: GmcAsyncAdapter, overrides: Partial<PayloadGmcEcommerceV2Options> = {}) =>
+  normalizeGmcV2Options({ ...rawOptions(adapter), ...overrides })
 
 const payloadWarn = vi.fn()
 const request = {
@@ -53,18 +56,21 @@ const request = {
 } as PayloadRequest
 
 describe('GMC v2 Payload hooks', () => {
-  it('fails closed before dispatch when an automatic hook has no ambient transaction', async () => {
+  it('fails closed before dispatch when an automatic hook has no ambient transaction and requireTransaction is true', async () => {
     const dispatch = vi.fn<GmcAsyncAdapter['dispatch']>(() =>
       Promise.resolve({ operationId: 'operation-1', state: 'queued' }),
     )
-    const normalized = build({
-      name: 'test',
-      dispatch,
-      getOperation: vi.fn(() => Promise.resolve(null)),
-      health: vi.fn(() =>
-        Promise.resolve({ checkedAt: '2026-08-30T12:00:00.000Z', status: 'ok' as const }),
-      ),
-    })
+    const normalized = build(
+      {
+        name: 'test',
+        dispatch,
+        getOperation: vi.fn(() => Promise.resolve(null)),
+        health: vi.fn(() =>
+          Promise.resolve({ checkedAt: '2026-08-30T12:00:00.000Z', status: 'ok' as const }),
+        ),
+      },
+      { requireTransaction: true },
+    )
     const nonTransactionalRequests = [
       { payload: {} as Payload },
       // Payload's disabled-transaction adapter leaves this exact shape on the
@@ -675,5 +681,152 @@ describe('GMC v2 Payload hooks', () => {
       req: request,
     } as never)
     expect(dispatch).not.toHaveBeenCalled()
+  })
+})
+
+describe('GMC v2 hooks: opt-in transactions and draft-churn suppression', () => {
+  afterEach(() => {
+    __resetTransactionWarningsForTests()
+  })
+
+  const doc = { id: 'product-1', sku: 'sku-1' }
+
+  const buildDispatch = () =>
+    vi.fn<GmcAsyncAdapter['dispatch']>(() =>
+      Promise.resolve({ operationId: 'operation-1', state: 'queued' as const }),
+    )
+
+  it('dispatches without a transaction by default and warns once', async () => {
+    const dispatch = buildDispatch()
+    const options = build({
+      name: 'test',
+      dispatch,
+      getOperation: vi.fn(() => Promise.resolve(null)),
+      health: vi.fn(() =>
+        Promise.resolve({ checkedAt: '2026-08-30T12:00:00.000Z', status: 'ok' as const }),
+      ),
+    })
+    const warn = vi.fn()
+    const req = { payload: { logger: { warn } }, transactionID: undefined } as never
+
+    await createGmcV2AfterChangeHook(options)({
+      doc,
+      operation: 'create',
+      previousDoc: {},
+      req,
+    } as never)
+    await createGmcV2AfterChangeHook(options)({
+      doc,
+      operation: 'create',
+      previousDoc: {},
+      req,
+    } as never)
+
+    expect(dispatch).toHaveBeenCalledTimes(2)
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledWith(
+      'payload-plugin-gmc-ecommerce: dispatching Merchant command outside a database transaction; a crash between commit and dispatch is repaired by catalog.reconcile. Set requireTransaction: true to fail closed.',
+    )
+  })
+
+  it('fails closed when requireTransaction is true', async () => {
+    const dispatch = buildDispatch()
+    const strict = build(
+      {
+        name: 'test',
+        dispatch,
+        getOperation: vi.fn(() => Promise.resolve(null)),
+        health: vi.fn(() =>
+          Promise.resolve({ checkedAt: '2026-08-30T12:00:00.000Z', status: 'ok' as const }),
+        ),
+      },
+      { requireTransaction: true },
+    )
+
+    await expect(
+      createGmcV2AfterChangeHook(strict)({
+        doc,
+        operation: 'create',
+        previousDoc: {},
+        req: { transactionID: Promise.resolve(null) },
+      } as never),
+    ).rejects.toMatchObject({ code: 'GMC_TRANSACTION_REQUIRED' })
+    expect(dispatch).not.toHaveBeenCalled()
+  })
+
+  it('accepts a resolved Promise<string> or a numeric transactionID under requireTransaction: true', async () => {
+    const dispatch = buildDispatch()
+    const strict = build(
+      {
+        name: 'test',
+        dispatch,
+        getOperation: vi.fn(() => Promise.resolve(null)),
+        health: vi.fn(() =>
+          Promise.resolve({ checkedAt: '2026-08-30T12:00:00.000Z', status: 'ok' as const }),
+        ),
+      },
+      { requireTransaction: true },
+    )
+    const warn = vi.fn()
+
+    await createGmcV2AfterChangeHook(strict)({
+      doc,
+      operation: 'create',
+      previousDoc: {},
+      req: { payload: { logger: { warn } }, transactionID: Promise.resolve('transaction-1') },
+    } as never)
+    await createGmcV2AfterChangeHook(strict)({
+      doc,
+      operation: 'create',
+      previousDoc: {},
+      req: { payload: { logger: { warn } }, transactionID: 42 },
+    } as never)
+
+    expect(dispatch).toHaveBeenCalledTimes(2)
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('skips a draft save over a document that was already draft-only', async () => {
+    const dispatch = buildDispatch()
+    const options = build({
+      name: 'test',
+      dispatch,
+      getOperation: vi.fn(() => Promise.resolve(null)),
+      health: vi.fn(() =>
+        Promise.resolve({ checkedAt: '2026-08-30T12:00:00.000Z', status: 'ok' as const }),
+      ),
+    })
+    const req = { payload: { logger: { warn: vi.fn() } }, transactionID: 'transaction-1' } as never
+
+    await createGmcV2AfterChangeHook(options)({
+      doc: { ...doc, _status: 'draft' },
+      operation: 'update',
+      previousDoc: { ...doc, _status: 'draft' },
+      req,
+    } as never)
+
+    expect(dispatch).not.toHaveBeenCalled()
+  })
+
+  it('still dispatches when a published document is saved as a draft', async () => {
+    const dispatch = buildDispatch()
+    const options = build({
+      name: 'test',
+      dispatch,
+      getOperation: vi.fn(() => Promise.resolve(null)),
+      health: vi.fn(() =>
+        Promise.resolve({ checkedAt: '2026-08-30T12:00:00.000Z', status: 'ok' as const }),
+      ),
+    })
+    const req = { payload: { logger: { warn: vi.fn() } }, transactionID: 'transaction-1' } as never
+
+    await createGmcV2AfterChangeHook(options)({
+      doc: { ...doc, _status: 'draft' },
+      operation: 'update',
+      previousDoc: { ...doc, _status: 'published' },
+      req,
+    } as never)
+
+    expect(dispatch).toHaveBeenCalledTimes(1)
   })
 })

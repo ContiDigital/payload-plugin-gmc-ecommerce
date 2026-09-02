@@ -57,25 +57,74 @@ const assertTransactionalHookRequest = async (req: PayloadRequest): Promise<void
   }
 }
 
-/** Reject before the canonical collection row is written when transactions are unavailable. */
-export const createGmcV2TransactionBeforeChangeHook = (): CollectionBeforeChangeHook => {
+// Keyed by instanceId so multiple installations in one process each warn
+// exactly once, rather than one installation's warning silencing another's.
+const warnedNoTransactionInstanceIds = new Set<string>()
+
+/**
+ * Test-only: clears the once-per-process warning dedup so unit tests can
+ * assert warning behavior across multiple hook invocations in isolation.
+ */
+export const __resetTransactionWarningsForTests = (): void => {
+  warnedNoTransactionInstanceIds.clear()
+}
+
+/**
+ * Fail closed when `requireTransaction` is set; otherwise dispatch anyway and
+ * warn once per process per instance, since a crash between the canonical
+ * commit and dispatch is repaired by catalog.reconcile.
+ */
+const warnOnceWithoutTransaction = async (
+  req: PayloadRequest,
+  options: NormalizedGmcV2Options,
+): Promise<void> => {
+  const transactionID = await req.transactionID
+  if (transactionID !== undefined && transactionID !== null) {
+    return
+  }
+  if (options.requireTransaction) {
+    throw new GmcTransactionalHookRequiredError()
+  }
+  if (warnedNoTransactionInstanceIds.has(options.instanceId)) {
+    return
+  }
+  warnedNoTransactionInstanceIds.add(options.instanceId)
+  req.payload.logger.warn(
+    'payload-plugin-gmc-ecommerce: dispatching Merchant command outside a database transaction; a crash between commit and dispatch is repaired by catalog.reconcile. Set requireTransaction: true to fail closed.',
+  )
+}
+
+/** Reject before the canonical collection row is written when transactions are required. */
+export const createGmcV2TransactionBeforeChangeHook = (
+  options: NormalizedGmcV2Options,
+): CollectionBeforeChangeHook => {
   return async ({ data, req }) => {
-    await assertTransactionalHookRequest(req)
+    if (options.requireTransaction) {
+      await assertTransactionalHookRequest(req)
+    }
     return data
   }
 }
 
-/** Reject before the canonical collection row is deleted when transactions are unavailable. */
-export const createGmcV2TransactionBeforeDeleteHook = (): CollectionBeforeDeleteHook => {
+/** Reject before the canonical collection row is deleted when transactions are required. */
+export const createGmcV2TransactionBeforeDeleteHook = (
+  options: NormalizedGmcV2Options,
+): CollectionBeforeDeleteHook => {
   return async ({ req }) => {
-    await assertTransactionalHookRequest(req)
+    if (options.requireTransaction) {
+      await assertTransactionalHookRequest(req)
+    }
   }
 }
 
-/** Reject before the canonical Global is written when transactions are unavailable. */
-export const createGmcV2TransactionGlobalBeforeChangeHook = (): GlobalBeforeChangeHook => {
+/** Reject before the canonical Global is written when transactions are required. */
+export const createGmcV2TransactionGlobalBeforeChangeHook = (
+  options: NormalizedGmcV2Options,
+): GlobalBeforeChangeHook => {
   return async ({ data, req }) => {
-    await assertTransactionalHookRequest(req)
+    if (options.requireTransaction) {
+      await assertTransactionalHookRequest(req)
+    }
     return data
   }
 }
@@ -244,7 +293,7 @@ export const createGmcV2DependencyAfterChangeHook = (
   dependency: GmcCatalogDependencyConfig,
 ): CollectionAfterChangeHook => {
   return async ({ doc, operation, previousDoc, req }) => {
-    await assertTransactionalHookRequest(req)
+    await warnOnceWithoutTransaction(req, options)
     const current = doc as Record<string, unknown>
     const previous = previousDoc as Record<string, unknown> | undefined
     const documentId = getDocumentId(current)
@@ -317,7 +366,7 @@ export const createGmcV2DependencyAfterDeleteHook = (
   dependency: GmcCatalogDependencyConfig,
 ): CollectionAfterDeleteHook => {
   return async ({ doc, req }) => {
-    await assertTransactionalHookRequest(req)
+    await warnOnceWithoutTransaction(req, options)
     const deleted = doc as Record<string, unknown>
     const documentId = getDocumentId(deleted)
     const selection = await dependencySelection({ dependency, doc: deleted, req })
@@ -345,7 +394,7 @@ export const createGmcV2GlobalDependencyAfterChangeHook = (
   dependency: GmcCatalogGlobalDependencyConfig,
 ): GlobalAfterChangeHook => {
   return async ({ doc, previousDoc, req }) => {
-    await assertTransactionalHookRequest(req)
+    await warnOnceWithoutTransaction(req, options)
     const current = doc as Record<string, unknown>
     const previous = previousDoc as Record<string, unknown> | undefined
     const currentSelection = await dependencySelection({ dependency, doc: current, req })
@@ -402,9 +451,20 @@ export const createGmcV2AfterChangeHook = (
   options: NormalizedGmcV2Options,
 ): CollectionAfterChangeHook => {
   return async ({ doc, operation, previousDoc, req }) => {
-    await assertTransactionalHookRequest(req)
+    await warnOnceWithoutTransaction(req, options)
     const current = doc as Record<string, unknown>
     const previous = previousDoc as Record<string, unknown> | undefined
+    // A draft autosave over a document that was already draft-only never
+    // changes what is (or should be) live at Merchant Center; dispatching for
+    // it only churns the outbox with no observable catalog effect.
+    if (
+      operation === 'update' &&
+      typeof current._status === 'string' &&
+      current._status === 'draft' &&
+      previous?._status === 'draft'
+    ) {
+      return doc
+    }
     const productId = getDocumentId(current)
     // Payload may provide a synthetic/partial previousDoc during create. It is
     // not an owned historical product and must never be interpreted as one.
@@ -447,7 +507,7 @@ export const createGmcV2AfterDeleteHook = (
   options: NormalizedGmcV2Options,
 ): CollectionAfterDeleteHook => {
   return async ({ doc, req }) => {
-    await assertTransactionalHookRequest(req)
+    await warnOnceWithoutTransaction(req, options)
     const deleted = doc as Record<string, unknown>
     const productId = getDocumentId(deleted)
     const identities = await options.products.resolveIdentities({

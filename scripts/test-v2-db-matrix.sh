@@ -15,6 +15,7 @@ trap cleanup EXIT
 cd "$repo_root"
 
 pnpm exec vitest --run dev/v2.int.spec.ts
+pnpm exec vitest --run dev/v2.no-transactions.int.spec.ts
 
 docker run --detach --name "$postgres_container" \
   --env POSTGRES_DB=gmc_v2 \
@@ -36,7 +37,7 @@ GMC_V2_TEST_DATABASE=postgres \
 GMC_V2_POSTGRES_URL="postgresql://gmc_v2:gmc_v2_password@127.0.0.1:${postgres_port}/gmc_v2" \
 pnpm exec vitest --run dev/v2.int.spec.ts
 
-GMC_V2_TEST_NO_TRANSACTIONS=1 \
+GMC_V2_TEST_DATABASE=postgres \
 GMC_V2_POSTGRES_URL="postgresql://gmc_v2:gmc_v2_password@127.0.0.1:${postgres_port}/gmc_v2" \
 pnpm exec vitest --run dev/v2.no-transactions.int.spec.ts
 
@@ -66,4 +67,4 @@ GMC_V2_TEST_DATABASE=mongodb \
 GMC_V2_MONGODB_URL="mongodb://127.0.0.1:${mongo_port}/gmc_v2?replicaSet=gmc-v2-rs&directConnection=true" \
 pnpm exec vitest --run dev/v2.int.spec.ts
 
-echo "GMC v2 database matrix passed: SQLite, PostgreSQL (including disabled-transaction fail-closed), MongoDB."
+echo "GMC v2 database matrix passed: SQLite (including disabled-transaction dispatch/fail-closed), PostgreSQL (including disabled-transaction dispatch/fail-closed), MongoDB."

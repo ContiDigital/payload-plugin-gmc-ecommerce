@@ -63,7 +63,7 @@ describe('payloadGmcEcommerceV2', () => {
       ],
       endpoints: [existingEndpoint],
     } as unknown as Config
-    const configured = payloadGmcEcommerceV2(options())(input) as Config
+    const configured = payloadGmcEcommerceV2(options({ requireTransaction: true }))(input) as Config
     const product = configured.collections?.find((collection) => collection.slug === 'products')
     const state = configured.collections?.find(
       (collection) => collection.slug === 'gmc-publications-v2',
@@ -110,6 +110,7 @@ describe('payloadGmcEcommerceV2', () => {
             select: ({ doc }) => doc.title,
           },
         ],
+        requireTransaction: true,
       }),
     )(input) as Config
     const promos = configured.collections?.find((collection) => collection.slug === 'promos')
@@ -140,6 +141,7 @@ describe('payloadGmcEcommerceV2', () => {
             select: ({ doc }) => ({ enabled: doc.enabled }),
           },
         ],
+        requireTransaction: true,
       }),
     )(input) as Config
 
@@ -159,6 +161,17 @@ describe('payloadGmcEcommerceV2', () => {
     expect(product?.hooks?.afterChange).toBeUndefined()
     expect(product?.hooks?.beforeChange).toBeUndefined()
     expect(configured.endpoints).toEqual([])
+  })
+
+  it('does not install the fail-closed transaction hooks when requireTransaction is left at its default', () => {
+    const input = { collections: [{ slug: 'products', fields: [] }] } as unknown as Config
+    const configured = payloadGmcEcommerceV2(options())(input) as Config
+    const product = configured.collections?.find((collection) => collection.slug === 'products')
+
+    expect(product?.hooks?.afterChange).toHaveLength(1)
+    expect(product?.hooks?.afterDelete).toHaveLength(1)
+    expect(product?.hooks?.beforeChange).toEqual([])
+    expect(product?.hooks?.beforeDelete).toEqual([])
   })
 
   it('installs isolated durable local-inventory causal state when configured', () => {

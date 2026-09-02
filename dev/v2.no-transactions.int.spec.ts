@@ -1,124 +1,236 @@
 import type { Payload } from 'payload'
 
 import { postgresAdapter } from '@payloadcms/db-postgres'
+import { sqliteAdapter } from '@payloadcms/db-sqlite'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { buildConfig, getPayload } from 'payload'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
-import type { GmcAsyncAdapter, PayloadGmcEcommerceV2Options } from '../src/v2/types.js'
+import type {
+  GmcAsyncAdapter,
+  GmcAsyncDispatchArgs,
+  PayloadGmcEcommerceV2Options,
+} from '../src/v2/types.js'
 
 import { payloadGmcEcommerceV2 } from '../src/v2/plugin.js'
 import { testEmailAdapter } from './helpers/testEmailAdapter.js'
 
-const shouldRun = process.env.GMC_V2_TEST_NO_TRANSACTIONS === '1'
-const databaseUrl = process.env.GMC_V2_POSTGRES_URL?.trim()
-const dispatch = vi.fn<GmcAsyncAdapter['dispatch']>(() =>
-  Promise.resolve({ operationId: 'must-not-dispatch', state: 'queued' }),
-)
+// @payloadcms/drizzle's dev schema-push memoizes the last-pushed table set
+// at module scope for the whole process. This file builds two Payload
+// instances against byte-identical collection schemas (in separate
+// databases); without forcing it, the second push would be silently skipped
+// because it looks unchanged from the first.
+process.env.PAYLOAD_FORCE_DRIZZLE_PUSH = 'true'
 
-const asyncAdapter: GmcAsyncAdapter = {
-  name: 'disabled-transaction-regression',
-  dispatch,
-  getOperation: () => Promise.resolve(null),
-  health: () =>
-    Promise.resolve({ checkedAt: '2026-08-30T12:00:00.000Z', status: 'ok' as const }),
+const filename = fileURLToPath(import.meta.url)
+const dirname = path.dirname(filename)
+const databaseKind = process.env.GMC_V2_TEST_DATABASE ?? 'sqlite'
+const postgresUrl = process.env.GMC_V2_POSTGRES_URL?.trim()
+
+if (databaseKind !== 'sqlite' && databaseKind !== 'postgres') {
+  throw new Error(
+    `Unsupported GMC_V2_TEST_DATABASE for the disabled-transaction suite: ${databaseKind}`,
+  )
 }
 
-let payload: Payload | undefined
+const productsCollection = {
+  slug: 'products' as const,
+  fields: [
+    { name: 'title', type: 'text' as const, required: true },
+    { name: 'sku', type: 'text' as const, required: true, unique: true },
+    { name: 'sourceVersion', type: 'number' as const, required: true },
+  ],
+}
 
-describe.runIf(shouldRun)('GMC v2 disabled Payload transaction regression', () => {
-  beforeAll(async () => {
-    if (!databaseUrl) {
-      throw new Error('GMC_V2_POSTGRES_URL is required')
+// Neither adapter is given transactionOptions: Payload's SQLite adapter
+// defaults transactions off, and Postgres is explicitly disabled here so
+// both exercise the exact ambient-transaction-absent path this suite tests.
+const disabledTransactionAdapter = (args: { databaseFile: string; schemaName: string }) => {
+  if (databaseKind === 'postgres') {
+    if (!postgresUrl) {
+      throw new Error('GMC_V2_POSTGRES_URL is required when GMC_V2_TEST_DATABASE=postgres')
     }
-
-    const options: PayloadGmcEcommerceV2Options = {
-      access: () => true,
-      async: asyncAdapter,
-      dataSourceId: '987654321',
-      feeds: [
-        {
-          id: 'primary',
-          access: 'public',
-          delivery: 'dynamic',
-          path: '/feeds/google.tsv',
-          selector: { contentLanguage: 'en', feedLabel: 'US' },
-        },
-      ],
-      getCredentials: () =>
-        Promise.resolve({
-          type: 'json',
-          credentials: { client_email: 'merchant@example.test', private_key: 'not-used' },
-        }),
-      merchantId: '123456',
-      products: {
-        collection: 'products',
-        project: ({ doc }) => ({
-          products: [],
-          sourceVersion: String(doc.sourceVersion),
-        }),
-        resolveIdentities: ({ doc }) => [
-          {
-            contentLanguage: 'en',
-            feedLabel: 'US',
-            offerId: String(doc.sku),
-          },
-        ],
-      },
-    }
-
-    const config = await buildConfig({
-      collections: [
-        {
-          slug: 'products',
-          fields: [
-            { name: 'title', type: 'text', required: true },
-            { name: 'sku', type: 'text', required: true, unique: true },
-            { name: 'sourceVersion', type: 'number', required: true },
-          ],
-        },
-      ],
-      db: postgresAdapter({
-        pool: { connectionString: databaseUrl },
-        push: true,
-        schemaName: `gmc_v2_no_transactions_${process.pid}`,
-        transactionOptions: false,
-      }),
-      email: testEmailAdapter,
-      plugins: [payloadGmcEcommerceV2(options)],
-      secret: 'gmc-v2-disabled-transaction-test-secret',
+    return postgresAdapter({
+      pool: { connectionString: postgresUrl },
+      push: true,
+      schemaName: args.schemaName,
+      transactionOptions: false,
     })
+  }
+  return sqliteAdapter({ client: { url: `file:${args.databaseFile}` } })
+}
 
-    payload = await getPayload({ config })
+const rawPluginOptions = (
+  dispatch: GmcAsyncAdapter['dispatch'],
+): Omit<PayloadGmcEcommerceV2Options, 'requireTransaction'> => ({
+  access: () => true,
+  async: {
+    name: 'disabled-transaction-regression',
+    dispatch,
+    getOperation: () => Promise.resolve(null),
+    health: () => Promise.resolve({ checkedAt: '2026-08-30T12:00:00.000Z', status: 'ok' as const }),
+  },
+  dataSourceId: '987654321',
+  feeds: [
+    {
+      id: 'primary',
+      access: 'public',
+      delivery: 'dynamic',
+      path: '/feeds/google.tsv',
+      selector: { contentLanguage: 'en', feedLabel: 'US' },
+    },
+  ],
+  getCredentials: () =>
+    Promise.resolve({
+      type: 'json',
+      credentials: { client_email: 'merchant@example.test', private_key: 'not-used' },
+    }),
+  merchantId: '123456',
+  products: {
+    collection: 'products',
+    project: ({ doc }) => ({
+      products: [],
+      sourceVersion: String(doc.sourceVersion),
+    }),
+    resolveIdentities: ({ doc }) => [
+      {
+        contentLanguage: 'en',
+        feedLabel: 'US',
+        offerId: String(doc.sku),
+      },
+    ],
+  },
+})
+
+type Harness = {
+  databaseFile?: string
+  dispatch: GmcAsyncAdapter['dispatch']
+  dispatched: GmcAsyncDispatchArgs[]
+  payload: Payload
+}
+
+const buildHarness = async (args: {
+  requireTransaction?: boolean
+  suffix: string
+}): Promise<Harness> => {
+  const dispatched: GmcAsyncDispatchArgs[] = []
+  const dispatch = vi.fn<GmcAsyncAdapter['dispatch']>((dispatchArgs) => {
+    dispatched.push(dispatchArgs)
+    return Promise.resolve({
+      operationId: `operation-${dispatched.length}`,
+      state: 'queued' as const,
+    })
+  })
+
+  const options: PayloadGmcEcommerceV2Options = {
+    ...rawPluginOptions(dispatch),
+    ...(args.requireTransaction === undefined
+      ? {}
+      : { requireTransaction: args.requireTransaction }),
+  }
+
+  const databaseFile = path.resolve(dirname, '.tmp', `v2-no-tx-${args.suffix}-${process.pid}.db`)
+  fs.mkdirSync(path.dirname(databaseFile), { recursive: true })
+  fs.rmSync(databaseFile, { force: true })
+
+  const config = await buildConfig({
+    collections: [productsCollection],
+    db: disabledTransactionAdapter({
+      databaseFile,
+      schemaName: `gmc_v2_no_tx_${args.suffix}_${process.pid}`,
+    }),
+    email: testEmailAdapter,
+    plugins: [payloadGmcEcommerceV2(options)],
+    secret: `gmc-v2-no-transactions-test-secret-${args.suffix}`,
+  })
+
+  // Payload caches instances globally by key (default: 'default'); without a
+  // distinct key here, the second harness in this file would silently reuse
+  // the first Payload instance instead of building one with its own options.
+  const payload = await getPayload({ config, key: `gmc-v2-no-tx-${args.suffix}` })
+  return {
+    databaseFile: databaseKind === 'sqlite' ? databaseFile : undefined,
+    dispatch,
+    dispatched,
+    payload,
+  }
+}
+
+const destroyHarness = async (harness: Harness | undefined): Promise<void> => {
+  if (harness && typeof harness.payload.db.destroy === 'function') {
+    await harness.payload.db.destroy()
+  }
+  if (harness?.databaseFile) {
+    fs.rmSync(harness.databaseFile, { force: true })
+  }
+}
+
+describe(`GMC v2 dispatches without an ambient transaction by default on ${databaseKind}`, () => {
+  let harness: Harness
+
+  beforeAll(async () => {
+    harness = await buildHarness({ suffix: 'default' })
   }, 120_000)
 
   afterAll(async () => {
-    if (payload && typeof payload.db.destroy === 'function') {
-      await payload.db.destroy()
-    }
+    await destroyHarness(harness)
+  })
+
+  it('creates a published product, dispatches once, and warns once', async () => {
+    const warn = vi.spyOn(harness.payload.logger, 'warn')
+
+    const created = await harness.payload.create({
+      collection: 'products',
+      data: {
+        sku: 'NO-TRANSACTION-DEFAULT-1',
+        sourceVersion: 1,
+        title: 'No ambient transaction, default options',
+      },
+    })
+
+    expect(created.id).toBeDefined()
+    expect(harness.dispatch).toHaveBeenCalledTimes(1)
+    expect(harness.dispatched[0]?.command.type).toBe('product.publish')
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledWith(
+      'payload-plugin-gmc-ecommerce: dispatching Merchant command outside a database transaction; a crash between commit and dispatch is repaired by catalog.reconcile. Set requireTransaction: true to fail closed.',
+    )
+  })
+})
+
+describe(`GMC v2 fails closed with requireTransaction: true and no ambient transaction on ${databaseKind}`, () => {
+  let harness: Harness
+
+  beforeAll(async () => {
+    harness = await buildHarness({ requireTransaction: true, suffix: 'strict' })
+  }, 120_000)
+
+  afterAll(async () => {
+    await destroyHarness(harness)
   })
 
   it('rejects before the canonical row commits when beginTransaction resolves to null', async () => {
-    if (!payload) throw new Error('Payload was not initialized')
-
     await expect(
-      payload.create({
+      harness.payload.create({
         collection: 'products',
         data: {
-          sku: 'NO-TRANSACTION-CREATE',
+          sku: 'NO-TRANSACTION-STRICT-1',
           sourceVersion: 1,
           title: 'Must not commit',
         },
       }),
     ).rejects.toMatchObject({ code: 'GMC_TRANSACTION_REQUIRED' })
 
-    const absent = await payload.find({
+    const absent = await harness.payload.find({
       collection: 'products',
       depth: 0,
       limit: 1,
       overrideAccess: true,
-      where: { sku: { equals: 'NO-TRANSACTION-CREATE' } },
+      where: { sku: { equals: 'NO-TRANSACTION-STRICT-1' } },
     })
     expect(absent.docs).toHaveLength(0)
-    expect(dispatch).not.toHaveBeenCalled()
+    expect(harness.dispatch).not.toHaveBeenCalled()
   })
 })

@@ -161,11 +161,15 @@ export const payloadGmcEcommerceV2 = (
             createGmcV2AfterDeleteHook(options),
           ],
           beforeChange: [
-            createGmcV2TransactionBeforeChangeHook(),
+            ...(options.requireTransaction
+              ? [createGmcV2TransactionBeforeChangeHook(options)]
+              : []),
             ...(productCollection.hooks?.beforeChange ?? []),
           ],
           beforeDelete: [
-            createGmcV2TransactionBeforeDeleteHook(),
+            ...(options.requireTransaction
+              ? [createGmcV2TransactionBeforeDeleteHook(options)]
+              : []),
             ...(productCollection.hooks?.beforeDelete ?? []),
           ],
         },
@@ -199,11 +203,15 @@ export const payloadGmcEcommerceV2 = (
               createGmcV2DependencyAfterDeleteHook(options, dependency),
             ],
             beforeChange: [
-              createGmcV2TransactionBeforeChangeHook(),
+              ...(options.requireTransaction
+                ? [createGmcV2TransactionBeforeChangeHook(options)]
+                : []),
               ...(dependencyCollection.hooks?.beforeChange ?? []),
             ],
             beforeDelete: [
-              createGmcV2TransactionBeforeDeleteHook(),
+              ...(options.requireTransaction
+                ? [createGmcV2TransactionBeforeDeleteHook(options)]
+                : []),
               ...(dependencyCollection.hooks?.beforeDelete ?? []),
             ],
           },
@@ -229,7 +237,9 @@ export const payloadGmcEcommerceV2 = (
               createGmcV2GlobalDependencyAfterChangeHook(options, dependency),
             ],
             beforeChange: [
-              createGmcV2TransactionGlobalBeforeChangeHook(),
+              ...(options.requireTransaction
+                ? [createGmcV2TransactionGlobalBeforeChangeHook(options)]
+                : []),
               ...(dependencyGlobal.hooks?.beforeChange ?? []),
             ],
           },
