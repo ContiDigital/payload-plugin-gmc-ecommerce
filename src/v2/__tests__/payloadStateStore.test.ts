@@ -379,6 +379,68 @@ describe('Payload publication state store', () => {
     })
   })
 
+  it('lets a reconciliation sweep re-enter delete-pending on an already-deleted row', async () => {
+    const test = payloadDouble()
+    const store = newStore()
+    await store.claimPublication(claim(test.payload))
+    await store.markDeletePending({
+      identity,
+      operationId: 'delete-1',
+      payload: test.payload,
+      productId: 'product-1',
+    })
+    await store.markDeleted({
+      identity,
+      operationId: 'delete-1',
+      payload: test.payload,
+      productId: 'product-1',
+    })
+    await expect(store.get({ identity, payload: test.payload })).resolves.toMatchObject({
+      status: 'deleted',
+    })
+
+    // Google can still hold the product after a failed delete. The sweep must
+    // be able to re-arm the delete rather than being told the row is done.
+    await expect(
+      store.markDeletePending({
+        identity,
+        onlyIfDesiredBefore: '2026-08-29T13:00:00.000Z',
+        operationId: 'reconcile-orphan',
+        payload: test.payload,
+        productId: 'product-1',
+      }),
+    ).resolves.toMatchObject({ operationId: 'reconcile-orphan', status: 'delete-pending' })
+  })
+
+  it('leaves an already-deleted row alone for an unconditional delete', async () => {
+    const test = payloadDouble()
+    const store = newStore()
+    await store.claimPublication(claim(test.payload))
+    await store.markDeletePending({
+      identity,
+      operationId: 'delete-1',
+      payload: test.payload,
+      productId: 'product-1',
+    })
+    await store.markDeleted({
+      identity,
+      operationId: 'delete-1',
+      payload: test.payload,
+      productId: 'product-1',
+    })
+    const writesBefore = test.update.mock.calls.length
+
+    await expect(
+      store.markDeletePending({
+        identity,
+        operationId: 'delete-2',
+        payload: test.payload,
+        productId: 'product-1',
+      }),
+    ).resolves.toMatchObject({ operationId: 'delete-1', status: 'deleted' })
+    expect(test.update).toHaveBeenCalledTimes(writesBefore)
+  })
+
   it('does not mark an offer deleted after a newer desired claim wins the race', async () => {
     const test = payloadDouble()
     const store = newStore()

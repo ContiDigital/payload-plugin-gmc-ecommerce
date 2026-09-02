@@ -360,7 +360,11 @@ export const createPayloadPublicationStateStore = (args: {
             continue
           }
         }
-        if (existing.status === 'deleted') {
+        // An already-deleted row is only terminal for an unconditional delete.
+        // A reconciliation sweep supplies `onlyIfDesiredBefore` precisely
+        // because Google may still hold the product after a failed delete, so
+        // it must be able to re-enter `delete-pending` and repair the orphan.
+        if (existing.status === 'deleted' && onlyIfDesiredBefore === undefined) {
           return toState(existing)
         }
         const updated = await payloadUpdateIfCurrent(payload, existing, {
