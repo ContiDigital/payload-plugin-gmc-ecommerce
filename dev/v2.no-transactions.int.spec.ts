@@ -17,15 +17,6 @@ const dispatch = vi.fn<GmcAsyncAdapter['dispatch']>(() =>
 
 const asyncAdapter: GmcAsyncAdapter = {
   name: 'disabled-transaction-regression',
-  capabilities: {
-    delivery: 'at-least-once',
-    durable: true,
-        exclusiveCatalogReconciliation: true,
-    globalSourceVersion: true,
-    orderedBySubject: true,
-    transactionAware: true,
-    workflowStatus: true,
-  },
   dispatch,
   getOperation: () => Promise.resolve(null),
   health: () =>
@@ -59,7 +50,6 @@ describe.runIf(shouldRun)('GMC v2 disabled Payload transaction regression', () =
           credentials: { client_email: 'merchant@example.test', private_key: 'not-used' },
         }),
       merchantId: '123456',
-      productIngestion: { mode: 'api-primary' },
       products: {
         collection: 'products',
         project: ({ doc }) => ({
@@ -74,7 +64,6 @@ describe.runIf(shouldRun)('GMC v2 disabled Payload transaction regression', () =
           },
         ],
       },
-      workerAccess: () => true,
     }
 
     const config = await buildConfig({

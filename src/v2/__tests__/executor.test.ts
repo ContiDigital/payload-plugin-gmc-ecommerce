@@ -7,6 +7,7 @@ import type {
   GmcAsyncAdapter,
   GmcCommand,
   GmcCommandExecutionContext,
+  GmcFeedConfig,
   GmcLocalInventoryPublicationState,
   GmcLocalInventoryPublicationStateStore,
   GmcMerchantTransport,
@@ -180,7 +181,7 @@ const transport = (): GmcMerchantTransport => ({
 const build = (args?: {
   additionalDataSourceIds?: string[]
   batchSize?: number
-  feed?: PayloadGmcEcommerceV2Options['feeds'][number]
+  feed?: GmcFeedConfig
   find?: Payload['find']
   findByID?: Payload['findByID']
   localInventory?: boolean
@@ -195,15 +196,6 @@ const build = (args?: {
   let operation = 0
   const asyncAdapter: GmcAsyncAdapter = {
     name: 'durable-test-adapter',
-    capabilities: {
-      delivery: 'at-least-once',
-      durable: true,
-      exclusiveCatalogReconciliation: true,
-      globalSourceVersion: true,
-      orderedBySubject: true,
-      transactionAware: true,
-      workflowStatus: true,
-    },
     dispatch: vi.fn(() =>
       Promise.resolve({
         operationId: `child-${++operation}`,
@@ -419,7 +411,6 @@ describe('GMC v2 command executor', () => {
       true,
     )
     expect(dispatched.every(({ rootOperationId }) => rootOperationId === 'operation-1')).toBe(true)
-    expect(dispatched.every(({ sourceVersion }) => sourceVersion === '100')).toBe(true)
     expect(test.payload.findByID).toHaveBeenCalledWith(expect.objectContaining({ draft: false }))
     expect(test.transport.insertProductInput).not.toHaveBeenCalled()
   })
@@ -573,21 +564,20 @@ describe('GMC v2 command executor', () => {
     expect(test.payload.findByID).not.toHaveBeenCalled()
   })
 
-  it('rejects a missing global execution sequence before doing work', async () => {
+  it('defaults a missing durable execution sequence to 0 instead of rejecting', async () => {
     const test = build()
     const command = createProductPublishCommand({
       cause: 'manual',
       productId: 'product-1',
     })
 
-    await expect(
-      test.rawExecute({
-        command,
-        operationId: 'operation-missing-sequence',
-        payload: test.payload,
-      } as never),
-    ).rejects.toThrow(/sourceVersion is required/i)
-    expect(test.payload.findByID).not.toHaveBeenCalled()
+    const result = await test.rawExecute({
+      command,
+      operationId: 'operation-missing-sequence',
+      payload: test.payload,
+    } as never)
+    expect(result.outcome).toBe('completed')
+    expect(test.payload.findByID).toHaveBeenCalled()
   })
 
   it('skips a redelivery whose exact digest and source version are already published', async () => {
@@ -837,7 +827,6 @@ describe('GMC v2 command executor', () => {
       true,
     )
     expect(requests.every(({ rootOperationId }) => rootOperationId === 'catalog-root')).toBe(true)
-    expect(requests.every(({ sourceVersion }) => sourceVersion === '100')).toBe(true)
   })
 
   it('pages only a targeted dependency set and preserves it on the continuation', async () => {
@@ -875,14 +864,13 @@ describe('GMC v2 command executor', () => {
         pageIndex: 1,
         productIds: [2, 7, 11],
       },
-      sourceVersion: '501',
     })
   })
 
   it('pins artifact metadata and projection time to the immutable command', async () => {
     let stored: unknown
     const promote = vi.fn(() => Promise.resolve('promoted' as const))
-    const feed: PayloadGmcEcommerceV2Options['feeds'][number] = {
+    const feed: GmcFeedConfig = {
       id: 'artifact',
       access: 'public',
       artifactStore: {
@@ -943,7 +931,7 @@ describe('GMC v2 command executor', () => {
     const put = vi.fn(() => Promise.resolve())
     const promote = vi.fn(() => Promise.resolve('promoted' as const))
     const find = vi.fn(() => Promise.resolve({ docs: [] })) as unknown as Payload['find']
-    const feed: PayloadGmcEcommerceV2Options['feeds'][number] = {
+    const feed: GmcFeedConfig = {
       id: 'artifact',
       access: 'public',
       artifactStore: {

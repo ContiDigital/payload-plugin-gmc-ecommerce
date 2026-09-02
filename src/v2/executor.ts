@@ -67,6 +67,15 @@ export type GmcCommandExecutorDependencies = {
   transport?: GmcMerchantTransport
 }
 
+/**
+ * Internal execution context used once the entry point has normalized a
+ * possibly-absent `sourceVersion` (see GmcCommandExecutionContext.sourceVersion,
+ * @deprecated since 2.0.0). Every sub-executor sees a resolved string.
+ */
+type GmcExecutionContext = {
+  sourceVersion: string
+} & Omit<GmcCommandExecutionContext, 'sourceVersion'>
+
 const DATA_SOURCE_VALIDATION_TTL_MS = 5 * 60_000
 
 const isNotFound = (error: unknown): boolean => {
@@ -249,7 +258,6 @@ export const createGmcCommandExecutor = (
   }
   const stateStore =
     dependencies.stateStore ??
-    options.publicationState.store ??
     createPayloadPublicationStateStore({
       collectionSlug: options.publicationState.collectionSlug,
       dataSourceName: options.dataSourceName,
@@ -257,9 +265,8 @@ export const createGmcCommandExecutor = (
     })
   const localInventoryStateStore = options.localInventory
     ? (dependencies.localInventoryStateStore ??
-      options.localInventory.publicationState.store ??
       createPayloadLocalInventoryPublicationStateStore({
-        collectionSlug: options.localInventory.publicationState.collectionSlug,
+        collectionSlug: options.localInventory.collectionSlug,
         dataSourceName: options.dataSourceName,
         merchantId: options.merchantId,
       }))
@@ -399,10 +406,7 @@ export const createGmcCommandExecutor = (
 
   const dispatch = async (
     request: Omit<GmcAsyncDispatchArgs, 'parentOperationId' | 'payload' | 'req'>,
-    context: Pick<
-      GmcCommandExecutionContext,
-      'operationId' | 'payload' | 'rootOperationId' | 'sourceVersion'
-    >,
+    context: Pick<GmcExecutionContext, 'operationId' | 'payload' | 'rootOperationId'>,
   ): Promise<GmcDispatchReceipt> => {
     assertGmcCommand(request.command)
     return assertGmcDispatchReceipt(
@@ -411,7 +415,6 @@ export const createGmcCommandExecutor = (
         parentOperationId: context.operationId,
         payload: context.payload,
         rootOperationId: context.rootOperationId ?? context.operationId,
-        sourceVersion: context.sourceVersion,
       }),
     )
   }
@@ -419,7 +422,7 @@ export const createGmcCommandExecutor = (
   const executeDataSourcesValidate = async (
     context: {
       command: Extract<GmcCommand, { type: 'dataSources.validate' }>
-    } & GmcCommandExecutionContext,
+    } & GmcExecutionContext,
   ): Promise<GmcCommandExecutionResult> => {
     for (const dataSourceName of options.dataSourceNames) {
       await requireApiPrimaryDataSource({ dataSourceName, payload: context.payload })
@@ -487,7 +490,7 @@ export const createGmcCommandExecutor = (
     context: {
       command: GmcProductPublishCommand
       projectionTime?: string
-    } & GmcCommandExecutionContext,
+    } & GmcExecutionContext,
   ): Promise<GmcCommandExecutionResult> => {
     const { command, operationId, payload } = context
     const doc = await findPublishedDocument({ options, payload, productId: command.productId })
@@ -649,7 +652,7 @@ export const createGmcCommandExecutor = (
   }
 
   const executeProductDelete = async (
-    context: { command: GmcProductDeleteCommand } & GmcCommandExecutionContext,
+    context: { command: GmcProductDeleteCommand } & GmcExecutionContext,
   ): Promise<GmcCommandExecutionResult> => {
     const productId = context.command.productId ?? `deleted:${context.operationId}`
     const oldStates =
@@ -683,7 +686,7 @@ export const createGmcCommandExecutor = (
   const executeOfferPublish = async (
     context: {
       command: Extract<GmcCommand, { type: 'offer.publish' }>
-    } & GmcCommandExecutionContext,
+    } & GmcExecutionContext,
   ): Promise<GmcCommandExecutionResult> => {
     const product = canonicalizeProductInput({
       input: context.command.input,
@@ -805,7 +808,7 @@ export const createGmcCommandExecutor = (
   const executeOfferDelete = async (
     context: {
       command: Extract<GmcCommand, { type: 'offer.delete' }>
-    } & GmcCommandExecutionContext,
+    } & GmcExecutionContext,
   ): Promise<GmcCommandExecutionResult> => {
     const identity = normalizeGmcIdentityRoute(context.command.identity, options)
     // Child deletes carry their parent projection version. A directly queued
@@ -878,7 +881,7 @@ export const createGmcCommandExecutor = (
   const executeCatalogPublish = async (
     context: {
       command: Extract<GmcCommand, { type: 'catalog.publish' }>
-    } & GmcCommandExecutionContext,
+    } & GmcExecutionContext,
   ): Promise<GmcCommandExecutionResult> => {
     const result = await context.payload.find({
       collection: options.products.collection,
@@ -961,7 +964,7 @@ export const createGmcCommandExecutor = (
   const executeCatalogReconcile = async (
     context: {
       command: Extract<GmcCommand, { type: 'catalog.reconcile' }>
-    } & GmcCommandExecutionContext,
+    } & GmcExecutionContext,
   ): Promise<GmcCommandExecutionResult> => {
     const phase = context.command.phase ?? 'desired'
     const startedAt = context.command.startedAt ?? context.command.requestedAt
@@ -1163,7 +1166,7 @@ export const createGmcCommandExecutor = (
   }
 
   const executeFeedBuild = async (
-    context: { command: Extract<GmcCommand, { type: 'feed.build' }> } & GmcCommandExecutionContext,
+    context: { command: Extract<GmcCommand, { type: 'feed.build' }> } & GmcExecutionContext,
   ): Promise<GmcCommandExecutionResult> => {
     const feed = options.feeds.find((candidate) => candidate.id === context.command.feedId)
     if (!feed) {
@@ -1257,7 +1260,7 @@ export const createGmcCommandExecutor = (
   const executeStatusRefresh = async (
     context: {
       command: Extract<GmcCommand, { type: 'status.refresh' }>
-    } & GmcCommandExecutionContext,
+    } & GmcExecutionContext,
   ): Promise<GmcCommandExecutionResult> => {
     const states =
       context.command.productId === undefined
@@ -1342,7 +1345,7 @@ export const createGmcCommandExecutor = (
   const executeLocalInventoryApply = async (
     context: {
       command: Extract<GmcCommand, { type: 'localInventory.apply' }>
-    } & GmcCommandExecutionContext,
+    } & GmcExecutionContext,
   ): Promise<GmcCommandExecutionResult> => {
     if (!options.localInventory) {
       throw new TypeError('Local inventory is no longer configured')
@@ -1577,7 +1580,7 @@ export const createGmcCommandExecutor = (
   const executeLocalInventoryReconcile = async (
     context: {
       command: Extract<GmcCommand, { type: 'localInventory.reconcile' }>
-    } & GmcCommandExecutionContext,
+    } & GmcExecutionContext,
   ): Promise<GmcCommandExecutionResult> => {
     if (!options.localInventory) {
       return {
@@ -1836,15 +1839,25 @@ export const createGmcCommandExecutor = (
     }
   }
 
-  return async (context: GmcCommandExecutionContext): Promise<GmcCommandExecutionResult> => {
-    assertGmcCommand(context.command)
-    if (!context.operationId.trim()) {
+  return async (rawContext: GmcCommandExecutionContext): Promise<GmcCommandExecutionResult> => {
+    assertGmcCommand(rawContext.command)
+    if (!rawContext.operationId.trim()) {
       throw new TypeError('GMC command execution requires a durable operationId')
     }
-    if (!isGmcNonNegativeInt64String(context.sourceVersion)) {
+    // sourceVersion is @deprecated and optional; when a host still supplies one
+    // it must be well-formed. Absent, it defaults to '0' for now (Task 7 drops
+    // versioning entirely).
+    if (
+      rawContext.sourceVersion !== undefined &&
+      !isGmcNonNegativeInt64String(rawContext.sourceVersion)
+    ) {
       throw new TypeError(
-        'GMC execution sourceVersion is required and must be a non-negative signed int64 string',
+        'GMC execution sourceVersion must be a non-negative signed int64 string when provided',
       )
+    }
+    const context: GmcExecutionContext = {
+      ...rawContext,
+      sourceVersion: rawContext.sourceVersion ?? '0',
     }
 
     switch (context.command.type) {

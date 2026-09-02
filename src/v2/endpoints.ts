@@ -535,6 +535,12 @@ const createFeedEndpoint = (feed: GmcFeedConfig, options: NormalizedGmcV2Options
 
 const createWorkerEndpoint = (options: NormalizedGmcV2Options): Endpoint => {
   const execute = createGmcCommandExecutor(options)
+  const workerAccess = options.workerAccess
+  if (!workerAccess) {
+    throw new TypeError(
+      'payload-plugin-gmc-ecommerce/v2: workerAccess is required when api.exposeWorkerEndpoint is true',
+    )
+  }
   return handled({
     handler: async (req) => {
       const body = await readJsonBody(req)
@@ -545,7 +551,7 @@ const createWorkerEndpoint = (options: NormalizedGmcV2Options): Endpoint => {
         throw new GmcHttpError(400, error instanceof Error ? error.message : 'Invalid GMC command')
       }
       const operationId = requireOperationId(body.operationId)
-      if (!(await options.workerAccess({ command: body.command, payload: req.payload, req }))) {
+      if (!(await workerAccess({ command: body.command, payload: req.payload, req }))) {
         throw new AccessDeniedError()
       }
       const rootOperationId =

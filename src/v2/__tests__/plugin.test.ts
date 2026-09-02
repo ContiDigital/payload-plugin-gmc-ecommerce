@@ -12,15 +12,6 @@ const options = (
   access: () => true,
   async: {
     name: 'test-adapter',
-    capabilities: {
-      delivery: 'at-least-once',
-      durable: true,
-        exclusiveCatalogReconciliation: true,
-      globalSourceVersion: true,
-      orderedBySubject: true,
-      transactionAware: true,
-      workflowStatus: true,
-    },
     dispatch: vi.fn(() =>
       Promise.resolve({ operationId: 'operation-1', state: 'queued' as const }),
     ),
@@ -48,13 +39,11 @@ const options = (
       credentials: { client_email: 'merchant@example.com', private_key: 'secret' },
     }),
   merchantId: '123456',
-  productIngestion: { mode: 'api-primary' },
   products: {
     collection: 'products',
     project: () => ({ products: [], sourceVersion: '1' }),
     resolveIdentities: () => [],
   },
-  workerAccess: () => true,
   ...overrides,
 })
 
@@ -285,5 +274,26 @@ describe('payloadGmcEcommerceV2', () => {
         globals: [],
       } as unknown as Config),
     ).toThrow(/dependency Global missing/i)
+  })
+
+  it('calls the adapter install hook and keeps its added collection', () => {
+    const input = { collections: [{ slug: 'products', fields: [] }] } as unknown as Config
+    const install = vi.fn((args: { config: Config }) => ({
+      ...args.config,
+      collections: [
+        ...(args.config.collections ?? []),
+        { slug: 'adapter-owned-collection', fields: [] },
+      ],
+    }))
+    const configured = payloadGmcEcommerceV2(
+      options({ async: { ...options().async, install } }),
+    )(input) as Config
+
+    expect(install).toHaveBeenCalledTimes(1)
+    expect(
+      configured.collections?.some(
+        (collection) => collection.slug === 'adapter-owned-collection',
+      ),
+    ).toBe(true)
   })
 })

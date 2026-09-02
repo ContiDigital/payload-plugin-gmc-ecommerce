@@ -99,7 +99,8 @@ export const payloadGmcEcommerceV2 = (
 ): PayloadPlugin => {
   return (incomingConfig: Config): Config => {
     const options = normalizeGmcV2Options(incomingOptions)
-    const existingCollections = incomingConfig.collections ?? []
+    const config = options.async.install?.({ config: incomingConfig, options }) ?? incomingConfig
+    const existingCollections = config.collections ?? []
     const productIndex = existingCollections.findIndex(
       (collection) => collection.slug === options.products.collection,
     )
@@ -110,39 +111,36 @@ export const payloadGmcEcommerceV2 = (
     }
 
     const collections: CollectionConfig[] = [...existingCollections]
-    const existingGlobals = incomingConfig.globals ?? []
+    const existingGlobals = config.globals ?? []
     const globals = [...existingGlobals]
-    if (!options.publicationState.store) {
-      if (
-        existingCollections.some(
-          (collection) => collection.slug === options.publicationState.collectionSlug,
-        )
-      ) {
-        throw new TypeError(
-          `payload-plugin-gmc-ecommerce/v2: publication collection slug ${options.publicationState.collectionSlug} already exists; configure a custom publicationState.store to own it`,
-        )
-      }
-      collections.push(
-        buildGmcPublicationCollection({
-          slug: options.publicationState.collectionSlug,
-          access: options.access,
-        }),
+    if (
+      existingCollections.some(
+        (collection) => collection.slug === options.publicationState.collectionSlug,
+      )
+    ) {
+      throw new TypeError(
+        `payload-plugin-gmc-ecommerce/v2: publication collection slug ${options.publicationState.collectionSlug} already exists; choose a different publicationState.collectionSlug`,
       )
     }
-    if (options.localInventory && !options.localInventory.publicationState.store) {
+    collections.push(
+      buildGmcPublicationCollection({
+        slug: options.publicationState.collectionSlug,
+        access: options.access,
+      }),
+    )
+    if (options.localInventory) {
       if (
         collections.some(
-          (collection) =>
-            collection.slug === options.localInventory?.publicationState.collectionSlug,
+          (collection) => collection.slug === options.localInventory?.collectionSlug,
         )
       ) {
         throw new TypeError(
-          `payload-plugin-gmc-ecommerce/v2: local-inventory publication collection slug ${options.localInventory.publicationState.collectionSlug} already exists; configure a custom localInventory.publicationState.store to own it`,
+          `payload-plugin-gmc-ecommerce/v2: local-inventory publication collection slug ${options.localInventory.collectionSlug} already exists; choose a different local-inventory collection slug`,
         )
       }
       collections.push(
         buildGmcLocalInventoryPublicationCollection({
-          slug: options.localInventory.publicationState.collectionSlug,
+          slug: options.localInventory.collectionSlug,
           access: options.access,
         }),
       )
@@ -239,7 +237,7 @@ export const payloadGmcEcommerceV2 = (
       }
     }
 
-    const endpoints = [...(incomingConfig.endpoints ?? [])]
+    const endpoints = [...(config.endpoints ?? [])]
     if (!options.disabled) {
       for (const endpoint of buildGmcV2Endpoints(options)) {
         const key = endpointKey(endpoint)
@@ -252,7 +250,7 @@ export const payloadGmcEcommerceV2 = (
     }
 
     return {
-      ...incomingConfig,
+      ...config,
       collections,
       endpoints,
       globals,

@@ -62,15 +62,6 @@ const dispatched: GmcAsyncDispatchArgs[] = []
 
 const asyncAdapter: GmcAsyncAdapter = {
   name: 'sqlite-integration-outbox',
-  capabilities: {
-    delivery: 'at-least-once',
-    durable: true,
-    exclusiveCatalogReconciliation: true,
-    globalSourceVersion: true,
-    orderedBySubject: true,
-    transactionAware: true,
-    workflowStatus: true,
-  },
   dispatch: vi.fn((args) => {
     dispatched.push(args)
     return Promise.resolve({
@@ -126,7 +117,6 @@ beforeAll(async () => {
       storeCodes: ['store-1'],
     },
     merchantId: '123456',
-    productIngestion: { mode: 'api-primary' },
     products: {
       batchSize: 2,
       collection: 'products',
@@ -157,7 +147,6 @@ beforeAll(async () => {
         },
       ],
     },
-    workerAccess: () => true,
   }
 
   const config = await buildConfig({

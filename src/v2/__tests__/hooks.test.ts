@@ -33,7 +33,6 @@ const build = (adapter: GmcAsyncAdapter) =>
         credentials: { client_email: 'test@example.com', private_key: 'secret' },
       }),
     merchantId: '123456',
-    productIngestion: { mode: 'api-primary' },
     products: {
       collection: 'products',
       project: () => ({ products: [], sourceVersion: '1' }),
@@ -45,7 +44,6 @@ const build = (adapter: GmcAsyncAdapter) =>
         },
       ],
     },
-    workerAccess: () => true,
   } satisfies PayloadGmcEcommerceV2Options)
 
 const payloadWarn = vi.fn()
@@ -61,15 +59,6 @@ describe('GMC v2 Payload hooks', () => {
     )
     const normalized = build({
       name: 'test',
-      capabilities: {
-        delivery: 'at-least-once',
-        durable: true,
-        exclusiveCatalogReconciliation: true,
-        globalSourceVersion: true,
-        orderedBySubject: true,
-        transactionAware: true,
-        workflowStatus: true,
-      },
       dispatch,
       getOperation: vi.fn(() => Promise.resolve(null)),
       health: vi.fn(() =>
@@ -133,15 +122,6 @@ describe('GMC v2 Payload hooks', () => {
     const hook = createGmcV2AfterChangeHook(
       build({
         name: 'test',
-        capabilities: {
-          delivery: 'at-least-once',
-          durable: true,
-        exclusiveCatalogReconciliation: true,
-          globalSourceVersion: true,
-          orderedBySubject: true,
-          transactionAware: true,
-          workflowStatus: true,
-        },
         dispatch,
         getOperation: vi.fn(() => Promise.resolve(null)),
         health: vi.fn(() =>
@@ -184,15 +164,6 @@ describe('GMC v2 Payload hooks', () => {
     const hook = createGmcV2AfterChangeHook(
       build({
         name: 'test',
-        capabilities: {
-          delivery: 'at-least-once',
-          durable: true,
-        exclusiveCatalogReconciliation: true,
-          globalSourceVersion: true,
-          orderedBySubject: true,
-          transactionAware: true,
-          workflowStatus: true,
-        },
         dispatch: () => Promise.resolve({ operationId: '', state: 'queued' }),
         getOperation: vi.fn(() => Promise.resolve(null)),
         health: vi.fn(() =>
@@ -219,15 +190,6 @@ describe('GMC v2 Payload hooks', () => {
     )
     const normalized = build({
       name: 'test',
-      capabilities: {
-        delivery: 'at-least-once',
-        durable: true,
-        exclusiveCatalogReconciliation: true,
-        globalSourceVersion: true,
-        orderedBySubject: true,
-        transactionAware: true,
-        workflowStatus: true,
-      },
       dispatch,
       getOperation: vi.fn(() => Promise.resolve(null)),
       health: vi.fn(() =>
@@ -258,15 +220,6 @@ describe('GMC v2 Payload hooks', () => {
     )
     const normalized = build({
       name: 'test',
-      capabilities: {
-        delivery: 'at-least-once',
-        durable: true,
-        exclusiveCatalogReconciliation: true,
-        globalSourceVersion: true,
-        orderedBySubject: true,
-        transactionAware: true,
-        workflowStatus: true,
-      },
       dispatch,
       getOperation: vi.fn(() => Promise.resolve(null)),
       health: vi.fn(() =>
@@ -309,15 +262,6 @@ describe('GMC v2 Payload hooks', () => {
     const hook = createGmcV2AfterChangeHook(
       build({
         name: 'test',
-        capabilities: {
-          delivery: 'at-least-once',
-          durable: true,
-        exclusiveCatalogReconciliation: true,
-          globalSourceVersion: true,
-          orderedBySubject: true,
-          transactionAware: true,
-          workflowStatus: true,
-        },
         dispatch,
         getOperation: vi.fn(() => Promise.resolve(null)),
         health: vi.fn(() =>
@@ -352,15 +296,6 @@ describe('GMC v2 Payload hooks', () => {
     const hook = createGmcV2AfterChangeHook(
       build({
         name: 'test',
-        capabilities: {
-          delivery: 'at-least-once',
-          durable: true,
-        exclusiveCatalogReconciliation: true,
-          globalSourceVersion: true,
-          orderedBySubject: true,
-          transactionAware: true,
-          workflowStatus: true,
-        },
         dispatch,
         getOperation: vi.fn(() => Promise.resolve(null)),
         health: vi.fn(() =>
@@ -392,15 +327,6 @@ describe('GMC v2 Payload hooks', () => {
     const hook = createGmcV2AfterChangeHook(
       build({
         name: 'test',
-        capabilities: {
-          delivery: 'at-least-once',
-          durable: true,
-        exclusiveCatalogReconciliation: true,
-          globalSourceVersion: true,
-          orderedBySubject: true,
-          transactionAware: true,
-          workflowStatus: true,
-        },
         dispatch,
         getOperation: vi.fn(() => Promise.resolve(null)),
         health: vi.fn(() =>
@@ -443,15 +369,6 @@ describe('GMC v2 Payload hooks', () => {
     )
     const normalized = build({
       name: 'test',
-      capabilities: {
-        delivery: 'at-least-once',
-        durable: true,
-        exclusiveCatalogReconciliation: true,
-        globalSourceVersion: true,
-        orderedBySubject: true,
-        transactionAware: true,
-        workflowStatus: true,
-      },
       dispatch,
       getOperation: vi.fn(() => Promise.resolve(null)),
       health: vi.fn(() =>
@@ -485,16 +402,7 @@ describe('GMC v2 Payload hooks', () => {
     )
     const normalized = build({
       name: 'test',
-      capabilities: {
-        delivery: 'at-least-once',
-        durable: true,
-        exclusiveCatalogReconciliation: true,
-        globalSourceVersion: true,
-        orderedBySubject: true,
-        scheduledDelivery: true,
-        transactionAware: true,
-        workflowStatus: true,
-      },
+      capabilities: { scheduledDelivery: true },
       dispatch,
       getOperation: vi.fn(() => Promise.resolve(null)),
       health: vi.fn(() =>
@@ -576,15 +484,6 @@ describe('GMC v2 Payload hooks', () => {
     )
     const normalized = build({
       name: 'test',
-      capabilities: {
-        delivery: 'at-least-once',
-        durable: true,
-        exclusiveCatalogReconciliation: true,
-        globalSourceVersion: true,
-        orderedBySubject: true,
-        transactionAware: true,
-        workflowStatus: true,
-      },
       dispatch,
       getOperation: vi.fn(() => Promise.resolve(null)),
       health: vi.fn(() =>
@@ -621,16 +520,7 @@ describe('GMC v2 Payload hooks', () => {
     )
     const normalized = build({
       name: 'test',
-      capabilities: {
-        delivery: 'at-least-once',
-        durable: true,
-        exclusiveCatalogReconciliation: true,
-        globalSourceVersion: true,
-        orderedBySubject: true,
-        scheduledDelivery: true,
-        transactionAware: true,
-        workflowStatus: true,
-      },
+      capabilities: { scheduledDelivery: true },
       dispatch,
       getOperation: vi.fn(() => Promise.resolve(null)),
       health: vi.fn(() =>
@@ -682,15 +572,6 @@ describe('GMC v2 Payload hooks', () => {
     )
     const normalized = build({
       name: 'test',
-      capabilities: {
-        delivery: 'at-least-once',
-        durable: true,
-        exclusiveCatalogReconciliation: true,
-        globalSourceVersion: true,
-        orderedBySubject: true,
-        transactionAware: true,
-        workflowStatus: true,
-      },
       dispatch,
       getOperation: vi.fn(() => Promise.resolve(null)),
       health: vi.fn(() =>
@@ -738,16 +619,7 @@ describe('GMC v2 Payload hooks', () => {
     )
     const normalized = build({
       name: 'test',
-      capabilities: {
-        delivery: 'at-least-once',
-        durable: true,
-        exclusiveCatalogReconciliation: true,
-        globalSourceVersion: true,
-        orderedBySubject: true,
-        scheduledDelivery: true,
-        transactionAware: true,
-        workflowStatus: true,
-      },
+      capabilities: { scheduledDelivery: true },
       dispatch,
       getOperation: vi.fn(() => Promise.resolve(null)),
       health: vi.fn(() =>

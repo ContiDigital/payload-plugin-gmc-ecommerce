@@ -1,32 +1,40 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import type { PayloadGmcEcommerceV2Options } from '../types.js'
+import type { GmcAsyncAdapter, PayloadGmcEcommerceV2Options } from '../types.js'
 
 import { normalizeGmcV2Options } from '../config.js'
 
-const validOptions = (): PayloadGmcEcommerceV2Options => ({
+const dispatch = vi.fn(() => Promise.resolve({ operationId: 'op-1', state: 'queued' as const }))
+const getOperation = vi.fn(() => Promise.resolve(null))
+const health = vi.fn(() =>
+  Promise.resolve({
+    checkedAt: '2026-08-29T12:00:00.000Z',
+    status: 'ok' as const,
+  }),
+)
+const minimalAdapter: GmcAsyncAdapter = { name: 'test-adapter', dispatch, getOperation, health }
+
+const baseOptions: PayloadGmcEcommerceV2Options = {
   access: () => true,
-  async: {
-    name: 'test-adapter',
-    capabilities: {
-      delivery: 'at-least-once',
-      durable: true,
-      exclusiveCatalogReconciliation: true,
-      globalSourceVersion: true,
-      orderedBySubject: true,
-      transactionAware: true,
-      workflowStatus: true,
-    },
-    dispatch: vi.fn(() => Promise.resolve({ operationId: 'op-1', state: 'queued' as const })),
-    getOperation: vi.fn(() => Promise.resolve(null)),
-    health: vi.fn(() =>
-      Promise.resolve({
-        checkedAt: '2026-08-29T12:00:00.000Z',
-        status: 'ok' as const,
-      }),
-    ),
-  },
+  async: minimalAdapter,
   dataSourceId: '987654321',
+  getCredentials: () =>
+    Promise.resolve({
+      type: 'json',
+      credentials: { client_email: 'merchant@example.com', private_key: 'secret' },
+    }),
+  merchantId: '123456',
+  products: {
+    collection: 'products',
+    project: () => ({ products: [], sourceVersion: '1' }),
+    resolveIdentities: () => [],
+  },
+  workerAccess: () => true,
+}
+
+const validOptions = (): PayloadGmcEcommerceV2Options => ({
+  ...baseOptions,
+  async: { ...minimalAdapter, capabilities: {} },
   feeds: [
     {
       id: 'primary',
@@ -36,82 +44,62 @@ const validOptions = (): PayloadGmcEcommerceV2Options => ({
       selector: { contentLanguage: 'en', feedLabel: 'US' },
     },
   ],
-  getCredentials: () =>
-    Promise.resolve({
-      type: 'json',
-      credentials: { client_email: 'merchant@example.com', private_key: 'secret' },
-    }),
-  merchantId: '123456',
-  productIngestion: { mode: 'api-primary' },
-  products: {
-    collection: 'products',
-    project: () => ({ products: [], sourceVersion: '1' }),
-    resolveIdentities: () => [],
-  },
-  workerAccess: () => true,
+  products: { ...baseOptions.products },
 })
 
 describe('normalizeGmcV2Options', () => {
-  it('requires an explicit API-primary Merchant ingestion authority', () => {
-    const missing = validOptions() as unknown as Record<string, unknown>
-    delete missing.productIngestion
-    expect(() => normalizeGmcV2Options(missing as never)).toThrow(/api-primary/i)
-
-    const filePrimary = validOptions() as unknown as Record<string, unknown>
-    filePrimary.productIngestion = { mode: 'file-primary' }
-    expect(() => normalizeGmcV2Options(filePrimary as never)).toThrow(/api-primary/i)
+  it('accepts an adapter with only dispatch/getOperation/health', () => {
+    const options = normalizeGmcV2Options({
+      ...baseOptions,
+      async: { name: 'x', dispatch, getOperation, health },
+    })
+    expect(options.async.name).toBe('x')
   })
 
-  it('fails closed unless the host declares every durability guarantee', () => {
-    const options = validOptions()
-    const unsafe = {
-      ...options,
-      async: {
-        ...options.async,
-        capabilities: { ...options.async.capabilities, transactionAware: false },
-      },
-    } as unknown as PayloadGmcEcommerceV2Options
+  it('ignores rc.35 capability flags', () => {
+    expect(() =>
+      normalizeGmcV2Options({
+        ...baseOptions,
+        async: { ...minimalAdapter, capabilities: { durable: true, globalSourceVersion: true } },
+      }),
+    ).not.toThrow()
+  })
 
-    expect(() => normalizeGmcV2Options(unsafe)).toThrow(/durable, transaction-aware/i)
+  it('defaults feeds to an empty array', () => {
+    expect(normalizeGmcV2Options({ ...baseOptions, feeds: undefined }).feeds).toEqual([])
+  })
 
-    const noWorkflowStatus = {
-      ...options,
-      async: {
-        ...options.async,
-        capabilities: { ...options.async.capabilities, workflowStatus: false },
-      },
-    } as unknown as PayloadGmcEcommerceV2Options
-    expect(() => normalizeGmcV2Options(noWorkflowStatus)).toThrow(/aggregate workflow status/i)
+  it('requires workerAccess only when the worker endpoint is exposed', () => {
+    expect(() => normalizeGmcV2Options({ ...baseOptions, workerAccess: undefined })).not.toThrow()
+    expect(() =>
+      normalizeGmcV2Options({
+        ...baseOptions,
+        api: { exposeWorkerEndpoint: true },
+        workerAccess: undefined,
+      }),
+    ).toThrow(/workerAccess/)
+  })
 
-    const noGlobalSourceVersion = {
-      ...options,
-      async: {
-        ...options.async,
-        capabilities: { ...options.async.capabilities, globalSourceVersion: false },
-      },
-    } as unknown as PayloadGmcEcommerceV2Options
-    expect(() => normalizeGmcV2Options(noGlobalSourceVersion)).toThrow(/global source version/i)
+  it('still requires scheduledDelivery for scheduleAt dependencies', () => {
+    expect(() =>
+      normalizeGmcV2Options({
+        ...baseOptions,
+        catalogDependencies: [{ collection: 'promos', scheduleAt: () => [], select: () => null }],
+      }),
+    ).toThrow(/scheduledDelivery/)
+  })
 
-    const noExclusiveReconciliation = {
-      ...options,
-      async: {
-        ...options.async,
-        capabilities: {
-          ...options.async.capabilities,
-          exclusiveCatalogReconciliation: false,
-        },
-      },
-    } as unknown as PayloadGmcEcommerceV2Options
-    expect(() => normalizeGmcV2Options(noExclusiveReconciliation)).toThrow(
-      /exclusive catalog reconciliation/i,
-    )
+  it('defaults requireTransaction to false and access to the default plugin access', () => {
+    const options = normalizeGmcV2Options({ ...baseOptions, access: undefined })
+    expect(options.requireTransaction).toBe(false)
+    expect(typeof options.access).toBe('function')
   })
 
   it('requires immutable artifact read-back before promotion', () => {
     const options = validOptions()
     options.feeds = [
       {
-        ...options.feeds[0],
+        ...options.feeds![0],
         artifactStore: {
           promote: vi.fn(),
           put: vi.fn(),
@@ -138,7 +126,7 @@ describe('normalizeGmcV2Options', () => {
 
   it('rejects ambiguous feed routing', () => {
     const options = validOptions()
-    options.feeds.push({
+    options.feeds!.push({
       id: 'second',
       access: 'public',
       delivery: 'dynamic',
@@ -151,8 +139,8 @@ describe('normalizeGmcV2Options', () => {
   it('rejects feed endpoints inside the reserved API namespace', () => {
     const options = validOptions()
     options.api = { basePath: '/merchant/v2' }
-    options.feeds[0] = {
-      ...options.feeds[0],
+    options.feeds![0] = {
+      ...options.feeds![0],
       path: '/merchant/v2/operations/feed.tsv',
     }
 
@@ -161,7 +149,7 @@ describe('normalizeGmcV2Options', () => {
 
   it('requires static API and feed paths', () => {
     const dynamicFeed = validOptions()
-    dynamicFeed.feeds[0] = { ...dynamicFeed.feeds[0], path: '/feeds/:tenant/google.tsv' }
+    dynamicFeed.feeds![0] = { ...dynamicFeed.feeds![0], path: '/feeds/:tenant/google.tsv' }
     expect(() => normalizeGmcV2Options(dynamicFeed)).toThrow(/feed .* path must be static/i)
 
     const dynamicApi = validOptions()
@@ -183,11 +171,11 @@ describe('normalizeGmcV2Options', () => {
     expect(() => normalizeGmcV2Options(overflowingMerchant)).toThrow(/canonical int64/i)
 
     const unsafeFeed = validOptions()
-    unsafeFeed.feeds[0].id = '../feed'
+    unsafeFeed.feeds![0].id = '../feed'
     expect(() => normalizeGmcV2Options(unsafeFeed)).toThrow(/object-key safe/i)
 
     const dotFeed = validOptions()
-    dotFeed.feeds[0].id = '..'
+    dotFeed.feeds![0].id = '..'
     expect(() => normalizeGmcV2Options(dotFeed)).toThrow(/object-key safe/i)
 
     const dotInstance = validOptions()
@@ -195,7 +183,7 @@ describe('normalizeGmcV2Options', () => {
     expect(() => normalizeGmcV2Options(dotInstance)).toThrow(/instanceId/i)
 
     const unsafeFormat = validOptions()
-    unsafeFormat.feeds[0].format = { id: '..', serialize: vi.fn() }
+    unsafeFormat.feeds![0].format = { id: '..', serialize: vi.fn() }
     expect(() => normalizeGmcV2Options(unsafeFormat)).toThrow(/format.id/i)
 
     const unbounded = validOptions()
@@ -230,7 +218,7 @@ describe('normalizeGmcV2Options', () => {
     expect(() => normalizeGmcV2Options(reconciliation)).toThrow(/exclusive-data-sources/i)
   })
 
-  it('rejects malformed nested configuration and incomplete custom state stores', () => {
+  it('rejects malformed nested configuration', () => {
     const primitiveRateLimit = validOptions() as unknown as Record<string, unknown>
     primitiveRateLimit.rateLimit = 'defaults-please'
     expect(() => normalizeGmcV2Options(primitiveRateLimit as never)).toThrow(
@@ -244,24 +232,6 @@ describe('normalizeGmcV2Options', () => {
     expect(() => normalizeGmcV2Options(primitiveLimits as never)).toThrow(
       /feeds\[\]\.limits must be an object/i,
     )
-
-    const incompleteStore = validOptions()
-    incompleteStore.publicationState = {
-      store: { get: vi.fn() } as never,
-    }
-    expect(() => normalizeGmcV2Options(incompleteStore)).toThrow(
-      /publicationState\.store is missing required operations/i,
-    )
-
-    const incompleteLocalStore = validOptions()
-    incompleteLocalStore.localInventory = {
-      project: () => [],
-      publicationState: { store: { get: vi.fn() } as never },
-      storeCodes: ['store-1'],
-    }
-    expect(() => normalizeGmcV2Options(incompleteLocalStore)).toThrow(
-      /localInventory\.publicationState\.store is missing required operations/i,
-    )
   })
 
   it('normalizes Business Profile store codes and enforces the published 64-character limit', () => {
@@ -271,7 +241,7 @@ describe('normalizeGmcV2Options', () => {
       storeCodes: [' store-1 ', 'x'.repeat(64)],
     }
     expect(normalizeGmcV2Options(options).localInventory).toMatchObject({
-      publicationState: { collectionSlug: 'gmc-local-inventory-publications-v2' },
+      collectionSlug: 'gmc-local-inventory-publications-v2',
       storeCodes: ['store-1', 'x'.repeat(64)],
     })
 
@@ -326,7 +296,7 @@ describe('normalizeGmcV2Options', () => {
     ]
     expect(() => normalizeGmcV2Options(options)).toThrow(/scheduledDelivery/i)
 
-    options.async.capabilities.scheduledDelivery = true
+    options.async.capabilities!.scheduledDelivery = true
     expect(normalizeGmcV2Options(options).catalogDependencies).toHaveLength(1)
 
     options.catalogDependencies[0].resolveProductIds = 'unsafe' as never
@@ -344,7 +314,7 @@ describe('normalizeGmcV2Options', () => {
     ]
     expect(() => normalizeGmcV2Options(options)).toThrow(/scheduledDelivery/i)
 
-    options.async.capabilities.scheduledDelivery = true
+    options.async.capabilities!.scheduledDelivery = true
     expect(normalizeGmcV2Options(options).catalogGlobalDependencies).toHaveLength(1)
 
     options.catalogGlobalDependencies.push({

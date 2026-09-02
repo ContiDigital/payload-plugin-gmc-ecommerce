@@ -122,7 +122,6 @@ export default buildConfig({
         type: 'json',
       }),
       merchantId: process.env.GOOGLE_MERCHANT_ID || '4791568',
-      productIngestion: { mode: 'api-primary' },
       products: {
         collection: 'products',
         project: ({ doc }) => ({
@@ -149,7 +148,6 @@ export default buildConfig({
           { contentLanguage: 'en', feedLabel: 'PRODUCTS', offerId: String(doc.sku) },
         ],
       },
-      workerAccess: () => false,
     }),
   ],
   secret: process.env.PAYLOAD_SECRET || 'gmc-plugin-dev-secret-key-12345',

@@ -32,15 +32,6 @@ const build = (
     api: { exposeWorkerEndpoint: args.exposeWorkerEndpoint },
     async: {
       name: 'test-adapter',
-      capabilities: {
-        delivery: 'at-least-once',
-        durable: true,
-        exclusiveCatalogReconciliation: true,
-        globalSourceVersion: true,
-        orderedBySubject: true,
-        transactionAware: true,
-        workflowStatus: true,
-      },
       dispatch,
       getOperation: vi.fn(() =>
         Promise.resolve({
@@ -63,7 +54,6 @@ const build = (
         credentials: { client_email: 'test@example.com', private_key: 'secret' },
       }),
     merchantId: '123456',
-    productIngestion: { mode: 'api-primary' },
     products: {
       collection: 'products',
       project: ({ doc }) => ({

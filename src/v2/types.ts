@@ -1,4 +1,4 @@
-import type { CollectionSlug, GlobalSlug, Payload, PayloadRequest, Where } from 'payload'
+import type { CollectionSlug, Config, GlobalSlug, Payload, PayloadRequest, Where } from 'payload'
 
 import type {
   AccessFn,
@@ -182,12 +182,6 @@ export type GmcAsyncDispatchArgs = {
    * the command executable before it. It is never used for child commands.
    */
   scheduledFor?: string
-  /**
-   * Causal source version inherited from the root workflow. A descendant must
-   * execute with this exact version even when its own ledger row is allocated
-   * later than an unrelated live canonical event.
-   */
-  sourceVersion?: string
   /** Commands with the same subject must execute in dispatch order. */
   subject: string
 }
@@ -238,29 +232,15 @@ export type GmcAsyncOperation = {
   submittedAt?: string
 }
 
+export type GmcAsyncAdapterCapabilities = {
+  /** Documented expectation; not verified. Default assumed true. */
+  orderedBySubject?: boolean
+  /** Required for catalogDependencies[].scheduleAt. */
+  scheduledDelivery?: boolean
+} & Record<string, unknown> // rc.35 flags are accepted and ignored
+
 export type GmcAsyncAdapter = {
-  capabilities: {
-    delivery: 'at-least-once'
-    durable: true
-    /**
-     * New root catalog.reconcile dispatches are atomically rejected while any
-     * earlier workflow member for the same catalog subject is nonterminal.
-     * Immutable replay of the already-active root remains successful.
-     */
-    exclusiveCatalogReconciliation: true
-    /**
-     * Every immediate root receives a globally monotonic, restore-safe
-     * signed-int64 sequence and every descendant inherits it exactly. Future
-     * registrations receive one freshly persisted sequence at activation.
-     */
-    globalSourceVersion: true
-    orderedBySubject: true
-    /** Durable delayed delivery is available for canonical dependency boundaries. */
-    scheduledDelivery?: true
-    transactionAware: true
-    /** getOperation reports aggregate status across a root operation and every descendant. */
-    workflowStatus: true
-  }
+  capabilities?: GmcAsyncAdapterCapabilities
   dispatch: (args: GmcAsyncDispatchArgs) => Promise<GmcDispatchReceipt>
   getOperation: (args: {
     /** Isolates status reads when one durable adapter serves multiple plugin instances. */
@@ -275,6 +255,8 @@ export type GmcAsyncAdapter = {
     payload: Payload
     req?: PayloadRequest
   }) => Promise<GmcAsyncHealth>
+  /** Optional: add collections/tasks the adapter needs. Called once by the plugin. */
+  install?: (args: { config: Config; options: NormalizedGmcV2Options }) => Config
   name: string
 }
 
@@ -539,14 +521,6 @@ export type GmcV2LocalInventoryConfig = {
     args: { storeCode: string } & GmcProjectionArgs,
   ) => GmcV2LocalInventoryProjection[] | Promise<GmcV2LocalInventoryProjection[]>
   /**
-   * Durable causal state for LocalInventory's whole-resource replacement API.
-   * The default Payload-backed store is installed when no custom store is supplied.
-   */
-  publicationState?: {
-    collectionSlug?: string
-    store?: GmcLocalInventoryPublicationStateStore
-  }
-  /**
    * Stores no longer managed by the host. V2 emits deletes without invoking
    * project(). Retain each code until a complete successful reconciliation
    * proves its formerly owned local inventory has been removed.
@@ -623,7 +597,8 @@ export type GmcCatalogGlobalDependencyConfig = {
 }
 
 export type PayloadGmcEcommerceV2Options = {
-  access: AccessFn
+  /** Default: hasDefaultPluginAccess from server/utilities/access. */
+  access?: AccessFn
   additionalDataSourceIds?: string[]
   api?: {
     basePath?: `/${string}`
@@ -634,7 +609,8 @@ export type PayloadGmcEcommerceV2Options = {
   catalogGlobalDependencies?: GmcCatalogGlobalDependencyConfig[]
   dataSourceId: string
   disabled?: boolean
-  feeds: [GmcFeedConfig, ...GmcFeedConfig[]]
+  /** Optional; defaults to an empty array. */
+  feeds?: GmcFeedConfig[]
   getCredentials: GetCredentialsFn
   /** Durable queue namespace. Defaults to merchantId; set explicitly for multiple installations. */
   instanceId?: string
@@ -645,24 +621,24 @@ export type PayloadGmcEcommerceV2Options = {
    */
   localInventory?: GmcV2LocalInventoryConfig
   merchantId: string
-  /**
-   * V2 uses one API-backed primary product data source as the sole Merchant
-   * ingestion authority. Canonical feeds remain export/read-model endpoints.
-   */
-  productIngestion: {
+  /** @deprecated ignored since 2.0.0. */
+  productIngestion?: {
     mode: 'api-primary'
   }
   products: GmcProductSourceConfig
   publicationState?: {
     collectionSlug?: string
-    store?: GmcPublicationStateStore
   }
   rateLimit?: RateLimitConfig
   reconciliation?: GmcReconciliationConfig
-  workerAccess: GmcWorkerAccessFn
+  /** Fail closed when an automatic hook runs without an ambient transaction. Default false. */
+  requireTransaction?: boolean
+  /** Required iff api.exposeWorkerEndpoint. */
+  workerAccess?: GmcWorkerAccessFn
 }
 
 export type NormalizedGmcV2Options = {
+  access: AccessFn
   api: {
     basePath: `/${string}`
     exposeWorkerEndpoint: boolean
@@ -674,16 +650,10 @@ export type NormalizedGmcV2Options = {
   feeds: GmcFeedConfig[]
   instanceId: string
   localInventory?: {
-    publicationState: {
-      collectionSlug: string
-      store?: GmcLocalInventoryPublicationStateStore
-    }
+    collectionSlug: string
     retiredStoreCodes: string[]
     storeCodes: string[]
-  } & Omit<
-    GmcV2LocalInventoryConfig,
-    'publicationState' | 'retiredStoreCodes' | 'storeCodes'
-  >
+  } & Omit<GmcV2LocalInventoryConfig, 'retiredStoreCodes' | 'storeCodes'>
   merchantId: string
   products: {
     batchSize: number
@@ -693,12 +663,13 @@ export type NormalizedGmcV2Options = {
   } & GmcProductSourceConfig
   publicationState: {
     collectionSlug: string
-    store?: GmcPublicationStateStore
   }
   rateLimit: Pick<RateLimitConfig, 'store'> & Required<Omit<RateLimitConfig, 'store'>>
   reconciliation: Required<GmcReconciliationConfig>
+  requireTransaction: boolean
 } & Omit<
   PayloadGmcEcommerceV2Options,
+  | 'access'
   | 'additionalDataSourceIds'
   | 'api'
   | 'dataSourceId'
@@ -707,10 +678,12 @@ export type NormalizedGmcV2Options = {
   | 'instanceId'
   | 'localInventory'
   | 'merchantId'
+  | 'productIngestion'
   | 'products'
   | 'publicationState'
   | 'rateLimit'
   | 'reconciliation'
+  | 'requireTransaction'
 >
 
 export type GmcCommandExecutionContext = {
@@ -719,14 +692,8 @@ export type GmcCommandExecutionContext = {
   payload: Payload
   /** Root workflow ID read from the host ledger; omitted only for a root command. */
   rootOperationId?: string
-  /**
-   * Durable global root-causal sequence expressed as a non-negative signed
-   * int64. It overrides projector sourceVersion so every canonical change uses
-   * one causal ledger order. Immediate descendants receive the retained root
-   * value; future workflows receive one value retained at activation. A later
-   * child-row ID is a delivery identity, not a newer canonical event.
-   */
-  sourceVersion: string
+  /** @deprecated ignored since 2.0.0; retained so rc.35 workers compile. */
+  sourceVersion?: string
 }
 
 export const GMC_PUBLICATION_STATUSES = [

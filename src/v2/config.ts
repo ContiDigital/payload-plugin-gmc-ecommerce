@@ -6,7 +6,10 @@ import type {
   PayloadGmcEcommerceV2Options,
 } from './types.js'
 
+import { hasDefaultPluginAccess } from '../server/utilities/access.js'
 import { GMC_V2_DEFAULT_FEED_LIMITS } from './feed/limits.js'
+
+const DEFAULT_LOCAL_INVENTORY_COLLECTION_SLUG = 'gmc-local-inventory-publications-v2'
 
 const DEFAULT_RATE_LIMIT = {
   baseRetryDelayMs: 1_000,
@@ -139,24 +142,8 @@ const assertAsyncAdapter = (adapter: GmcAsyncAdapter): void => {
       'payload-plugin-gmc-ecommerce/v2: async.name must contain 1-100 safe characters',
     )
   }
-  const capabilities = adapter.capabilities
-  if (capabilities?.scheduledDelivery !== undefined && capabilities.scheduledDelivery !== true) {
-    throw new TypeError(
-      'payload-plugin-gmc-ecommerce/v2: async.capabilities.scheduledDelivery must be true when declared',
-    )
-  }
-  if (
-    capabilities?.durable !== true ||
-    capabilities.delivery !== 'at-least-once' ||
-    capabilities.exclusiveCatalogReconciliation !== true ||
-    capabilities.globalSourceVersion !== true ||
-    capabilities.orderedBySubject !== true ||
-    capabilities.transactionAware !== true ||
-    capabilities.workflowStatus !== true
-  ) {
-    throw new TypeError(
-      'payload-plugin-gmc-ecommerce/v2: async adapter must declare durable, transaction-aware, at-least-once, ordered-by-subject execution with exclusive catalog reconciliation, a global source version, and aggregate workflow status',
-    )
+  if (adapter.install !== undefined && typeof adapter.install !== 'function') {
+    throw new TypeError('payload-plugin-gmc-ecommerce/v2: async.install must be a function')
   }
 }
 
@@ -376,13 +363,10 @@ export const normalizeGmcV2Options = (
     throw new TypeError('payload-plugin-gmc-ecommerce/v2: disabled must be a boolean')
   }
   if (
-    !options.productIngestion ||
-    typeof options.productIngestion !== 'object' ||
-    options.productIngestion.mode !== 'api-primary'
+    options.requireTransaction !== undefined &&
+    typeof options.requireTransaction !== 'boolean'
   ) {
-    throw new TypeError(
-      'payload-plugin-gmc-ecommerce/v2: productIngestion.mode must explicitly be api-primary',
-    )
+    throw new TypeError('payload-plugin-gmc-ecommerce/v2: requireTransaction must be a boolean')
   }
   if (options.api !== undefined && (typeof options.api !== 'object' || options.api === null)) {
     throw new TypeError('payload-plugin-gmc-ecommerce/v2: api must be an object')
@@ -427,11 +411,16 @@ export const normalizeGmcV2Options = (
   }
 
   assertAsyncAdapter(options.async)
-  if (typeof options.access !== 'function') {
-    throw new TypeError('payload-plugin-gmc-ecommerce/v2: access is required')
+  if (options.access !== undefined && typeof options.access !== 'function') {
+    throw new TypeError('payload-plugin-gmc-ecommerce/v2: access must be a function')
   }
-  if (typeof options.workerAccess !== 'function') {
-    throw new TypeError('payload-plugin-gmc-ecommerce/v2: workerAccess is required')
+  if (options.api?.exposeWorkerEndpoint === true && typeof options.workerAccess !== 'function') {
+    throw new TypeError(
+      'payload-plugin-gmc-ecommerce/v2: workerAccess is required when api.exposeWorkerEndpoint is true',
+    )
+  }
+  if (options.workerAccess !== undefined && typeof options.workerAccess !== 'function') {
+    throw new TypeError('payload-plugin-gmc-ecommerce/v2: workerAccess must be a function')
   }
   if (typeof options.getCredentials !== 'function') {
     throw new TypeError('payload-plugin-gmc-ecommerce/v2: getCredentials is required')
@@ -442,34 +431,10 @@ export const normalizeGmcV2Options = (
   if (typeof options.products.resolveIdentities !== 'function') {
     throw new TypeError('payload-plugin-gmc-ecommerce/v2: products.resolveIdentities is required')
   }
-  if (options.publicationState?.store !== undefined) {
-    const store = options.publicationState.store
-    const requiredOperations = [
-      'claimPublication',
-      'get',
-      'listByProduct',
-      'markDeleted',
-      'markDeletePending',
-      'markFailed',
-      'markObserved',
-      'markPublished',
-    ] as const
-    if (!store || (typeof store !== 'object' && typeof store !== 'function')) {
-      throw new TypeError(
-        'payload-plugin-gmc-ecommerce/v2: publicationState.store must be an object',
-      )
-    }
-    const missing = requiredOperations.filter((operation) => typeof store[operation] !== 'function')
-    if (missing.length > 0) {
-      throw new TypeError(
-        `payload-plugin-gmc-ecommerce/v2: publicationState.store is missing required operation${missing.length === 1 ? '' : 's'}: ${missing.join(', ')}`,
-      )
-    }
+  if (options.feeds !== undefined && !Array.isArray(options.feeds)) {
+    throw new TypeError('payload-plugin-gmc-ecommerce/v2: feeds must be an array')
   }
-  if (!Array.isArray(options.feeds) || options.feeds.length === 0) {
-    throw new TypeError('payload-plugin-gmc-ecommerce/v2: at least one feed is required')
-  }
-  if (options.feeds.length > 100) {
+  if ((options.feeds?.length ?? 0) > 100) {
     throw new TypeError('payload-plugin-gmc-ecommerce/v2: no more than 100 feeds may be configured')
   }
   if (
@@ -507,33 +472,6 @@ export const normalizeGmcV2Options = (
     )
   }
   if (options.localInventory) {
-    if (
-      options.localInventory.publicationState !== undefined &&
-      (typeof options.localInventory.publicationState !== 'object' ||
-        options.localInventory.publicationState === null ||
-        Array.isArray(options.localInventory.publicationState))
-    ) {
-      throw new TypeError(
-        'payload-plugin-gmc-ecommerce/v2: localInventory.publicationState must be an object',
-      )
-    }
-    if (options.localInventory.publicationState?.store !== undefined) {
-      const store = options.localInventory.publicationState.store
-      const requiredOperations = ['claim', 'get', 'markFailed', 'markPublished'] as const
-      if (!store || (typeof store !== 'object' && typeof store !== 'function')) {
-        throw new TypeError(
-          'payload-plugin-gmc-ecommerce/v2: localInventory.publicationState.store must be an object',
-        )
-      }
-      const missing = requiredOperations.filter(
-        (operation) => typeof store[operation] !== 'function',
-      )
-      if (missing.length > 0) {
-        throw new TypeError(
-          `payload-plugin-gmc-ecommerce/v2: localInventory.publicationState.store is missing required operation${missing.length === 1 ? '' : 's'}: ${missing.join(', ')}`,
-        )
-      }
-    }
     if (typeof options.localInventory.project !== 'function') {
       throw new TypeError('payload-plugin-gmc-ecommerce/v2: localInventory.project is required')
     }
@@ -600,7 +538,7 @@ export const normalizeGmcV2Options = (
     if (
       !disabled &&
       dependency.scheduleAt &&
-      options.async.capabilities.scheduledDelivery !== true
+      options.async.capabilities?.scheduledDelivery !== true
     ) {
       throw new TypeError(
         'payload-plugin-gmc-ecommerce/v2: catalog dependency schedules require async.capabilities.scheduledDelivery',
@@ -647,7 +585,7 @@ export const normalizeGmcV2Options = (
       if (
         !disabled &&
         dependency.scheduleAt &&
-        options.async.capabilities.scheduledDelivery !== true
+        options.async.capabilities?.scheduledDelivery !== true
       ) {
         throw new TypeError(
           'payload-plugin-gmc-ecommerce/v2: catalog Global dependency schedules require async.capabilities.scheduledDelivery',
@@ -721,7 +659,7 @@ export const normalizeGmcV2Options = (
     )
   }
   const dataSourceNames = dataSourceIds.map((id) => `accounts/${merchantId}/dataSources/${id}`)
-  const feeds = options.feeds
+  const feeds = (options.feeds ?? [])
     .map((feed) => normalizeFeed(feed, seenIds, seenPaths, apiBasePath))
     .map((feed) => {
       const override = feed.selector.dataSourceOverride
@@ -747,6 +685,7 @@ export const normalizeGmcV2Options = (
 
   return {
     ...options,
+    access: options.access ?? hasDefaultPluginAccess,
     api: {
       basePath: apiBasePath,
       exposeWorkerEndpoint: options.api?.exposeWorkerEndpoint ?? false,
@@ -762,14 +701,7 @@ export const normalizeGmcV2Options = (
     localInventory: options.localInventory
       ? {
           ...options.localInventory,
-          publicationState: {
-            collectionSlug: payloadCollectionSlug(
-              'localInventory.publicationState.collectionSlug',
-              options.localInventory.publicationState?.collectionSlug ??
-                'gmc-local-inventory-publications-v2',
-            ),
-            store: options.localInventory.publicationState?.store,
-          },
+          collectionSlug: DEFAULT_LOCAL_INVENTORY_COLLECTION_SLUG,
           retiredStoreCodes: retiredStoreCodes ?? [],
           storeCodes: storeCodes ?? [],
         }
@@ -798,11 +730,11 @@ export const normalizeGmcV2Options = (
         'publicationState.collectionSlug',
         options.publicationState?.collectionSlug ?? 'gmc-publications-v2',
       ),
-      store: options.publicationState?.store,
     },
     rateLimit: normalizeRateLimit(options.rateLimit),
     reconciliation: {
       orphanDeletion: options.reconciliation?.orphanDeletion ?? 'disabled',
     },
+    requireTransaction: options.requireTransaction ?? false,
   }
 }
