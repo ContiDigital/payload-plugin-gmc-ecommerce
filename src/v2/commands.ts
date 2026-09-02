@@ -54,12 +54,12 @@ const COMMAND_FIELDS: Readonly<Record<string, ReadonlySet<string>>> = {
     'requestedAt',
     'schemaVersion',
     'startedAt',
-    'startedVersion',
     'type',
   ]),
   'dataSources.validate': new Set(['requestedAt', 'schemaVersion', 'type']),
   'feed.build': new Set(['feedId', 'requestedAt', 'schemaVersion', 'type']),
   'localInventory.apply': new Set([
+    'digest',
     'identity',
     'inventory',
     'productId',
@@ -78,23 +78,22 @@ const COMMAND_FIELDS: Readonly<Record<string, ReadonlySet<string>>> = {
     'type',
   ]),
   'offer.delete': new Set([
-    'deleteIfDesiredBefore',
-    'deleteIfDesiredVersionBefore',
     'expectedProductId',
     'identity',
+    'onlyIfDesiredBefore',
     'requestedAt',
     'schemaVersion',
-    'sourceVersion',
     'type',
   ]),
   'offer.publish': new Set([
+    'digest',
     'input',
     'productId',
     'requestedAt',
     'schemaVersion',
-    'sourceVersion',
     'type',
     'verifyRemote',
+    'versionNumber',
   ]),
   'product.delete': new Set([
     'cause',
@@ -114,6 +113,28 @@ const COMMAND_FIELDS: Readonly<Record<string, ReadonlySet<string>>> = {
   ]),
   'status.refresh': new Set(['identities', 'productId', 'requestedAt', 'schemaVersion', 'type']),
 }
+
+/**
+ * Fields that rc.35 workers persisted on durable rows before global source
+ * versions were removed. They no longer affect execution, but a queued row must
+ * still validate for one release rather than becoming a poison message, so they
+ * are accepted here and ignored everywhere else.
+ */
+const IGNORED_LEGACY_FIELDS: Readonly<Record<string, ReadonlySet<string>>> = {
+  'catalog.reconcile': new Set(['startedVersion']),
+  'localInventory.apply': new Set(['desiredVersion', 'sourceVersion']),
+  'offer.delete': new Set([
+    'deleteIfDesiredBefore',
+    'deleteIfDesiredVersionBefore',
+    'deleteVersion',
+    'desiredVersion',
+    'sourceVersion',
+  ]),
+  'offer.publish': new Set(['desiredVersion', 'sourceVersion']),
+}
+
+const isDigest = (value: unknown): value is string =>
+  typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)
 
 const isDocumentID = (value: unknown): value is GmcDocumentID => {
   return (
@@ -222,7 +243,10 @@ export function assertGmcCommand(value: unknown): asserts value is GmcCommand {
   }
 
   const supportedFields = COMMAND_FIELDS[String(value.type)]
-  const unsupportedFields = Object.keys(value).filter((field) => !supportedFields?.has(field))
+  const legacyFields = IGNORED_LEGACY_FIELDS[String(value.type)]
+  const unsupportedFields = Object.keys(value).filter(
+    (field) => !supportedFields?.has(field) && !legacyFields?.has(field),
+  )
   if (unsupportedFields.length > 0) {
     throw new TypeError(
       `${String(value.type)} contains unsupported field${unsupportedFields.length === 1 ? '' : 's'}: ${unsupportedFields.sort().join(', ')}`,
@@ -267,16 +291,18 @@ export function assertGmcCommand(value: unknown): asserts value is GmcCommand {
     if (!isDocumentID(value.productId) || !isRecord(value.input)) {
       throw new TypeError('offer.publish requires productId and input')
     }
-    if (!isGmcNonNegativeInt64String(value.sourceVersion)) {
-      throw new TypeError('offer.publish requires a non-negative signed int64 sourceVersion')
+    if (!isDigest(value.digest)) {
+      throw new TypeError('offer.publish requires a 64-character hexadecimal digest')
+    }
+    if (value.versionNumber !== undefined && !isGmcNonNegativeInt64String(value.versionNumber)) {
+      throw new TypeError(
+        'offer.publish versionNumber must be a non-negative signed int64 string when provided',
+      )
     }
     if (value.verifyRemote !== undefined && typeof value.verifyRemote !== 'boolean') {
       throw new TypeError('offer.publish verifyRemote must be a boolean')
     }
-    canonicalizeProductInput({
-      input: value.input as GmcProjectedProductInput,
-      sourceVersion: value.sourceVersion,
-    })
+    canonicalizeProductInput({ input: value.input as GmcProjectedProductInput })
   }
 
   if (value.type === 'offer.delete') {
@@ -286,19 +312,8 @@ export function assertGmcCommand(value: unknown): asserts value is GmcCommand {
     if (value.expectedProductId !== undefined && !isDocumentID(value.expectedProductId)) {
       throw new TypeError('offer.delete expectedProductId must be a string or finite number')
     }
-    if (value.deleteIfDesiredBefore !== undefined && !isIsoDate(value.deleteIfDesiredBefore)) {
-      throw new TypeError('offer.delete deleteIfDesiredBefore must be an ISO date string')
-    }
-    if (
-      value.deleteIfDesiredVersionBefore !== undefined &&
-      !isGmcNonNegativeInt64String(value.deleteIfDesiredVersionBefore)
-    ) {
-      throw new TypeError(
-        'offer.delete deleteIfDesiredVersionBefore must be a non-negative signed int64 string',
-      )
-    }
-    if (value.sourceVersion !== undefined && !isGmcNonNegativeInt64String(value.sourceVersion)) {
-      throw new TypeError('offer.delete sourceVersion must be a non-negative signed int64 string')
+    if (value.onlyIfDesiredBefore !== undefined && !isIsoDate(value.onlyIfDesiredBefore)) {
+      throw new TypeError('offer.delete onlyIfDesiredBefore must be an ISO date string')
     }
   }
 
@@ -332,14 +347,6 @@ export function assertGmcCommand(value: unknown): asserts value is GmcCommand {
     }
     if (value.startedAt !== undefined && !isIsoDate(value.startedAt)) {
       throw new TypeError('catalog.reconcile startedAt must be an ISO date string')
-    }
-    if (value.startedVersion !== undefined && !isGmcNonNegativeInt64String(value.startedVersion)) {
-      throw new TypeError(
-        'catalog.reconcile startedVersion must be a non-negative signed int64 string',
-      )
-    }
-    if (value.startedVersion !== undefined && value.startedAt === undefined) {
-      throw new TypeError('catalog.reconcile startedVersion requires startedAt')
     }
     if (value.phase === 'remote' && value.startedAt === undefined) {
       throw new TypeError('catalog.reconcile remote phase requires startedAt')
@@ -438,6 +445,9 @@ export function assertGmcCommand(value: unknown): asserts value is GmcCommand {
         'localInventory.apply requires a productId and a storeCode containing 1-64 safe characters',
       )
     }
+    if (!isDigest(value.digest)) {
+      throw new TypeError('localInventory.apply requires a 64-character hexadecimal digest')
+    }
     if (value.inventory !== null) {
       if (!isRecord(value.inventory) || !isRecord(value.inventory.localInventoryAttributes)) {
         throw new TypeError('localInventory.apply inventory is invalid')
@@ -483,7 +493,7 @@ export function assertGmcCommand(value: unknown): asserts value is GmcCommand {
  * same semantic command at a later wall-clock instant and must resolve to the
  * original immutable operation. Every field that can affect execution remains
  * covered, including the command type, schema version, identity, projection,
- * source-version fences, pagination cursors, and reconciliation boundaries.
+ * content digests, pagination cursors, and reconciliation boundaries.
  */
 export const getGmcCommandIdempotencyDigest = (command: GmcCommand): string => {
   assertGmcCommand(command)
@@ -547,38 +557,58 @@ export const createProductDeleteCommand = (args: {
 })
 
 export const createOfferPublishCommand = (args: {
+  digest: string
   input: GmcProjectedProductInput
   productId: GmcDocumentID
   requestedAt?: string
-  sourceVersion: string
   verifyRemote?: boolean
+  versionNumber?: string
 }): GmcOfferPublishCommand => ({
   type: 'offer.publish',
+  digest: args.digest,
   input: args.input,
   productId: args.productId,
   requestedAt: args.requestedAt ?? now(),
   schemaVersion: GMC_V2_COMMAND_SCHEMA_VERSION,
-  sourceVersion: args.sourceVersion,
   verifyRemote: args.verifyRemote,
+  versionNumber: args.versionNumber,
 })
 
 export const createOfferDeleteCommand = (args: {
-  deleteIfDesiredBefore?: string
-  deleteIfDesiredVersionBefore?: string
   expectedProductId?: GmcDocumentID
   identity: MCProductIdentity
+  onlyIfDesiredBefore?: string
   requestedAt?: string
-  sourceVersion?: string
 }): GmcOfferDeleteCommand => ({
   type: 'offer.delete',
-  deleteIfDesiredBefore: args.deleteIfDesiredBefore,
-  deleteIfDesiredVersionBefore: args.deleteIfDesiredVersionBefore,
   expectedProductId: args.expectedProductId,
   identity: args.identity,
+  onlyIfDesiredBefore: args.onlyIfDesiredBefore,
   requestedAt: args.requestedAt ?? now(),
   schemaVersion: GMC_V2_COMMAND_SCHEMA_VERSION,
-  sourceVersion: args.sourceVersion,
 })
+
+/**
+ * Canonical digest of one store-scoped local-inventory resource. The emitter
+ * stamps it on the command so the applying worker claims, writes, and marks
+ * against the exact content it was asked to publish.
+ */
+export const getGmcLocalInventoryDigest = (args: {
+  identity: MCProductIdentity
+  inventory: GmcLocalInventoryInput | null
+  productId: GmcDocumentID
+  storeCode: string
+}): string =>
+  createHash('sha256')
+    .update(
+      canonicalJson({
+        identity: args.identity,
+        inventory: args.inventory,
+        productId: args.productId,
+        storeCode: args.storeCode,
+      }),
+    )
+    .digest('hex')
 
 export const createLocalInventoryApplyCommand = (args: {
   identity: MCProductIdentity
@@ -588,6 +618,7 @@ export const createLocalInventoryApplyCommand = (args: {
   storeCode: string
 }): GmcLocalInventoryApplyCommand => ({
   type: 'localInventory.apply',
+  digest: getGmcLocalInventoryDigest(args),
   identity: args.identity,
   inventory: args.inventory,
   productId: args.productId,

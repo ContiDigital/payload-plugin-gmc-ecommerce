@@ -458,6 +458,8 @@ describe('GMC v2 endpoints', () => {
       )
     expect(invalidVersion?.status).toBe(400)
 
+    // sourceVersion is deprecated and optional: a worker that no longer sends
+    // one must still execute.
     const missingVersion = await build({ exposeWorkerEndpoint: true, workerAccess: true })
       .endpoints.find((candidate) => candidate.path.endsWith('/worker/execute'))
       ?.handler(
@@ -474,7 +476,7 @@ describe('GMC v2 endpoints', () => {
           payload: test.payload,
         }),
       )
-    expect(missingVersion?.status).toBe(400)
+    expect(missingVersion?.status).toBe(200)
   })
 
   it('propagates root workflow lineage through the optional worker bridge', async () => {

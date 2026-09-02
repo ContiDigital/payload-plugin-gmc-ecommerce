@@ -75,7 +75,6 @@ export const collectCanonicalProducts = async (args: {
   payload: Payload
   projectionTime?: string
   selector?: GmcFeedSelector
-  sourceVersion?: string
 }): Promise<GmcCanonicalProduct[]> => {
   const products: GmcCanonicalProduct[] = []
   let projectedBytes = 0
@@ -104,15 +103,11 @@ export const collectCanonicalProducts = async (args: {
       if (typeof doc._status === 'string' && doc._status !== 'published') {
         continue
       }
-      const rawProjection = await args.options.products.project({
+      const projection = await args.options.products.project({
         doc,
         payload: args.payload,
         projectionTime,
       })
-      const projection =
-        args.sourceVersion === undefined
-          ? rawProjection
-          : { ...rawProjection, sourceVersion: args.sourceVersion }
       const canonical = canonicalizeProjection(projection).products
       for (const product of canonical) {
         product.identity = normalizeGmcIdentityRoute(product.identity, args.options)

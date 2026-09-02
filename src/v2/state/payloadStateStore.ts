@@ -222,6 +222,16 @@ export const createPayloadPublicationStateStore = (args: {
       if (existing.desiredAt != null && existing.desiredAt > claim.desiredAt) {
         return toState(existing)
       }
+      // Deletion is itself a desired state stamped at `deletedAt`. A publish
+      // claim from that same instant is not newer evidence, so a tie must not
+      // resurrect a deleted offer either.
+      if (
+        existing.status === 'deleted' &&
+        existing.desiredAt != null &&
+        existing.desiredAt >= claim.desiredAt
+      ) {
+        return toState(existing)
+      }
 
       const alreadyPublished =
         existing.status === 'published' && existing.publishedDigest === claim.desiredDigest
@@ -368,7 +378,7 @@ export const createPayloadPublicationStateStore = (args: {
       } while (cursor !== undefined)
       return states
     },
-    markDeleted: async ({ identity, operationId, payload, productId }) => {
+    markDeleted: async ({ deletedAt, identity, operationId, payload, productId }) => {
       for (let attempt = 0; attempt < MAX_CONTENTION_ATTEMPTS; attempt++) {
         const existing = await findDocument(payload, identity)
         if (!existing) {
@@ -376,6 +386,7 @@ export const createPayloadPublicationStateStore = (args: {
             return toState(
               await payloadCreate(payload, {
                 ...identityColumns(identity),
+                desiredAt: deletedAt,
                 operationId,
                 productId: productId === undefined ? undefined : String(productId),
                 revision: 0,
@@ -392,8 +403,11 @@ export const createPayloadPublicationStateStore = (args: {
         if (existing.status === 'deleted' || existing.operationId !== operationId) {
           return toState(existing)
         }
+        // `desiredAt` keeps the deletion instant rather than being cleared: a
+        // publish claim requested at or before it is stale evidence and must
+        // not resurrect the offer.
         const updated = await payloadUpdateIfCurrent(payload, existing, {
-          desiredAt: null,
+          desiredAt: deletedAt,
           desiredDigest: null,
           error: null,
           operationId,
@@ -407,7 +421,14 @@ export const createPayloadPublicationStateStore = (args: {
       }
       throw contended(identity)
     },
-    markDeletePending: async ({ identity, onlyIfDesiredBefore, operationId, payload, productId }) => {
+    markDeletePending: async ({
+      deletedAt,
+      identity,
+      onlyIfDesiredBefore,
+      operationId,
+      payload,
+      productId,
+    }) => {
       for (let attempt = 0; attempt < MAX_CONTENTION_ATTEMPTS; attempt++) {
         const existing = await findDocument(payload, identity)
         // A reconciliation sweep may only remove identities the projection had
@@ -433,6 +454,7 @@ export const createPayloadPublicationStateStore = (args: {
             return toState(
               await payloadCreate(payload, {
                 ...identityColumns(identity),
+                desiredAt: deletedAt,
                 operationId,
                 productId: productId === undefined ? undefined : String(productId),
                 revision: 0,
@@ -454,7 +476,7 @@ export const createPayloadPublicationStateStore = (args: {
           return toState(existing)
         }
         const updated = await payloadUpdateIfCurrent(payload, existing, {
-          desiredAt: null,
+          desiredAt: deletedAt,
           desiredDigest: null,
           error: null,
           operationId,

@@ -1,114 +1,20 @@
 import type { Payload } from 'payload'
 
-import { ValidationError } from 'payload'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
-import {
-  atomicUpdatePublicationState,
-  toSnakeCase,
-} from '../state/atomicStateUpdate.js'
+import { atomicUpdatePublicationState, toSnakeCase } from '../state/atomicStateUpdate.js'
 import {
   createPayloadPublicationStateStore,
   GmcIdentityOwnershipError,
 } from '../state/payloadStateStore.js'
+import { createPayloadStateDouble } from './helpers/memoryStateStore.js'
 
 const COLLECTION = 'gmc-publications-v2'
 const identity = { contentLanguage: 'en', feedLabel: 'US', offerId: 'sku-1' }
+const DELETED_AT = '2026-08-29T12:05:00.000Z'
 
-type Doc = { id: number } & Record<string, unknown>
-
-const matches = (doc: Record<string, unknown>, where: Record<string, unknown>): boolean => {
-  if (Array.isArray(where.and)) {
-    return where.and.every((entry) => matches(doc, entry as Record<string, unknown>))
-  }
-  return Object.entries(where).every(([field, condition]) => {
-    const predicate = condition as {
-      equals?: unknown
-      greater_than?: unknown
-      not_equals?: unknown
-    }
-    if ('equals' in predicate) {
-      if (predicate.equals === null) {
-        return doc[field] === null || doc[field] === undefined
-      }
-      return doc[field] === predicate.equals
-    }
-    if ('greater_than' in predicate) {
-      if (typeof doc[field] === 'number' && typeof predicate.greater_than === 'number') {
-        return doc[field] > predicate.greater_than
-      }
-      return String(doc[field]).localeCompare(String(predicate.greater_than)) > 0
-    }
-    if ('not_equals' in predicate) {
-      return doc[field] !== predicate.not_equals
-    }
-    return true
-  })
-}
-
-/**
- * A Mongo-shaped Payload double. `create` rejects a duplicate `key` with the
- * error the real adapters raise: field validation runs before the driver, so a
- * unique collision surfaces as a Payload `ValidationError`, never as a driver
- * duplicate-key code.
- */
-const payloadDouble = (options: { beforeFind?: () => Promise<void> } = {}) => {
-  const docs: Doc[] = []
-  let id = 0
-  const update = vi.fn(
-    (args: {
-      data: Record<string, unknown>
-      where: { and: Array<Record<string, { equals: unknown }>> }
-    }) => {
-      const criteria = Object.fromEntries(
-        args.where.and.flatMap((condition) =>
-          Object.entries(condition).map(([field, value]) => [field, value.equals]),
-        ),
-      )
-      const index = docs.findIndex((doc) =>
-        Object.entries(criteria).every(([field, value]) => doc[field] === value),
-      )
-      if (index < 0) {
-        return Promise.resolve(null)
-      }
-      docs[index] = { ...docs[index], ...args.data }
-      return Promise.resolve(docs[index])
-    },
-  )
-  const create = vi.fn((args: { data: Record<string, unknown> }) => {
-    if (docs.some((doc) => doc.key === args.data.key)) {
-      return Promise.reject(
-        new ValidationError({
-          collection: COLLECTION,
-          errors: [{ label: 'Key', message: 'Value must be unique', path: 'key' }],
-        }),
-      )
-    }
-    const now = new Date().toISOString()
-    const doc = { revision: 0, ...args.data, id: ++id, createdAt: now, updatedAt: now } as Doc
-    docs.push(doc)
-    return Promise.resolve(doc)
-  })
-  const find = vi.fn(
-    async (args: { limit?: number; page?: number; where?: Record<string, unknown> }) => {
-      await options.beforeFind?.()
-      const filtered = docs.filter((doc) => matches(doc, args.where ?? {}))
-      const limit = args.limit ?? 10
-      const page = args.page ?? 1
-      const start = (page - 1) * limit
-      return {
-        docs: filtered.slice(start, start + limit),
-        hasNextPage: start + limit < filtered.length,
-      }
-    },
-  )
-  const payload = {
-    create,
-    db: { name: 'mongoose', updateOne: update },
-    find,
-  } as unknown as Payload
-  return { create, docs, find, payload, update }
-}
+const payloadDouble = (options: { beforeFind?: () => Promise<void> } = {}) =>
+  createPayloadStateDouble({ beforeFind: options.beforeFind, collectionSlug: COLLECTION })
 
 const newStore = () =>
   createPayloadPublicationStateStore({
@@ -289,6 +195,7 @@ describe('Payload publication state store', () => {
 
     await expect(
       store.markDeletePending({
+        deletedAt: DELETED_AT,
         identity,
         onlyIfDesiredBefore: '2026-08-29T12:00:00.000Z',
         operationId: 'reconcile-1',
@@ -306,15 +213,21 @@ describe('Payload publication state store', () => {
     await store.claimPublication(claim(test.payload, { desiredAt: '2026-08-29T11:59:59.000Z' }))
 
     const pending = await store.markDeletePending({
+      deletedAt: DELETED_AT,
       identity,
       onlyIfDesiredBefore: '2026-08-29T12:00:00.000Z',
       operationId: 'reconcile-1',
       payload: test.payload,
     })
-    expect(pending).toMatchObject({ desiredAt: undefined, status: 'delete-pending' })
+    expect(pending).toMatchObject({ desiredAt: DELETED_AT, status: 'delete-pending' })
 
     await expect(
-      store.markDeleted({ identity, operationId: 'reconcile-1', payload: test.payload }),
+      store.markDeleted({
+        deletedAt: DELETED_AT,
+        identity,
+        operationId: 'reconcile-1',
+        payload: test.payload,
+      }),
     ).resolves.toMatchObject({ publishedDigest: undefined, status: 'deleted' })
   })
 
@@ -325,6 +238,7 @@ describe('Payload publication state store', () => {
 
     await expect(
       store.markDeletePending({
+        deletedAt: DELETED_AT,
         identity,
         operationId: 'delete-1',
         payload: test.payload,
@@ -338,10 +252,20 @@ describe('Payload publication state store', () => {
     const store = newStore()
 
     await expect(
-      store.markDeletePending({ identity, operationId: 'orphan-1', payload: test.payload }),
+      store.markDeletePending({
+        deletedAt: DELETED_AT,
+        identity,
+        operationId: 'orphan-1',
+        payload: test.payload,
+      }),
     ).resolves.toMatchObject({ revision: 0, status: 'delete-pending' })
     await expect(
-      store.markDeletePending({ identity, operationId: 'orphan-2', payload: test.payload }),
+      store.markDeletePending({
+        deletedAt: DELETED_AT,
+        identity,
+        operationId: 'orphan-2',
+        payload: test.payload,
+      }),
     ).resolves.toMatchObject({ status: 'delete-pending' })
   })
 
@@ -350,12 +274,14 @@ describe('Payload publication state store', () => {
     const store = newStore()
     await store.claimPublication(claim(test.payload))
     await store.markDeletePending({
+      deletedAt: DELETED_AT,
       identity,
       operationId: 'delete-1',
       payload: test.payload,
       productId: 'product-1',
     })
     const deleted = await store.markDeleted({
+      deletedAt: DELETED_AT,
       identity,
       operationId: 'delete-1',
       payload: test.payload,
@@ -379,17 +305,98 @@ describe('Payload publication state store', () => {
     })
   })
 
-  it('lets a reconciliation sweep re-enter delete-pending on an already-deleted row', async () => {
+  it('stamps a deletion instant so a stale publish claim can never resurrect it', async () => {
     const test = payloadDouble()
     const store = newStore()
     await store.claimPublication(claim(test.payload))
     await store.markDeletePending({
+      deletedAt: DELETED_AT,
+      identity,
+      operationId: 'delete-1',
+      payload: test.payload,
+      productId: 'product-1',
+    })
+    await expect(
+      store.markDeleted({
+        deletedAt: DELETED_AT,
+        identity,
+        operationId: 'delete-1',
+        payload: test.payload,
+        productId: 'product-1',
+      }),
+    ).resolves.toMatchObject({ desiredAt: DELETED_AT, desiredDigest: undefined, status: 'deleted' })
+
+    // The offer.publish redelivery below was requested before the delete and
+    // must be reported back unchanged rather than re-arming a publish.
+    await expect(
+      store.claimPublication(
+        claim(test.payload, {
+          desiredAt: '2026-08-29T12:04:00.000Z',
+          desiredDigest: 'digest-stale',
+          operationId: 'stale-publish',
+        }),
+      ),
+    ).resolves.toMatchObject({ operationId: 'delete-1', status: 'deleted' })
+    // An equal instant is also refused: deletion is the desired state at that
+    // instant, and a tie must not reopen it.
+    await expect(
+      store.claimPublication(
+        claim(test.payload, {
+          desiredAt: DELETED_AT,
+          desiredDigest: 'digest-tie',
+          operationId: 'tie-publish',
+        }),
+      ),
+    ).resolves.toMatchObject({ operationId: 'delete-1', status: 'deleted' })
+  })
+
+  it('accepts a publish claim requested after the deletion instant', async () => {
+    const test = payloadDouble()
+    const store = newStore()
+    await store.claimPublication(claim(test.payload))
+    await store.markDeletePending({
+      deletedAt: DELETED_AT,
       identity,
       operationId: 'delete-1',
       payload: test.payload,
       productId: 'product-1',
     })
     await store.markDeleted({
+      deletedAt: DELETED_AT,
+      identity,
+      operationId: 'delete-1',
+      payload: test.payload,
+      productId: 'product-1',
+    })
+
+    await expect(
+      store.claimPublication(
+        claim(test.payload, {
+          desiredAt: '2026-08-29T12:06:00.000Z',
+          desiredDigest: 'digest-new',
+          operationId: 'newer-publish',
+        }),
+      ),
+    ).resolves.toMatchObject({
+      desiredDigest: 'digest-new',
+      operationId: 'newer-publish',
+      status: 'publish-pending',
+    })
+  })
+
+  it('lets a reconciliation sweep re-enter delete-pending on an already-deleted row', async () => {
+    const test = payloadDouble()
+    const store = newStore()
+    await store.claimPublication(claim(test.payload))
+    await store.markDeletePending({
+      deletedAt: DELETED_AT,
+      identity,
+      operationId: 'delete-1',
+      payload: test.payload,
+      productId: 'product-1',
+    })
+    await store.markDeleted({
+      deletedAt: DELETED_AT,
       identity,
       operationId: 'delete-1',
       payload: test.payload,
@@ -403,6 +410,7 @@ describe('Payload publication state store', () => {
     // be able to re-arm the delete rather than being told the row is done.
     await expect(
       store.markDeletePending({
+        deletedAt: DELETED_AT,
         identity,
         onlyIfDesiredBefore: '2026-08-29T13:00:00.000Z',
         operationId: 'reconcile-orphan',
@@ -417,12 +425,14 @@ describe('Payload publication state store', () => {
     const store = newStore()
     await store.claimPublication(claim(test.payload))
     await store.markDeletePending({
+      deletedAt: DELETED_AT,
       identity,
       operationId: 'delete-1',
       payload: test.payload,
       productId: 'product-1',
     })
     await store.markDeleted({
+      deletedAt: DELETED_AT,
       identity,
       operationId: 'delete-1',
       payload: test.payload,
@@ -432,6 +442,7 @@ describe('Payload publication state store', () => {
 
     await expect(
       store.markDeletePending({
+        deletedAt: DELETED_AT,
         identity,
         operationId: 'delete-2',
         payload: test.payload,
@@ -446,6 +457,7 @@ describe('Payload publication state store', () => {
     const store = newStore()
     await store.claimPublication(claim(test.payload))
     await store.markDeletePending({
+      deletedAt: DELETED_AT,
       identity,
       operationId: 'delete-operation',
       payload: test.payload,
@@ -453,7 +465,7 @@ describe('Payload publication state store', () => {
     })
     await store.claimPublication(
       claim(test.payload, {
-        desiredAt: '2026-08-29T12:01:00.000Z',
+        desiredAt: '2026-08-29T12:06:00.000Z',
         desiredDigest: 'digest-2',
         operationId: 'publish-operation',
       }),
@@ -461,6 +473,7 @@ describe('Payload publication state store', () => {
 
     await expect(
       store.markDeleted({
+        deletedAt: DELETED_AT,
         identity,
         operationId: 'delete-operation',
         payload: test.payload,
@@ -474,7 +487,12 @@ describe('Payload publication state store', () => {
     const store = newStore()
 
     await expect(
-      store.markDeleted({ identity, operationId: 'delete-1', payload: test.payload }),
+      store.markDeleted({
+        deletedAt: DELETED_AT,
+        identity,
+        operationId: 'delete-1',
+        payload: test.payload,
+      }),
     ).resolves.toMatchObject({ status: 'deleted' })
   })
 
@@ -586,12 +604,14 @@ describe('Payload publication state store', () => {
 
     const deletedIdentity = { ...identity, offerId: 'sku-000' }
     await store.markDeletePending({
+      deletedAt: DELETED_AT,
       identity: deletedIdentity,
       operationId: 'delete-sku-000',
       payload: test.payload,
       productId: 'product-1',
     })
     await store.markDeleted({
+      deletedAt: DELETED_AT,
       identity: deletedIdentity,
       operationId: 'delete-sku-000',
       payload: test.payload,
@@ -750,7 +770,12 @@ describe('atomicUpdatePublicationState', () => {
   const existing = { id: 7, key: 'k', revision: 3, status: 'publish-pending' }
 
   const drizzleDouble = (name: 'postgres' | 'sqlite', rows: Array<{ id: number }>) => {
-    const table = { id: { column: 'id' }, revision: { column: 'revision' }, status: { column: 'status' }, updatedAt: { column: 'updated_at' } }
+    const table = {
+      id: { column: 'id' },
+      revision: { column: 'revision' },
+      status: { column: 'status' },
+      updatedAt: { column: 'updated_at' },
+    }
     const captured: { columns?: Record<string, unknown>; where?: unknown } = {}
     const payload = {
       db: {

@@ -13,7 +13,7 @@ const asyncAdapter: GmcAsyncAdapter = {
   capabilities: {
     delivery: 'at-least-once',
     durable: true,
-        exclusiveCatalogReconciliation: true,
+    exclusiveCatalogReconciliation: true,
     globalSourceVersion: true,
     orderedBySubject: true,
     transactionAware: true,
@@ -127,10 +127,9 @@ describe('canonical catalog collection', () => {
         options,
         payload,
         projectionTime: '2026-08-29T12:00:00.000Z',
-        sourceVersion: '2000000000000001',
       })
 
-      expect(products[0]?.sourceVersion).toBe('2000000000000001')
+      expect(products).toHaveLength(1)
       expect(project).toHaveBeenCalledWith(
         expect.objectContaining({
           projectionTime: '2026-08-29T12:00:00.000Z',

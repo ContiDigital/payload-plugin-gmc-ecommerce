@@ -150,7 +150,15 @@ const assertNoRequestBody = (req: PayloadRequest): void => {
   }
 }
 
-const requireSourceVersion = (value: unknown): string => {
+/**
+ * `sourceVersion` is @deprecated and ignored by the executor. An rc.35 worker
+ * may still send one, so it is accepted when well-formed and rejected when
+ * malformed rather than being silently reinterpreted.
+ */
+const parseLegacySourceVersion = (value: unknown): string | undefined => {
+  if (value === undefined) {
+    return undefined
+  }
   if (!isGmcNonNegativeInt64String(value)) {
     throw new GmcHttpError(400, 'sourceVersion must be a non-negative signed int64 string')
   }
@@ -556,7 +564,7 @@ const createWorkerEndpoint = (options: NormalizedGmcV2Options): Endpoint => {
       }
       const rootOperationId =
         body.rootOperationId === undefined ? undefined : requireOperationId(body.rootOperationId)
-      const sourceVersion = requireSourceVersion(body.sourceVersion)
+      const sourceVersion = parseLegacySourceVersion(body.sourceVersion)
       return jsonResponse(
         await execute({
           command: body.command,

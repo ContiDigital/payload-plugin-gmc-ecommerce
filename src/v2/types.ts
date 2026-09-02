@@ -61,27 +61,25 @@ export type GmcProductDeleteCommand = {
 
 /** Internal durable transport command emitted by product.publish. */
 export type GmcOfferPublishCommand = {
+  /** Canonical content digest of `input`; the only publication ordering key. */
+  digest: string
   input: GmcProjectedProductInput
   productId: GmcDocumentID
-  sourceVersion: string
   /** Reconciliation verifies remote existence before applying the local idempotency shortcut. */
   verifyRemote?: boolean
+  /**
+   * Google's optimistic `ProductInput.versionNumber`, forwarded only when the
+   * host projector supplies its own `sourceVersion`. Omitted otherwise.
+   */
+  versionNumber?: string
 } & GmcCommandBase<'offer.publish'>
 
-/** Internal durable transport command emitted by product.delete/publish. */
+/** Internal durable transport command emitted by product.publish/delete. */
 export type GmcOfferDeleteCommand = {
-  /** Reconciliation CAS: skip deletion when a desired claim exists at or after this instant. */
-  deleteIfDesiredBefore?: string
-  /** Sequence equivalent of deleteIfDesiredBefore when the host provides global ordering. */
-  deleteIfDesiredVersionBefore?: string
   expectedProductId?: GmcDocumentID
   identity: MCProductIdentity
-  /**
-   * Monotonic source version which proved this identity is absent. The
-   * publication store retains it as a deletion fence so an older/equal
-   * publish can never resurrect a stale offer after cross-subject races.
-   */
-  sourceVersion?: string
+  /** Reconciliation CAS: skip deletion when a desired claim exists at or after this instant. */
+  onlyIfDesiredBefore?: string
 } & GmcCommandBase<'offer.delete'>
 
 export type GmcCatalogPublishCommand = {
@@ -105,8 +103,6 @@ export type GmcCatalogReconcileCommand = {
   phase?: 'desired' | 'remote'
   /** Stable lower bound for desired-state marks produced by this reconciliation. */
   startedAt?: string
-  /** Durable global execution sequence captured by the root reconciliation. */
-  startedVersion?: string
 } & GmcCommandBase<'catalog.reconcile'>
 
 /** Non-mutating durable deployment preflight for every configured API source. */
@@ -130,6 +126,8 @@ export type GmcLocalInventoryReconcileCommand = {
 } & GmcCommandBase<'localInventory.reconcile'>
 
 export type GmcLocalInventoryApplyCommand = {
+  /** Canonical digest of the desired store-scoped resource; the only ordering key. */
+  digest: string
   identity: MCProductIdentity
   inventory: GmcLocalInventoryInput | null
   /** Canonical owner retained for durable per-offer/store fencing and diagnostics. */
@@ -296,8 +294,12 @@ export type GmcProjectedProductInput = {
  */
 export type GmcProductProjection = {
   products: GmcProjectedProductInput[]
-  /** Monotonic non-negative integer forwarded as ProductInput.versionNumber. */
-  sourceVersion: string
+  /**
+   * Optional monotonic non-negative integer forwarded as
+   * `ProductInput.versionNumber`. Ordering never depends on it: the executor
+   * and the publication store order by `desiredAt` and skip by content digest.
+   */
+  sourceVersion?: string
   warnings?: GmcProjectionWarning[]
 }
 
@@ -341,10 +343,6 @@ export type GmcCanonicalProduct = {
   sourceVersion?: string
 }
 
-export type GmcVersionedCanonicalProduct = {
-  sourceVersion: string
-} & GmcCanonicalProduct
-
 export type GmcFeedFormatContext = {
   feedId: string
   generatedAt: string
@@ -368,19 +366,19 @@ export type GmcArtifactDescriptor = {
   checksum: string
   contentType: string
   createdAt: string
+  /** Build instant that fences pointer promotion; the feed.build `requestedAt`. */
+  generatedAt: string
   key: string
-  /** Durable global worker sequence that fences pointer promotion. */
-  sourceVersion: string
 }
 
 export type GmcArtifactPromotionResult = 'promoted' | 'stale'
 
 export type GmcFeedArtifactStore = {
   /**
-   * Atomically promote only when artifact.sourceVersion is newer than the
-   * current pointer. Older versions return `stale` without changing it. An
-   * equal version may return `stale` only when the descriptor is identical;
-   * equal-version descriptor divergence is an invariant violation and must
+   * Atomically promote only when artifact.generatedAt is newer than the
+   * current pointer. Older builds return `stale` without changing it. An equal
+   * `generatedAt` may return `stale` only when the descriptor is identical;
+   * equal-instant descriptor divergence is an invariant violation and must
    * reject rather than select an arbitrary winner.
    */
   promote: (args: {
@@ -471,10 +469,7 @@ export type GmcV2LocalInventoryProjection = {
 }
 
 export type GmcLocalInventoryAvailability =
-  | 'IN_STOCK'
-  | 'LIMITED_AVAILABILITY'
-  | 'ON_DISPLAY_TO_ORDER'
-  | 'OUT_OF_STOCK'
+  'IN_STOCK' | 'LIMITED_AVAILABILITY' | 'ON_DISPLAY_TO_ORDER' | 'OUT_OF_STOCK'
 
 export type GmcLocalInventoryPickupMethod = 'BUY' | 'NOT_SUPPORTED' | 'RESERVE' | 'SHIP_TO_STORE'
 
@@ -761,12 +756,20 @@ export type GmcPublicationStateStore = {
     productId: GmcDocumentID
   }) => Promise<GmcPublicationState[]>
   markDeleted: (args: {
+    /**
+     * Instant at which deletion became the desired state (the `offer.delete`
+     * command's `requestedAt`). Retained in `desiredAt` so a publish claim
+     * requested before it can never resurrect the offer.
+     */
+    deletedAt: string
     identity: MCProductIdentity
     operationId: string
     payload: Payload
     productId?: GmcDocumentID
   }) => Promise<GmcPublicationState>
   markDeletePending: (args: {
+    /** Instant at which deletion became the desired state; retained in `desiredAt`. */
+    deletedAt: string
     identity: MCProductIdentity
     /** Skip the delete when the stored desired claim is at or after this ISO timestamp. */
     onlyIfDesiredBefore?: string
@@ -829,7 +832,7 @@ export type GmcMerchantTransport = {
   }) => Promise<void>
   insertProductInput: (args: {
     dataSourceName: string
-    input: { versionNumber: string } & GmcApiProductInput
+    input: { versionNumber?: string } & GmcApiProductInput
     payload: Payload
   }) => Promise<void>
   listProcessedProducts: (args: {

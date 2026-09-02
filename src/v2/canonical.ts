@@ -7,7 +7,6 @@ import type {
   GmcProductProjection,
   GmcProjectedProductInput,
   GmcProjectionWarning,
-  GmcVersionedCanonicalProduct,
 } from './types.js'
 
 import { normalizeGmcCustomAttributes } from './customAttributes.js'
@@ -927,7 +926,7 @@ export const canonicalizeProductInput = (args: {
 
 export const canonicalizeProjection = (
   projection: GmcProductProjection,
-): { products: GmcVersionedCanonicalProduct[]; warnings: GmcProjectionWarning[] } => {
+): { products: GmcCanonicalProduct[]; warnings: GmcProjectionWarning[] } => {
   if (!projection || !Array.isArray(projection.products)) {
     throw new GmcProjectionValidationError([
       {
@@ -937,11 +936,11 @@ export const canonicalizeProjection = (
       },
     ])
   }
-  if (typeof projection.sourceVersion !== 'string') {
+  if (projection.sourceVersion !== undefined && typeof projection.sourceVersion !== 'string') {
     throw new GmcProjectionValidationError([
       {
-        code: 'required',
-        message: 'projection.sourceVersion must be a string',
+        code: 'type',
+        message: 'projection.sourceVersion must be a string when provided',
         path: 'projection.sourceVersion',
       },
     ])
@@ -972,7 +971,7 @@ export const canonicalizeProjection = (
         ])
       }
       seen.add(key)
-      return product as GmcVersionedCanonicalProduct
+      return product
     } catch (error) {
       if (error instanceof GmcProjectionValidationError) {
         throw new GmcProjectionValidationError(

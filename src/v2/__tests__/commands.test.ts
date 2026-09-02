@@ -6,6 +6,9 @@ import {
   assertGmcCommand,
   createCatalogPublishCommand,
   createDataSourcesValidateCommand,
+  createLocalInventoryApplyCommand,
+  createOfferDeleteCommand,
+  createOfferPublishCommand,
   createProductDeleteCommand,
   createProductPublishCommand,
   getGmcCommandIdempotencyDigest,
@@ -17,6 +20,35 @@ const identity = {
   feedLabel: 'US',
   offerId: 'sku-1',
 }
+
+const offerInput = {
+  ...identity,
+  productAttributes: {
+    availability: 'IN_STOCK' as const,
+    description: 'Description',
+    imageLink: 'https://example.com/image.jpg',
+    link: 'https://example.com/sku-1',
+    price: { amountMicros: '1000000', currencyCode: 'USD' },
+    title: 'Product',
+  },
+}
+
+const offerPublish = () =>
+  createOfferPublishCommand({
+    digest: 'a'.repeat(64),
+    input: offerInput,
+    productId: 'product-1',
+    requestedAt: '2026-08-29T12:00:00.000Z',
+  })
+
+const localApply = () =>
+  createLocalInventoryApplyCommand({
+    identity,
+    inventory: null,
+    productId: 'product-1',
+    requestedAt: '2026-08-29T12:00:00.000Z',
+    storeCode: 'store-1',
+  })
 
 describe('GMC v2 commands', () => {
   it('fingerprints semantic intent independently of retry wall-clock metadata', () => {
@@ -210,6 +242,89 @@ describe('GMC v2 commands', () => {
         productId: 'product-1',
       }),
     ).toThrow(/1-64 safe characters/i)
+  })
+
+  it('requires a canonical content digest on every offer and inventory write command', () => {
+    expect(() => assertGmcCommand(offerPublish())).not.toThrow()
+    expect(() => assertGmcCommand({ ...offerPublish(), digest: 'not-a-digest' })).toThrow(
+      /hexadecimal digest/i,
+    )
+    expect(() => assertGmcCommand({ ...offerPublish(), digest: undefined })).toThrow(
+      /hexadecimal digest/i,
+    )
+
+    expect(() => assertGmcCommand(localApply())).not.toThrow()
+    expect(() => assertGmcCommand({ ...localApply(), digest: 'A'.repeat(64) })).toThrow(
+      /hexadecimal digest/i,
+    )
+  })
+
+  it('forwards an optional projector version and rejects a malformed one', () => {
+    expect(() => assertGmcCommand({ ...offerPublish(), versionNumber: '17' })).not.toThrow()
+    expect(() =>
+      assertGmcCommand({ ...offerPublish(), versionNumber: '9223372036854775808' }),
+    ).toThrow(/versionNumber/i)
+    expect(() => assertGmcCommand({ ...offerPublish(), versionNumber: 17 })).toThrow(
+      /versionNumber/i,
+    )
+  })
+
+  it('orders an offer delete by an ISO desired-state boundary', () => {
+    const command = createOfferDeleteCommand({
+      identity,
+      onlyIfDesiredBefore: '2026-08-29T12:00:00.000Z',
+      requestedAt: '2026-08-29T12:00:00.000Z',
+    })
+    expect(() => assertGmcCommand(command)).not.toThrow()
+    expect(() => assertGmcCommand({ ...command, onlyIfDesiredBefore: 'yesterday' })).toThrow(
+      /onlyIfDesiredBefore/i,
+    )
+  })
+
+  it.each([
+    ['offer.delete', 'deleteIfDesiredBefore', '2026-08-29T12:00:00.000Z'],
+    ['offer.delete', 'deleteIfDesiredVersionBefore', '1'],
+    ['offer.delete', 'deleteVersion', '1'],
+    ['offer.delete', 'desiredVersion', '1'],
+    ['offer.delete', 'sourceVersion', '1'],
+    ['offer.publish', 'desiredVersion', '1'],
+    ['offer.publish', 'sourceVersion', '1'],
+    ['localInventory.apply', 'desiredVersion', '1'],
+    ['localInventory.apply', 'sourceVersion', '1'],
+    ['catalog.reconcile', 'startedVersion', '1'],
+  ] as const)(
+    'accepts and ignores the rc.35 %s field %s left on a durable row',
+    (type, field, value) => {
+      const base: Record<string, GmcCommand> = {
+        'catalog.reconcile': {
+          type: 'catalog.reconcile',
+          phase: 'remote',
+          requestedAt: '2026-08-29T12:00:00.000Z',
+          schemaVersion: 2,
+          startedAt: '2026-08-29T12:00:00.000Z',
+        },
+        'localInventory.apply': localApply(),
+        'offer.delete': createOfferDeleteCommand({
+          identity,
+          requestedAt: '2026-08-29T12:00:00.000Z',
+        }),
+        'offer.publish': offerPublish(),
+      }
+      expect(() => assertGmcCommand({ ...base[type], [field]: value })).not.toThrow()
+    },
+  )
+
+  it('still rejects a legacy field on a command type that never carried it', () => {
+    expect(() =>
+      assertGmcCommand({
+        ...createProductPublishCommand({
+          cause: 'update',
+          productId: 'product-1',
+          requestedAt: '2026-08-29T12:00:00.000Z',
+        }),
+        sourceVersion: '1',
+      }),
+    ).toThrow(/unsupported field.*sourceVersion/i)
   })
 
   it('bounds remote reconciliation pagination coordinates', () => {

@@ -24,7 +24,6 @@ const product = (args: { feedLabel: string; offerId: string }) =>
         title: args.offerId,
       },
     },
-    sourceVersion: '1',
   })
 
 const artifactFeed = (): GmcArtifactFeedConfig => {
@@ -73,7 +72,6 @@ describe('canonical feed builds', () => {
       generatedAt: '2026-08-29T12:00:00.000Z',
       instanceId: 'store-a',
       products: [product({ feedLabel: 'US', offerId: 'us-1' })],
-      sourceVersion: '42',
     })
 
     expect(feed.artifactStore.put).toHaveBeenCalledOnce()
@@ -96,7 +94,6 @@ describe('canonical feed builds', () => {
         feed,
         instanceId: 'store-a',
         products: [product({ feedLabel: 'US', offerId: 'us-1' })],
-        sourceVersion: '42',
       }),
     ).rejects.toThrow('object storage unavailable')
     expect(feed.artifactStore.promote).not.toHaveBeenCalled()
@@ -111,8 +108,8 @@ describe('canonical feed builds', () => {
         checksum: '0'.repeat(64),
         contentType: 'text/tab-separated-values',
         createdAt: '2026-08-29T12:00:00.000Z',
+        generatedAt: '2026-08-29T12:00:00.000Z',
         key: 'wrong/object.tsv',
-        sourceVersion: '42',
       },
     })
 
@@ -121,20 +118,19 @@ describe('canonical feed builds', () => {
         feed,
         instanceId: 'store-a',
         products: [product({ feedLabel: 'US', offerId: 'us-1' })],
-        sourceVersion: '42',
       }),
     ).rejects.toThrow(/checksum|descriptor/i)
     expect(feed.artifactStore.promote).not.toHaveBeenCalled()
   })
 
-  it('refuses promotion when immutable read-back changes the source-version fence', async () => {
+  it('refuses promotion when immutable read-back changes the generation fence', async () => {
     const feed = artifactFeed()
     const read = vi.mocked(feed.artifactStore.read)
     const put = vi.mocked(feed.artifactStore.put)
     put.mockImplementationOnce((args) => {
       read.mockResolvedValueOnce({
         body: args.body,
-        descriptor: { ...args.descriptor, sourceVersion: '43' },
+        descriptor: { ...args.descriptor, generatedAt: '2026-08-29T13:00:00.000Z' },
       })
       return Promise.resolve()
     })
@@ -145,9 +141,8 @@ describe('canonical feed builds', () => {
         generatedAt: '2026-08-29T12:00:00.000Z',
         instanceId: 'store-a',
         products: [product({ feedLabel: 'US', offerId: 'us-1' })],
-        sourceVersion: '42',
       }),
-    ).rejects.toThrow(/sourceVersion/i)
+    ).rejects.toThrow(/generatedAt/i)
     expect(feed.artifactStore.promote).not.toHaveBeenCalled()
   })
 
@@ -166,7 +161,6 @@ describe('canonical feed builds', () => {
         feed,
         instanceId: 'store-a',
         products: [product({ feedLabel: 'US', offerId: 'us-1' })],
-        sourceVersion: '42',
       }),
     ).rejects.toThrow(/invalid (content type|file extension)/i)
     expect(feed.artifactStore.put).not.toHaveBeenCalled()
@@ -190,7 +184,6 @@ describe('canonical feed builds', () => {
         feed: byteBound,
         instanceId: 'store-a',
         products: [productValue],
-        sourceVersion: '42',
       }),
     ).rejects.toThrow(/byte safety limit/i)
     expect(byteBound.artifactStore.put).not.toHaveBeenCalled()
@@ -208,8 +201,8 @@ describe('canonical feed builds', () => {
           checksum: '0'.repeat(64),
           contentType: 'text/tab-separated-values',
           createdAt: '2026-08-29T12:00:00.000Z',
+          generatedAt: '2026-08-29T12:00:00.000Z',
           key: 'feed/corrupt.tsv',
-          sourceVersion: '42',
         },
       }),
     ).toThrow(/checksum/i)
@@ -220,6 +213,7 @@ describe('canonical feed builds', () => {
     ['untrimmed content type', { contentType: ' text/plain' }],
     ['creation time', { createdAt: 'not-a-date' }],
     ['normalized invalid creation time', { createdAt: '2026-02-30T12:00:00Z' }],
+    ['generation time', { generatedAt: 'not-a-date' }],
     ['key', { key: 'feed/unsafe\u0000.tsv' }],
   ])('rejects invalid artifact %s metadata', (_name, override) => {
     const body = new TextEncoder().encode('canonical feed')
@@ -233,8 +227,8 @@ describe('canonical feed builds', () => {
           checksum,
           contentType: 'text/tab-separated-values',
           createdAt: '2026-08-29T12:00:00.000Z',
+          generatedAt: '2026-08-29T12:00:00.000Z',
           key: 'feed/canonical.tsv',
-          sourceVersion: '42',
           ...override,
         },
       }),
@@ -242,9 +236,12 @@ describe('canonical feed builds', () => {
   })
 
   it.each([
-    ['another plugin instance', 'tenant-b/us-primary/42-'],
-    ['another feed', 'tenant-a/secondary/42-'],
-    ['descriptor metadata that does not match its key', 'tenant-a/us-primary/43-'],
+    ['another plugin instance', 'tenant-b/us-primary/2026-08-29T12-00-00-000Z-'],
+    ['another feed', 'tenant-a/secondary/2026-08-29T12-00-00-000Z-'],
+    [
+      'descriptor metadata that does not match its key',
+      'tenant-a/us-primary/2026-08-29T13-00-00-000Z-',
+    ],
   ])('rejects an otherwise valid artifact from %s', (_name, keyPrefix) => {
     const body = new TextEncoder().encode('canonical feed')
     const checksum = '55576192bbd9a5e6786677982f6729e1c0b870ac5861efcf92016d00ba5c9033'
@@ -257,8 +254,8 @@ describe('canonical feed builds', () => {
           checksum,
           contentType: 'text/tab-separated-values',
           createdAt: '2026-08-29T12:00:00.000Z',
+          generatedAt: '2026-08-29T12:00:00.000Z',
           key: `${keyPrefix}${checksum}.tsv`,
-          sourceVersion: '42',
         },
         feedId: 'us-primary',
         instanceId: 'tenant-a',
@@ -276,7 +273,7 @@ describe('canonical feed builds', () => {
     ).rejects.toThrow(/generatedAt.*ISO date/i)
   })
 
-  it('uses source-versioned keys and reports a stale CAS promotion', async () => {
+  it('names the artifact after its generation instant and reports a stale CAS promotion', async () => {
     const feed = artifactFeed()
     vi.mocked(feed.artifactStore.promote).mockResolvedValueOnce('stale')
 
@@ -285,12 +282,13 @@ describe('canonical feed builds', () => {
       generatedAt: '2026-08-29T12:00:00.000Z',
       instanceId: 'store-a',
       products: [product({ feedLabel: 'US', offerId: 'us-1' })],
-      sourceVersion: '9001',
     })
 
     expect(result.promotion).toBe('stale')
-    expect(result.artifact.key).toMatch(/^store-a\/us-primary\/9001-[a-f0-9]{64}\.tsv$/)
-    expect(result.artifact.sourceVersion).toBe('9001')
+    expect(result.artifact.key).toMatch(
+      /^store-a\/us-primary\/2026-08-29T12-00-00-000Z-[a-f0-9]{64}\.tsv$/,
+    )
+    expect(result.artifact.generatedAt).toBe('2026-08-29T12:00:00.000Z')
   })
 
   it('passes the plugin instance namespace through every artifact-store boundary', async () => {
@@ -300,7 +298,6 @@ describe('canonical feed builds', () => {
       feed,
       instanceId: 'tenant-b',
       products: [product({ feedLabel: 'US', offerId: 'us-1' })],
-      sourceVersion: '42',
     })
 
     expect(feed.artifactStore.put).toHaveBeenCalledWith(

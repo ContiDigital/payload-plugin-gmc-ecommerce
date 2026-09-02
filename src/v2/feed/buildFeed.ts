@@ -11,7 +11,7 @@ import type {
 } from '../types.js'
 
 import { getIdentityKey } from '../canonical.js'
-import { isGmcNonNegativeInt64String, isGmcRfc3339Timestamp } from '../merchantWire.js'
+import { isGmcRfc3339Timestamp } from '../merchantWire.js'
 import { GMC_V2_DEFAULT_FEED_LIMITS, GmcFeedLimitError } from './limits.js'
 import { gmcTsvFormat } from './tsv.js'
 
@@ -21,6 +21,16 @@ export type GmcBuiltFeed = {
   generatedAt: string
   productCount: number
 } & GmcFeedFormatResult
+
+/** Every immutable descriptor field an at-least-once replay must re-verify. */
+export const GMC_ARTIFACT_DESCRIPTOR_FIELDS = [
+  'byteLength',
+  'checksum',
+  'contentType',
+  'createdAt',
+  'generatedAt',
+  'key',
+] as const
 
 export type GmcPublishedFeedArtifact = {
   artifact: GmcArtifactDescriptor
@@ -57,6 +67,14 @@ const assertFormatMetadata = (args: {
   }
 }
 
+/**
+ * `generatedAt` orders artifact promotion, so it also names the immutable
+ * object. Colons and dots are replaced so the key stays safe for object stores
+ * and filesystems alike while preserving lexicographic order.
+ */
+export const gmcArtifactKeySegment = (generatedAt: string): string =>
+  generatedAt.replace(/[.:]/g, '-')
+
 export const assertFeedArtifactDescriptor = (args: {
   descriptor: GmcArtifactDescriptor
   feedId?: string
@@ -92,8 +110,8 @@ export const assertFeedArtifactDescriptor = (args: {
   ) {
     throw new TypeError('Feed artifact key is invalid')
   }
-  if (!isGmcNonNegativeInt64String(descriptor.sourceVersion)) {
-    throw new TypeError('Feed artifact source version is invalid')
+  if (!isGmcRfc3339Timestamp(descriptor.generatedAt)) {
+    throw new TypeError('Feed artifact generation time is invalid')
   }
   if ((args.feedId === undefined) !== (args.instanceId === undefined)) {
     throw new TypeError('Feed artifact namespace requires both instanceId and feedId')
@@ -104,7 +122,7 @@ export const assertFeedArtifactDescriptor = (args: {
     if (!safeNamespace(args.instanceId) || !safeNamespace(args.feedId)) {
       throw new TypeError('Feed artifact namespace is invalid')
     }
-    const expectedPrefix = `${args.instanceId}/${args.feedId}/${descriptor.sourceVersion}-${descriptor.checksum}.`
+    const expectedPrefix = `${args.instanceId}/${args.feedId}/${gmcArtifactKeySegment(descriptor.generatedAt)}-${descriptor.checksum}.`
     const extension = descriptor.key.slice(expectedPrefix.length)
     if (
       !descriptor.key.startsWith(expectedPrefix) ||
@@ -220,7 +238,6 @@ export const publishFeedArtifact = async (args: {
   generatedAt?: string
   instanceId: string
   products: readonly GmcCanonicalProduct[]
-  sourceVersion: string
 }): Promise<GmcPublishedFeedArtifact> => {
   if (
     !/^[\w.-]{1,100}$/.test(args.instanceId) ||
@@ -229,19 +246,16 @@ export const publishFeedArtifact = async (args: {
   ) {
     throw new TypeError('Feed artifact instanceId must contain 1-100 safe characters')
   }
-  if (!isGmcNonNegativeInt64String(args.sourceVersion)) {
-    throw new TypeError('Feed artifact sourceVersion must be a non-negative signed int64 string')
-  }
   const built = await buildCanonicalFeed(args)
   const descriptor: GmcArtifactDescriptor = {
     byteLength: built.body.byteLength,
     checksum: built.checksum,
     contentType: built.contentType,
     createdAt: built.generatedAt,
+    generatedAt: built.generatedAt,
     // A checksum alone is not a unique immutable descriptor: two builds may
-    // have identical bytes but distinct createdAt/sourceVersion metadata.
-    key: `${args.instanceId}/${args.feed.id}/${args.sourceVersion}-${built.checksum}.${built.extension}`,
-    sourceVersion: args.sourceVersion,
+    // have identical bytes but distinct generation metadata.
+    key: `${args.instanceId}/${args.feed.id}/${gmcArtifactKeySegment(built.generatedAt)}-${built.checksum}.${built.extension}`,
   }
 
   await args.feed.artifactStore.put({
@@ -262,14 +276,7 @@ export const publishFeedArtifact = async (args: {
     ...stored,
     maxSerializedBytes: args.feed.limits?.maxSerializedBytes,
   })
-  for (const field of [
-    'byteLength',
-    'checksum',
-    'contentType',
-    'createdAt',
-    'key',
-    'sourceVersion',
-  ] as const) {
+  for (const field of GMC_ARTIFACT_DESCRIPTOR_FIELDS) {
     if (stored.descriptor[field] !== descriptor[field]) {
       throw new TypeError(`Stored feed artifact ${field} does not match the build descriptor`)
     }

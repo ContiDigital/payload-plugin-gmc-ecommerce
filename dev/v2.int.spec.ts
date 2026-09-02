@@ -301,6 +301,7 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
 
     await expect(
       store.markDeletePending({
+        deletedAt: '2026-08-29T12:02:00.000Z',
         identity,
         onlyIfDesiredBefore: '2026-08-29T12:00:00.000Z',
         operationId: 'state-reconcile-boundary',
@@ -310,20 +311,31 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
     ).resolves.toBeNull()
     await expect(
       store.markDeletePending({
+        deletedAt: '2026-08-29T12:02:00.000Z',
         identity,
         operationId: 'state-delete-2',
         payload,
         productId: 'product-1',
       }),
-    ).resolves.toMatchObject({ desiredAt: undefined, status: 'delete-pending' })
+    ).resolves.toMatchObject({ desiredAt: '2026-08-29T12:02:00.000Z', status: 'delete-pending' })
     await expect(
       store.markDeleted({
+        deletedAt: '2026-08-29T12:02:00.000Z',
         identity,
         operationId: 'state-delete-2',
         payload,
         productId: 'product-1',
       }),
     ).resolves.toMatchObject({ publishedDigest: undefined, status: 'deleted' })
+    // A publish claim requested before the deletion instant is stale evidence.
+    await expect(
+      store.claimPublication({
+        ...claim,
+        desiredAt: '2026-08-29T12:01:00.000Z',
+        desiredDigest: 'digest-stale',
+        operationId: 'state-publish-stale',
+      }),
+    ).resolves.toMatchObject({ operationId: 'state-delete-2', status: 'deleted' })
     await expect(
       store.claimPublication({
         ...claim,
@@ -448,9 +460,9 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
     await expect(
       store.getLocalInventory({ identity, payload, storeCode: 'store-2' }),
     ).resolves.toBeNull()
-    await expect(
-      store.listByProduct({ payload, productId: 'local-product-1' }),
-    ).resolves.toEqual([])
+    await expect(store.listByProduct({ payload, productId: 'local-product-1' })).resolves.toEqual(
+      [],
+    )
   })
 
   it('never projects pending draft content when a durable command executes', async () => {
@@ -487,14 +499,12 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
       command: coordinator!.command,
       operationId: 'execute-draft-safe-1',
       payload,
-      sourceVersion: '1000000',
     })
 
     const offer = dispatched.find((entry) => entry.command.type === 'offer.publish')
     expect(offer?.command).toMatchObject({
       type: 'offer.publish',
       input: { productAttributes: { title: 'Live title' } },
-      sourceVersion: '1000000',
     })
   })
 
@@ -524,7 +534,6 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
       command: coordinator!.command,
       operationId: 'execute-draft-only-1',
       payload,
-      sourceVersion: '1000001',
     })
 
     expect(dispatched.map((entry) => entry.command)).toEqual([])
@@ -566,7 +575,6 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
       command: coordinator!.command,
       operationId: 'execute-unpublish-1',
       payload,
-      sourceVersion: '1000002',
     })
 
     expect(dispatched).toHaveLength(1)
@@ -623,7 +631,6 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
         command,
         operationId: `page-${++operation}`,
         payload,
-        sourceVersion: String(2_000_000 + operation),
       })
       for (const entry of dispatched) {
         if (entry.command.type === 'product.publish') {

@@ -14,6 +14,7 @@ import type {
   GmcMerchantTransport,
   GmcProductDeleteCommand,
   GmcProductPublishCommand,
+  GmcPublicationState,
   GmcPublicationStateStore,
   NormalizedGmcV2Options,
 } from './types.js'
@@ -22,12 +23,7 @@ import { GoogleApiError } from '../server/services/sub-services/googleApiClient.
 import { createRateLimiterService } from '../server/services/sub-services/rateLimiterService.js'
 import { createRetryService } from '../server/services/sub-services/retryService.js'
 import { assertGmcDispatchReceipt } from './async.js'
-import {
-  canonicalizeProductInput,
-  canonicalizeProjection,
-  canonicalJson,
-  getIdentityKey,
-} from './canonical.js'
+import { canonicalizeProductInput, canonicalizeProjection, getIdentityKey } from './canonical.js'
 import { collectCanonicalProducts, mergeGmcCursorWhere } from './catalog.js'
 import {
   assertGmcCommand,
@@ -48,6 +44,7 @@ import { classifyGmcCommandError } from './errors.js'
 import {
   assertFeedArtifactDescriptor,
   assertFeedArtifactIntegrity,
+  GMC_ARTIFACT_DESCRIPTOR_FIELDS,
   publishFeedArtifact,
 } from './feed/buildFeed.js'
 import { normalizeGmcIdentityRoute, resolveGmcDataSourceName } from './identity.js'
@@ -55,7 +52,6 @@ import {
   assertLocalInventoryMatchesProductPrice,
   canonicalizeLocalInventoryInput,
 } from './localInventory.js'
-import { isGmcNonNegativeInt64String } from './merchantWire.js'
 import { createPayloadPublicationStateStore } from './state/payloadStateStore.js'
 import { createGoogleMerchantTransport } from './transport/googleTransport.js'
 
@@ -65,13 +61,11 @@ export type GmcCommandExecutorDependencies = {
 }
 
 /**
- * Internal execution context used once the entry point has normalized a
- * possibly-absent `sourceVersion` (see GmcCommandExecutionContext.sourceVersion,
- * @deprecated since 2.0.0). Every sub-executor sees a resolved string.
+ * Every sub-executor sees the host context verbatim. `sourceVersion` on it is
+ * deprecated and ignored: ordering comes from each command's `requestedAt` and
+ * skipping from its canonical content digest.
  */
-type GmcExecutionContext = {
-  sourceVersion: string
-} & Omit<GmcCommandExecutionContext, 'sourceVersion'>
+type GmcExecutionContext = GmcCommandExecutionContext
 
 const DATA_SOURCE_VALIDATION_TTL_MS = 5 * 60_000
 
@@ -156,15 +150,6 @@ const uniqueIdentities = (
 
 const MAX_ACTIVE_STATES_PER_PRODUCT = 1_000
 
-const compareSourceVersions = (left: string, right: string): number => {
-  if (!isGmcNonNegativeInt64String(left) || !isGmcNonNegativeInt64String(right)) {
-    throw new TypeError('GMC publication state contains an invalid signed-int64 source version')
-  }
-  const leftValue = BigInt(left)
-  const rightValue = BigInt(right)
-  return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0
-}
-
 const isSameLocalInventoryResource = (
   state: { identity: MCProductIdentity; storeCode?: string },
   identity: MCProductIdentity,
@@ -173,32 +158,12 @@ const isSameLocalInventoryResource = (
   state.storeCode === storeCode && getIdentityKey(state.identity) === getIdentityKey(identity)
 
 /**
- * LocalInventory has no Merchant-side versionNumber or conditional write.
- * Descendants from a slower catalog root can therefore reach the offer FIFO
- * after a causally newer product root even though their inherited source
- * version is older. Refuse the mutation whenever publication state proves the
- * base offer is newer, deleting, deleted, or failed. A missing state remains
- * admissible for an explicitly reconciled, already-owned migration offer.
+ * A claim the store reported back unchanged is not this worker's to act on:
+ * either a newer desired instant already won, or the identity has since been
+ * deleted at or after this instant.
  */
-const isLocalInventoryMutationFenced = async (args: {
-  identity: MCProductIdentity
-  payload: Payload
-  productId: GmcDocumentID
-  sourceVersion: string
-  stateStore: GmcPublicationStateStore
-}): Promise<boolean> => {
-  const state = await args.stateStore.get({ identity: args.identity, payload: args.payload })
-  if (!state) {
-    return false
-  }
-  if (state.productId !== undefined && String(state.productId) !== String(args.productId)) {
-    return true
-  }
-  if (state.status !== 'published') {
-    return true
-  }
-  return false
-}
+const claimWasRefused = (state: GmcPublicationState, desiredAt: string): boolean =>
+  state.status === 'deleted' || (state.desiredAt !== undefined && state.desiredAt > desiredAt)
 
 const nextPayloadCursor = (args: {
   batchSize: number
@@ -429,9 +394,13 @@ export const createGmcCommandExecutor = (
     identities: GmcProductDeleteCommand['identities']
     operationId: string
     payload: Payload
-    productId: GmcDocumentID
+    /**
+     * Omitted for a legacy `product.delete` that never carried an owner. The
+     * child then leaves `expectedProductId` unset so the store's ownership
+     * guard cannot refuse a delete no one can attribute.
+     */
+    productId?: GmcDocumentID
     rootOperationId?: string
-    sourceVersion: string
   }): Promise<GmcDispatchReceipt[]> => {
     const receipts: GmcDispatchReceipt[] = []
     const identities = uniqueIdentities(
@@ -442,7 +411,6 @@ export const createGmcCommandExecutor = (
         expectedProductId: args.productId,
         identity,
         requestedAt: args.command.requestedAt,
-        sourceVersion: args.sourceVersion,
       })
       receipts.push(
         await dispatch(
@@ -465,15 +433,15 @@ export const createGmcCommandExecutor = (
   const executeProductPublish = async (
     context: {
       command: GmcProductPublishCommand
-      projectionTime?: string
     } & GmcExecutionContext,
   ): Promise<GmcCommandExecutionResult> => {
     const { command, operationId, payload } = context
+    const desiredAt = command.requestedAt
     const doc = await findPublishedDocument({ options, payload, productId: command.productId })
     const oldStates = await listActiveProductStates({ payload, productId: command.productId })
     const previousIdentities = [
       ...(command.previousIdentities ?? []),
-      ...oldStates.filter((state) => state.status !== 'deleted').map((state) => state.identity),
+      ...oldStates.map((state) => state.identity),
     ]
 
     if (!doc) {
@@ -484,7 +452,6 @@ export const createGmcCommandExecutor = (
         payload,
         productId: command.productId,
         rootOperationId: context.rootOperationId,
-        sourceVersion: context.sourceVersion,
       })
       return {
         commandType: command.type,
@@ -495,17 +462,12 @@ export const createGmcCommandExecutor = (
       }
     }
 
-    const rawProjection = await options.products.project({
+    const projection = await options.products.project({
       doc,
       payload,
-      projectionTime: context.projectionTime ?? command.requestedAt,
+      projectionTime: desiredAt,
     })
-    const projection =
-      context.sourceVersion === undefined
-        ? rawProjection
-        : { ...rawProjection, sourceVersion: context.sourceVersion }
     const projected = canonicalizeProjection(projection)
-    const desiredAt = context.projectionTime ?? command.requestedAt
     const currentIdentities = new Set(
       projected.products.map((product) =>
         getIdentityKey(normalizeGmcIdentityRoute(product.identity, options)),
@@ -522,30 +484,24 @@ export const createGmcCommandExecutor = (
       payload,
       productId: command.productId,
       rootOperationId: context.rootOperationId,
-      sourceVersion: projection.sourceVersion,
     })
 
     for (const product of projected.products) {
       const identity = normalizeGmcIdentityRoute(product.identity, options)
-      const child = createOfferPublishCommand({
-        input: {
-          ...product.input,
-          dataSourceOverride: identity.dataSourceOverride,
-        },
-        productId: command.productId,
-        requestedAt: command.requestedAt,
-        sourceVersion: product.sourceVersion,
-        verifyRemote: command.cause === 'reconcile',
-      })
-      const desiredClaim = {
+      // A single claim: it registers desired ownership before a reconciliation
+      // sweep can see the identity, and it is the authority on whether this
+      // command still describes the newest desired content.
+      const desiredState = await stateStore.claimPublication({
         desiredAt,
         desiredDigest: product.digest,
         identity,
         operationId,
         payload,
         productId: command.productId,
+      })
+      if (claimWasRefused(desiredState, desiredAt)) {
+        continue
       }
-      const desiredState = await stateStore.claimPublication(desiredClaim)
       if (
         command.cause !== 'reconcile' &&
         desiredState.status === 'published' &&
@@ -553,27 +509,32 @@ export const createGmcCommandExecutor = (
       ) {
         continue
       }
-      const receipt = await dispatch(
-        {
-          command: child,
-          idempotencyKey: createIdempotencyKey([
-            operationId,
-            child.type,
-            getIdentityKey(identity),
-            product.sourceVersion,
-            product.digest,
-          ]),
-          subject: getGmcCommandSubject(child),
+      const child = createOfferPublishCommand({
+        digest: product.digest,
+        input: {
+          ...product.input,
+          dataSourceOverride: identity.dataSourceOverride,
         },
-        context,
-      )
-      dispatched.push(receipt)
-      // Register desired ownership before the catalog coordinator advances to
-      // the remote sweep. The child remains authoritative for the actual write.
-      await stateStore.claimPublication({
-        ...desiredClaim,
-        operationId: receipt.operationId,
+        productId: command.productId,
+        requestedAt: command.requestedAt,
+        verifyRemote: command.cause === 'reconcile',
+        versionNumber: projection.sourceVersion,
       })
+      dispatched.push(
+        await dispatch(
+          {
+            command: child,
+            idempotencyKey: createIdempotencyKey([
+              operationId,
+              child.type,
+              getIdentityKey(identity),
+              product.digest,
+            ]),
+            subject: getGmcCommandSubject(child),
+          },
+          context,
+        ),
+      )
     }
 
     if (options.localInventory && projected.products.length > 0) {
@@ -597,7 +558,7 @@ export const createGmcCommandExecutor = (
                 localCommand.type,
                 command.productId,
                 storeCode,
-                projected.products[0]?.sourceVersion,
+                projected.products[0]?.digest,
               ]),
               subject: getGmcCommandSubject(localCommand),
             },
@@ -616,36 +577,45 @@ export const createGmcCommandExecutor = (
     }
   }
 
+  /**
+   * `product.delete` is no longer emitted, but rc.35 rows and a host
+   * `afterDelete` hook still produce it. It executes with `product.publish`
+   * semantics, its identities standing in for the previously owned set. A
+   * command without a `productId` — the document is already gone and was never
+   * attributed — unconditionally deletes every identity it lists.
+   */
   const executeProductDelete = async (
     context: { command: GmcProductDeleteCommand } & GmcExecutionContext,
   ): Promise<GmcCommandExecutionResult> => {
-    const productId = context.command.productId ?? `deleted:${context.operationId}`
-    const oldStates =
-      context.command.productId === undefined
-        ? []
-        : await listActiveProductStates({
-            payload: context.payload,
-            productId: context.command.productId,
-          })
-    const dispatched = await dispatchDeletes({
-      command: context.command,
-      identities: [
-        ...context.command.identities,
-        ...oldStates.filter((state) => state.status !== 'deleted').map((state) => state.identity),
-      ],
-      operationId: context.operationId,
-      payload: context.payload,
-      productId,
-      rootOperationId: context.rootOperationId,
-      sourceVersion: context.sourceVersion,
-    })
-    return {
-      commandType: context.command.type,
-      dispatched,
-      operationId: context.operationId,
-      outcome: 'completed',
-      productCount: 0,
+    const { command, operationId, payload } = context
+    if (command.productId === undefined) {
+      const dispatched = await dispatchDeletes({
+        command,
+        identities: command.identities,
+        operationId,
+        payload,
+        rootOperationId: context.rootOperationId,
+      })
+      return {
+        commandType: command.type,
+        dispatched,
+        operationId,
+        outcome: dispatched.length > 0 ? 'completed' : 'skipped',
+        productCount: 0,
+      }
     }
+    const result = await executeProductPublish({
+      ...context,
+      command: {
+        type: 'product.publish',
+        cause: command.cause,
+        previousIdentities: command.identities,
+        productId: command.productId,
+        requestedAt: command.requestedAt,
+        schemaVersion: command.schemaVersion,
+      },
+    })
+    return { ...result, commandType: command.type }
   }
 
   const executeOfferPublish = async (
@@ -653,11 +623,13 @@ export const createGmcCommandExecutor = (
       command: Extract<GmcCommand, { type: 'offer.publish' }>
     } & GmcExecutionContext,
   ): Promise<GmcCommandExecutionResult> => {
-    const product = canonicalizeProductInput({
-      input: context.command.input,
-      sourceVersion: context.command.sourceVersion,
-    })
+    const product = canonicalizeProductInput({ input: context.command.input })
     product.identity = normalizeGmcIdentityRoute(product.identity, options)
+    // The digest is the durable ordering and idempotency key, so a row whose
+    // digest no longer describes its own input is corrupt, not merely stale.
+    if (product.digest !== context.command.digest) {
+      throw new TypeError('offer.publish digest does not match its canonical input')
+    }
     const claim = {
       desiredAt: context.command.requestedAt,
       desiredDigest: product.digest,
@@ -667,16 +639,21 @@ export const createGmcCommandExecutor = (
       productId: context.command.productId,
     }
     const state = await stateStore.claimPublication(claim)
+    const skipped = (remoteCount?: number): GmcCommandExecutionResult => ({
+      commandType: context.command.type,
+      operationId: context.operationId,
+      outcome: 'skipped',
+      productCount: 1,
+      ...(remoteCount === undefined ? {} : { remoteCount }),
+    })
+    if (claimWasRefused(state, claim.desiredAt)) {
+      return skipped()
+    }
     const alreadyPublished =
       state.status === 'published' && state.publishedDigest === product.digest
 
     if (alreadyPublished && !context.command.verifyRemote) {
-      return {
-        commandType: context.command.type,
-        operationId: context.operationId,
-        outcome: 'skipped',
-        productCount: 1,
-      }
+      return skipped()
     }
 
     try {
@@ -687,14 +664,20 @@ export const createGmcCommandExecutor = (
         payload: context.payload,
       })
       // ProductInput.insert is not a harmless upsert across sources: Google
-      // moves an existing processed identity to the supplied source. Always
-      // inspect ownership immediately before a write and make source migration
-      // an explicit operator workflow rather than an accidental side effect.
-      const remote = await getOwnedProcessedProduct({
-        dataSourceName,
-        identity: product.identity,
-        payload: context.payload,
-      })
+      // moves an existing processed identity to the supplied source. That is
+      // only reachable when more than one source is configured, so a
+      // single-source deployment spends no request on the ownership read.
+      // Reconciliation asks for it explicitly to prove the offer is still
+      // present remotely before trusting the local idempotency shortcut.
+      const needsOwnershipRead =
+        options.dataSourceNames.length > 1 || context.command.verifyRemote === true
+      const remote = needsOwnershipRead
+        ? await getOwnedProcessedProduct({
+            dataSourceName,
+            identity: product.identity,
+            payload: context.payload,
+          })
+        : null
       if (alreadyPublished && context.command.verifyRemote && remote) {
         await stateStore.markObserved({
           identity: product.identity,
@@ -704,18 +687,17 @@ export const createGmcCommandExecutor = (
           remoteStatus: remote.productStatus,
           remoteVersion: remote.versionNumber,
         })
-        return {
-          commandType: context.command.type,
-          operationId: context.operationId,
-          outcome: 'skipped',
-          productCount: 1,
-          remoteCount: 1,
-        }
+        return skipped(1)
       }
       await merchantCall('productInputs.insert', () =>
         transport.insertProductInput({
           dataSourceName,
-          input: { ...product.input, versionNumber: context.command.sourceVersion },
+          input: {
+            ...product.input,
+            ...(context.command.versionNumber === undefined
+              ? {}
+              : { versionNumber: context.command.versionNumber }),
+          },
           payload: context.payload,
         }),
       )
@@ -755,8 +737,9 @@ export const createGmcCommandExecutor = (
   ): Promise<GmcCommandExecutionResult> => {
     const identity = normalizeGmcIdentityRoute(context.command.identity, options)
     const pending = await stateStore.markDeletePending({
+      deletedAt: context.command.requestedAt,
       identity,
-      onlyIfDesiredBefore: context.command.deleteIfDesiredBefore,
+      onlyIfDesiredBefore: context.command.onlyIfDesiredBefore,
       operationId: context.operationId,
       payload: context.payload,
       productId: context.command.expectedProductId,
@@ -802,6 +785,7 @@ export const createGmcCommandExecutor = (
     }
 
     await stateStore.markDeleted({
+      deletedAt: context.command.requestedAt,
       identity,
       operationId: context.operationId,
       payload: context.payload,
@@ -905,11 +889,9 @@ export const createGmcCommandExecutor = (
   ): Promise<GmcCommandExecutionResult> => {
     const phase = context.command.phase ?? 'desired'
     const startedAt = context.command.startedAt ?? context.command.requestedAt
-    const startedVersion = context.command.startedVersion ?? context.sourceVersion
     const dispatched: GmcDispatchReceipt[] = []
 
     if (phase === 'desired') {
-      const projectionTime = startedAt
       const result = await context.payload.find({
         collection: options.products.collection,
         depth: 0,
@@ -934,21 +916,26 @@ export const createGmcCommandExecutor = (
           `Catalog reconciliation exceeded its ${options.products.maxCatalogPages} local page safety limit`,
         )
       }
+      // Reconciliation pages the catalog exactly like `catalog.publish`: one
+      // durable child per product, never an inline republish. A product whose
+      // desired content is unchanged therefore costs one remote verification
+      // and no ProductInput write.
       for (const doc of docs) {
         const child = createProductPublishCommand({
           cause: 'reconcile',
           productId: doc.id,
           requestedAt: context.command.requestedAt,
         })
-        const coordinated = await executeProductPublish({
-          command: child,
-          operationId: context.operationId,
-          payload: context.payload,
-          projectionTime,
-          rootOperationId: context.rootOperationId,
-          sourceVersion: context.sourceVersion,
-        })
-        dispatched.push(...(coordinated.dispatched ?? []))
+        dispatched.push(
+          await dispatch(
+            {
+              command: child,
+              idempotencyKey: createIdempotencyKey([context.operationId, child.type, doc.id]),
+              subject: getGmcCommandSubject(child),
+            },
+            context,
+          ),
+        )
       }
 
       const continuation: Extract<GmcCommand, { type: 'catalog.reconcile' }> = {
@@ -959,7 +946,6 @@ export const createGmcCommandExecutor = (
         requestedAt: context.command.requestedAt,
         schemaVersion: context.command.schemaVersion,
         startedAt,
-        startedVersion,
       }
       dispatched.push(
         await dispatch(
@@ -1004,12 +990,16 @@ export const createGmcCommandExecutor = (
     const observedAt = new Date().toISOString()
     for (const remote of ownedProducts) {
       const state = await stateStore.get({ identity: remote.identity, payload: context.payload })
-      if (
-        state &&
-        state.status !== 'deleted' &&
-        state.desiredAt !== undefined &&
-        state.desiredAt >= startedAt
-      ) {
+      // Anything this sweep's own desired phase re-claimed at or after
+      // `startedAt` is still wanted. Everything else — no row at all, a row the
+      // deletion path already retired, or a claim older than the sweep — is a
+      // remote orphan.
+      const isOrphan =
+        !state ||
+        state.status === 'deleted' ||
+        state.desiredAt === undefined ||
+        state.desiredAt < startedAt
+      if (!isOrphan) {
         await stateStore.markObserved({
           identity: remote.identity,
           observedAt,
@@ -1026,11 +1016,9 @@ export const createGmcCommandExecutor = (
         continue
       }
       const child = createOfferDeleteCommand({
-        deleteIfDesiredBefore: startedAt,
-        deleteIfDesiredVersionBefore: startedVersion,
         identity: remote.identity,
+        onlyIfDesiredBefore: startedAt,
         requestedAt: context.command.requestedAt,
-        sourceVersion: context.sourceVersion,
       })
       dispatched.push(
         await dispatch(
@@ -1068,7 +1056,6 @@ export const createGmcCommandExecutor = (
         requestedAt: context.command.requestedAt,
         schemaVersion: context.command.schemaVersion,
         startedAt,
-        startedVersion,
       }
       dispatched.push(
         await dispatch(
@@ -1120,18 +1107,16 @@ export const createGmcCommandExecutor = (
         feedId: feed.id,
         instanceId: options.instanceId,
       })
-      const comparison = compareSourceVersions(
-        currentDescriptor.sourceVersion,
-        context.sourceVersion,
-      )
-      if (comparison > 0) {
+      if (currentDescriptor.generatedAt > context.command.requestedAt) {
         return {
           commandType: context.command.type,
           operationId: context.operationId,
           outcome: 'skipped',
         }
       }
-      if (comparison === 0) {
+      if (currentDescriptor.generatedAt === context.command.requestedAt) {
+        // An at-least-once replay of the build that already won still has to
+        // prove the promoted object is intact before reporting success.
         const current = await feed.artifactStore.readCurrent({
           feedId: feed.id,
           instanceId: options.instanceId,
@@ -1145,14 +1130,7 @@ export const createGmcCommandExecutor = (
           instanceId: options.instanceId,
           maxSerializedBytes: feed.limits?.maxSerializedBytes,
         })
-        for (const field of [
-          'byteLength',
-          'checksum',
-          'contentType',
-          'createdAt',
-          'key',
-          'sourceVersion',
-        ] as const) {
+        for (const field of GMC_ARTIFACT_DESCRIPTOR_FIELDS) {
           if (current.descriptor[field] !== currentDescriptor[field]) {
             throw new TypeError(
               `Feed ${feed.id} current artifact ${field} does not match its pointer descriptor`,
@@ -1173,14 +1151,12 @@ export const createGmcCommandExecutor = (
       payload: context.payload,
       projectionTime: context.command.requestedAt,
       selector: feed.selector,
-      sourceVersion: context.sourceVersion,
     })
     const published = await publishFeedArtifact({
       feed,
       generatedAt: context.command.requestedAt,
       instanceId: options.instanceId,
       products,
-      sourceVersion: context.sourceVersion,
     })
     return {
       commandType: context.command.type,
@@ -1203,52 +1179,27 @@ export const createGmcCommandExecutor = (
             productId: context.command.productId,
           })
     const identities = uniqueIdentities(
-      [
-        ...(context.command.identities ?? []),
-        ...states.filter((state) => state.status !== 'deleted').map((state) => state.identity),
-      ].map((identity) => normalizeGmcIdentityRoute(identity, options)),
+      [...(context.command.identities ?? []), ...states.map((state) => state.identity)].map(
+        (identity) => normalizeGmcIdentityRoute(identity, options),
+      ),
     )
-    if (identities.length > 1) {
-      const dispatched: GmcDispatchReceipt[] = []
-      for (const identity of identities) {
-        const child: Extract<GmcCommand, { type: 'status.refresh' }> = {
-          type: 'status.refresh',
-          identities: [identity],
-          requestedAt: context.command.requestedAt,
-          schemaVersion: context.command.schemaVersion,
-        }
-        dispatched.push(
-          await dispatch(
-            {
-              command: child,
-              idempotencyKey: createIdempotencyKey([
-                context.operationId,
-                child.type,
-                getIdentityKey(identity),
-              ]),
-              subject: getGmcCommandSubject(child),
-            },
-            context,
-          ),
-        )
-      }
-      return {
-        commandType: context.command.type,
-        dispatched,
-        operationId: context.operationId,
-        outcome: 'completed',
-        productCount: identities.length,
-      }
+    // Status refresh is a read. Both inputs are already capped at 1,000
+    // identities, so the union is verified rather than fanned out into one
+    // durable child per offer.
+    if (identities.length > MAX_ACTIVE_STATES_PER_PRODUCT) {
+      throw new TypeError(
+        `status.refresh cannot observe more than ${MAX_ACTIVE_STATES_PER_PRODUCT} identities in one command`,
+      )
     }
     const observedAt = new Date().toISOString()
     let remoteCount = 0
     for (const identity of identities) {
+      const expectedDataSource = resolveGmcDataSourceName(identity, options)
       await requireApiPrimaryDataSource({
-        dataSourceName: resolveGmcDataSourceName(identity, options),
+        dataSourceName: expectedDataSource,
         identity,
         payload: context.payload,
       })
-      const expectedDataSource = resolveGmcDataSourceName(identity, options)
       const remote = await getOwnedProcessedProduct({
         dataSourceName: expectedDataSource,
         identity,
@@ -1283,194 +1234,125 @@ export const createGmcCommandExecutor = (
     if (!options.localInventory) {
       throw new TypeError('Local inventory is no longer configured')
     }
-    const activeStore = options.localInventory.storeCodes.includes(context.command.storeCode)
+    const { command, operationId, payload } = context
+    const activeStore = options.localInventory.storeCodes.includes(command.storeCode)
     const retiredStore = (options.localInventory.retiredStoreCodes ?? []).includes(
-      context.command.storeCode,
+      command.storeCode,
     )
     if (!activeStore && !retiredStore) {
-      throw new TypeError(`Unknown local inventory store code ${context.command.storeCode}`)
+      throw new TypeError(`Unknown local inventory store code ${command.storeCode}`)
     }
-    const identity = normalizeGmcIdentityRoute(context.command.identity, options)
-    const mutationIsFenced = (): Promise<boolean> =>
-      isLocalInventoryMutationFenced({
-        identity,
-        payload: context.payload,
-        productId: context.command.productId,
-        sourceVersion: context.sourceVersion,
-        stateStore,
-      })
-    if (await mutationIsFenced()) {
-      return {
-        commandType: context.command.type,
-        operationId: context.operationId,
-        outcome: 'skipped',
-        productCount: 1,
-      }
+    const identity = normalizeGmcIdentityRoute(command.identity, options)
+    const skipped = (): GmcCommandExecutionResult => ({
+      commandType: command.type,
+      operationId,
+      outcome: 'skipped',
+      productCount: 1,
+    })
+
+    // Local inventory attaches to the processed product, so the base offer row
+    // is the fence: it must still be owned by this product and its ProductInput
+    // must already have landed.
+    const base = await stateStore.get({ identity, payload })
+    if (
+      !base ||
+      base.productId === undefined ||
+      String(base.productId) !== String(command.productId)
+    ) {
+      return skipped()
     }
+    if (base.status === 'publish-pending') {
+      // ProductInput processing is asynchronous. Converge through durable
+      // retry rather than discarding the store's inventory.
+      throw new GmcProcessedProductNotReadyError(identity)
+    }
+    if (base.status !== 'published') {
+      return skipped()
+    }
+
     // A command can outlive a deployment which retires its store. Current
     // ownership wins: never let a previously queued insert resurrect retired
     // inventory after the configuration changed.
-    const deleting = retiredStore || context.command.inventory === null
+    const deleting = retiredStore || command.inventory === null
     const inventory = deleting
       ? null
-      : canonicalizeLocalInventoryInput(
-          context.command.inventory as NonNullable<typeof context.command.inventory>,
-        )
-    if (inventory && inventory.storeCode !== context.command.storeCode) {
+      : canonicalizeLocalInventoryInput(command.inventory as NonNullable<typeof command.inventory>)
+    if (inventory && inventory.storeCode !== command.storeCode) {
       throw new TypeError('Local inventory command storeCode does not match its input')
     }
-    const desiredDigest = createHash('sha256')
-      .update(
-        canonicalJson({
-          identity,
-          inventory,
-          productId: context.command.productId,
-          storeCode: context.command.storeCode,
-        }),
-      )
-      .digest('hex')
     const claim = {
-      desiredAt: context.command.requestedAt,
-      desiredDigest,
+      desiredAt: command.requestedAt,
+      desiredDigest: command.digest,
       identity,
-      operationId: context.operationId,
-      payload: context.payload,
-      productId: context.command.productId,
-      storeCode: context.command.storeCode,
+      operationId,
+      payload,
+      productId: command.productId,
+      storeCode: command.storeCode,
     }
     const claimed = await stateStore.claimLocalInventory(claim)
-    if (!isSameLocalInventoryResource(claimed, identity, context.command.storeCode)) {
+    if (!isSameLocalInventoryResource(claimed, identity, command.storeCode)) {
       throw new TypeError('Local-inventory publication store returned the wrong resource')
     }
     // The store applies the same claim rules as the base offer row: the
     // returned operationId only matches this command's when the claim won
     // (a newer or already-completed claim from elsewhere is reported back
     // unchanged, with a foreign operationId).
-    if (claimed.operationId !== context.operationId) {
-      return {
-        commandType: context.command.type,
-        operationId: context.operationId,
-        outcome: 'skipped',
-        productCount: 1,
-      }
+    if (claimed.operationId !== operationId) {
+      return skipped()
     }
-    const alreadyPublished =
-      claimed.status === 'published' && claimed.publishedDigest === desiredDigest
-    if (alreadyPublished) {
-      return {
-        commandType: context.command.type,
-        operationId: context.operationId,
-        outcome: 'skipped',
-        productCount: 1,
-      }
-    }
-
-    const markPublished = async (): Promise<void> => {
-      const published = await stateStore.markLocalInventoryPublished({
-        ...claim,
-        publishedAt: new Date().toISOString(),
-      })
-      if (!isSameLocalInventoryResource(published, identity, context.command.storeCode)) {
-        throw new TypeError('Local-inventory publication store published the wrong resource')
-      }
-      if (
-        published.operationId !== context.operationId ||
-        published.desiredDigest !== desiredDigest ||
-        published.publishedDigest !== desiredDigest ||
-        published.status !== 'published'
-      ) {
-        throw new TypeError('Local-inventory publication store did not retain the applied state')
-      }
+    if (claimed.status === 'published' && claimed.publishedDigest === command.digest) {
+      return skipped()
     }
 
     try {
       const dataSourceName = resolveGmcDataSourceName(identity, options)
-      await requireApiPrimaryDataSource({
-        dataSourceName,
-        identity,
-        payload: context.payload,
-      })
-      const remote = await getOwnedProcessedProduct({
-        dataSourceName,
-        identity,
-        payload: context.payload,
-      })
-      if (!remote) {
-        if (deleting) {
-          await markPublished()
-          return {
-            commandType: context.command.type,
-            operationId: context.operationId,
-            outcome: 'skipped',
-            productCount: 1,
-          }
-        }
-        throw new GmcProcessedProductNotReadyError(identity)
-      }
-      // The control-plane and ownership reads above are remote calls. Recheck
-      // both base-offer causality and the per-store claim immediately before
-      // the whole-resource mutation.
-      if (await mutationIsFenced()) {
-        return {
-          commandType: context.command.type,
-          operationId: context.operationId,
-          outcome: 'skipped',
-          productCount: 1,
-        }
-      }
-      const retained = await stateStore.getLocalInventory({
-        identity,
-        payload: context.payload,
-        storeCode: context.command.storeCode,
-      })
-      if (!retained) {
-        throw new TypeError('Local-inventory publication claim disappeared before mutation')
-      }
-      if (!isSameLocalInventoryResource(retained, identity, context.command.storeCode)) {
-        throw new TypeError('Local-inventory publication store returned the wrong resource')
-      }
-      if (retained.operationId !== context.operationId || retained.desiredDigest !== desiredDigest) {
-        // A newer per-store claim raced ahead of this command; stand down.
-        return {
-          commandType: context.command.type,
-          operationId: context.operationId,
-          outcome: 'skipped',
-          productCount: 1,
-        }
+      await requireApiPrimaryDataSource({ dataSourceName, identity, payload })
+      // Inventories are written against the processed product, which a second
+      // data source could own. With a single configured source that transfer
+      // is unreachable, so the ownership read is skipped.
+      if (options.dataSourceNames.length > 1) {
+        await getOwnedProcessedProduct({ dataSourceName, identity, payload })
       }
 
       if (deleting) {
         await merchantCall('localInventories.delete', () =>
           transport.deleteLocalInventory({
             identity,
-            payload: context.payload,
-            storeCode: context.command.storeCode,
+            payload,
+            storeCode: command.storeCode,
           }),
         )
       } else {
         if (!inventory) {
           throw new TypeError('Active local inventory command is missing its input')
         }
-        if (inventory.storeCode !== context.command.storeCode) {
-          throw new TypeError('Local inventory command storeCode does not match its input')
-        }
         await merchantCall('localInventories.insert', () =>
-          transport.insertLocalInventory({
-            identity,
-            inventory,
-            payload: context.payload,
-          }),
+          transport.insertLocalInventory({ identity, inventory, payload }),
         )
       }
-      await markPublished()
+      const published = await stateStore.markLocalInventoryPublished({
+        ...claim,
+        publishedAt: new Date().toISOString(),
+      })
+      if (!isSameLocalInventoryResource(published, identity, command.storeCode)) {
+        throw new TypeError('Local-inventory publication store published the wrong resource')
+      }
+      if (
+        published.operationId !== operationId ||
+        published.desiredDigest !== command.digest ||
+        published.publishedDigest !== command.digest ||
+        published.status !== 'published'
+      ) {
+        throw new TypeError('Local-inventory publication store did not retain the applied state')
+      }
     } catch (error) {
       try {
         await stateStore.markLocalInventoryFailed({
           error: getErrorState(error),
           identity,
-          operationId: context.operationId,
-          payload: context.payload,
-          storeCode: context.command.storeCode,
+          operationId,
+          payload,
+          storeCode: command.storeCode,
         })
       } catch (stateError) {
         throw new AggregateError(
@@ -1481,8 +1363,8 @@ export const createGmcCommandExecutor = (
       throw error
     }
     return {
-      commandType: context.command.type,
-      operationId: context.operationId,
+      commandType: command.type,
+      operationId,
       outcome: 'completed',
       productCount: 1,
     }
@@ -1644,16 +1526,12 @@ export const createGmcCommandExecutor = (
       }
     }
 
-    const rawProjection = await options.products.project({
+    const projection = await options.products.project({
       doc,
       payload: context.payload,
       projectionTime: context.command.requestedAt,
     })
-    const baseProducts = canonicalizeProjection(
-      context.sourceVersion === undefined
-        ? rawProjection
-        : { ...rawProjection, sourceVersion: context.sourceVersion },
-    ).products
+    const baseProducts = canonicalizeProjection(projection).products
     const baseOffers = new Map(
       baseProducts.map((product) => {
         const identity = normalizeGmcIdentityRoute(product.identity, options)
@@ -1733,7 +1611,7 @@ export const createGmcCommandExecutor = (
               context.operationId,
               child.type,
               key,
-              baseProducts[0]?.sourceVersion,
+              child.digest,
             ]),
             subject: getGmcCommandSubject(child),
           },
@@ -1755,21 +1633,9 @@ export const createGmcCommandExecutor = (
     if (!rawContext.operationId.trim()) {
       throw new TypeError('GMC command execution requires a durable operationId')
     }
-    // sourceVersion is @deprecated and optional; when a host still supplies one
-    // it must be well-formed. Absent, it defaults to '0' for now (Task 7 drops
-    // versioning entirely).
-    if (
-      rawContext.sourceVersion !== undefined &&
-      !isGmcNonNegativeInt64String(rawContext.sourceVersion)
-    ) {
-      throw new TypeError(
-        'GMC execution sourceVersion must be a non-negative signed int64 string when provided',
-      )
-    }
-    const context: GmcExecutionContext = {
-      ...rawContext,
-      sourceVersion: rawContext.sourceVersion ?? '0',
-    }
+    // `rawContext.sourceVersion` is @deprecated and ignored entirely: an rc.35
+    // worker may still send one, and nothing in execution consults it.
+    const context: GmcExecutionContext = rawContext
 
     switch (context.command.type) {
       case 'catalog.publish':
