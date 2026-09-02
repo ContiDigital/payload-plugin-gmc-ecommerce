@@ -10,6 +10,16 @@ import type { GmcCanonicalProduct, GmcFeedFormatAdapter, GmcProjectionWarning } 
 
 import { getIdentityKey, priceToFeedValue } from '../canonical.js'
 
+/**
+ * A bare `shipping` header is documented as the four-position default
+ * `country:region:service:price`. Emitting the full sub-attribute set under it
+ * would have Google read position 3 as the service. Naming the sub-attributes
+ * in the header is Google's documented way to declare a different layout, so
+ * every row carries all eleven positions in exactly this order.
+ */
+export const GMC_TSV_SHIPPING_COLUMN =
+  'shipping(country:region:postal_code:location_id:location_group_name:service:price:min_handling_time:max_handling_time:min_transit_time:max_transit_time)'
+
 export const GMC_TSV_COLUMNS = [
   'id',
   'title',
@@ -55,7 +65,7 @@ export const GMC_TSV_COLUMNS = [
   'adult',
   'is_bundle',
   'multipack',
-  'shipping',
+  GMC_TSV_SHIPPING_COLUMN,
   'shipping_weight',
   'shipping_length',
   'shipping_width',
@@ -470,9 +480,10 @@ const structuredValue = (value: MCProductAttributes['structuredTitle'] | undefin
 }
 
 /**
- * Google's documented positional order for the shipping attribute. Absent
- * sub-attributes hold their place with an empty value; trailing empties are
- * dropped because Google does not require trailing separators.
+ * Google's documented positional order for the shipping attribute, declared to
+ * Google by GMC_TSV_SHIPPING_COLUMN. Every position is always emitted: an
+ * absent sub-attribute holds its place with an empty value so a row can never
+ * be read against a shorter layout than the header announces.
  */
 const SHIPPING_SUB_ATTRIBUTES = [
   'country',
@@ -501,16 +512,12 @@ const shippingValue = (shipping: MCShipping[] | undefined): string => {
           `TSV feed cannot serialize shipping sub-attribute${unsupported.length === 1 ? '' : 's'}: ${unsupported.sort().join(', ')}`,
         )
       }
-      const parts = SHIPPING_SUB_ATTRIBUTES.map((field) => {
+      return SHIPPING_SUB_ATTRIBUTES.map((field) => {
         if (field === 'price') {
           return entry.price ? priceToFeedValue(entry.price) : ''
         }
         return entry[field] === undefined ? '' : cleanCell(String(entry[field]))
-      })
-      while (parts.length > 0 && parts[parts.length - 1] === '') {
-        parts.pop()
-      }
-      return parts.join(':')
+      }).join(':')
     })
     .join(',')
 }
@@ -593,6 +600,7 @@ const productRow = (
       )
       .join(','),
     gender: mappedEnumValue('Gender', 'GENDER_UNSPECIFIED', GENDER_FEED_VALUES, attrs.gender),
+    [GMC_TSV_SHIPPING_COLUMN]: shippingValue(attrs.shipping),
     google_product_category: scalarValue(attrs.googleProductCategory ?? ''),
     gtin: repeatedValue(attrs.gtins),
     identifier_exists: booleanValue(attrs.identifierExists),
@@ -648,7 +656,6 @@ const productRow = (
         )
       : '',
     sell_on_google_quantity: scalarValue(attrs.sellOnGoogleQuantity ?? ''),
-    shipping: shippingValue(attrs.shipping),
     shipping_height: dimensionValue(attrs.shippingHeight),
     shipping_label: scalarValue(attrs.shippingLabel ?? ''),
     shipping_length: dimensionValue(attrs.shippingLength),
@@ -676,6 +683,14 @@ const productRow = (
     // Column names are matched case-insensitively so a generic attribute still
     // resolves onto a built-in column Google spells with capitals (pickup_SLA).
     const normalized = customColumnName(attribute.name)
+    // A generic `shipping` value is written for the four-position default
+    // layout. This feed declares a named eleven-position layout, so the two
+    // cannot share a column and the value cannot be reinterpreted safely.
+    if (normalized === 'shipping') {
+      throw new TypeError(
+        'Custom attribute shipping collides with the named shipping column; supply productAttributes.shipping instead',
+      )
+    }
     const name = builtInColumnsByLowerCaseName.get(normalized) ?? normalized
     if (builtInColumnsByLowerCaseName.has(normalized) && row[name]) {
       throw new TypeError(`Custom attribute ${name} collides with a built-in TSV column`)

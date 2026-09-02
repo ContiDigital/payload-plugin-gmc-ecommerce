@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { canonicalizeProductInput } from '../canonical.js'
-import { GMC_TSV_COLUMNS, serializeCanonicalTsv } from '../feed/tsv.js'
+import { GMC_TSV_COLUMNS, GMC_TSV_SHIPPING_COLUMN, serializeCanonicalTsv } from '../feed/tsv.js'
 
 const canonical = (offerId: string, title: string) =>
   canonicalizeProductInput({
@@ -81,7 +81,9 @@ describe('serializeCanonicalTsv', () => {
     expect(row[header.indexOf('additional_image_link')]).toBe(
       'https://example.com/a%2Cb.jpg,https://example.com/c.jpg',
     )
-    expect(row[header.indexOf('shipping')]).toBe('US:New York, NY::::Ground: standard:5.00 USD')
+    expect(row[header.indexOf(GMC_TSV_SHIPPING_COLUMN)]).toBe(
+      'US:New York, NY::::Ground: standard:5.00 USD::::',
+    )
     expect(row[header.indexOf('product_highlight')]).toBe('Hand carved,"Indoor, outdoor display"')
     expect(row[header.indexOf('product_detail')]).toBe(
       'Specifications:Finish:"Hand-polished, satin"',
@@ -154,8 +156,12 @@ describe('serializeCanonicalTsv', () => {
     const header = headerLine.split('\t')
     const row = rowLine.split('\t')
 
-    expect(row[header.indexOf('shipping')]).toBe(
-      'US:CA:80302:21137:west:Ground:6.49 USD:1:3:2:5,CA::::::0.00 CAD',
+    // The header names the layout, so every row keeps all eleven positions.
+    expect(GMC_TSV_SHIPPING_COLUMN).toBe(
+      'shipping(country:region:postal_code:location_id:location_group_name:service:price:min_handling_time:max_handling_time:min_transit_time:max_transit_time)',
+    )
+    expect(row[header.indexOf(GMC_TSV_SHIPPING_COLUMN)]).toBe(
+      'US:CA:80302:21137:west:Ground:6.49 USD:1:3:2:5,CA::::::0.00 CAD::::',
     )
   })
 
@@ -352,6 +358,20 @@ describe('serializeCanonicalTsv', () => {
         selector: { contentLanguage: 'en', feedLabel: 'US' },
       }),
     ).toThrow(/collides with a built-in TSV column/i)
+  })
+
+  it('fails closed on a generic shipping attribute the named column cannot carry', () => {
+    const value = canonical('sku-a', 'A')
+    value.input.customAttributes = [{ name: 'shipping', value: 'US:CA:Ground:9.99 USD' }]
+
+    expect(() =>
+      serializeCanonicalTsv({
+        feedId: 'primary',
+        generatedAt: '2026-08-29T12:00:00.000Z',
+        products: [value],
+        selector: { contentLanguage: 'en', feedLabel: 'US' },
+      }),
+    ).toThrow(/shipping collides with the named shipping column/i)
   })
 
   it('normalizes generic API attribute names into text-feed columns', async () => {

@@ -87,9 +87,10 @@ export type MCStructuredContent = {
 // ---------------------------------------------------------------------------
 
 /**
- * Google's documented shipping sub-attributes. Text feeds serialize these in a
- * fixed positional order, so a sub-attribute added by Google later must be
- * mapped deliberately rather than appended.
+ * Google's documented shipping sub-attributes. Text feeds declare this layout
+ * in the column header and serialize the sub-attributes in a fixed positional
+ * order, so a sub-attribute added by Google later must be mapped deliberately
+ * rather than appended.
  */
 export type MCShipping = {
   country?: string
