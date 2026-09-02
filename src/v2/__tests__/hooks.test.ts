@@ -370,7 +370,7 @@ describe('GMC v2 Payload hooks', () => {
   })
 
   it('dispatches deletion even when identity resolution is empty so state recovery can finish it', async () => {
-    const dispatch = vi.fn(() =>
+    const dispatch = vi.fn((_args: Parameters<GmcAsyncAdapter['dispatch']>[0]) =>
       Promise.resolve({ operationId: 'operation-1', state: 'queued' as const }),
     )
     const normalized = build({
@@ -387,6 +387,7 @@ describe('GMC v2 Payload hooks', () => {
     normalized.products.resolveIdentities = () => []
     const hook = createGmcV2AfterDeleteHook(normalized)
 
+    const startedAt = Date.now()
     await hook({
       doc: { id: 'product-1', updatedAt: '2026-08-29T12:00:00.000Z' },
       req: request,
@@ -397,6 +398,17 @@ describe('GMC v2 Payload hooks', () => {
         req: request,
       }),
     )
+
+    // A hard delete does not bump updatedAt, so stamping requestedAt from the
+    // document would tie the delete with the offer.publish it supersedes and
+    // let a retrying publish resurrect the offer.
+    const requestedAt = dispatch.mock.calls[0]?.[0].command.requestedAt
+    if (requestedAt === undefined) {
+      throw new Error('afterDelete did not dispatch a command')
+    }
+    expect(requestedAt).not.toBe('2026-08-29T12:00:00.000Z')
+    expect(new Date(requestedAt).toISOString()).toBe(requestedAt)
+    expect(Date.parse(requestedAt)).toBeGreaterThanOrEqual(startedAt)
   })
 
   it('owns canonical dependency changes and future temporal boundaries through durable dispatch', async () => {

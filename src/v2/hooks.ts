@@ -518,11 +518,17 @@ export const createGmcV2AfterDeleteHook = (
       payload: req.payload,
       req,
     })
+    // A hard delete does not bump `updatedAt`, so the deleted document still
+    // carries the instant of its last write — the same instant the offer.publish
+    // it is superseding was stamped with. Publication state orders a delete
+    // against a publish by that instant, so the delete must be stamped when it
+    // actually happened or a retrying publish could resurrect the offer.
+    // Operation identity is unaffected: idempotency digests exclude requestedAt.
     const command = createProductDeleteCommand({
       cause: 'delete',
       identities,
       productId,
-      requestedAt: typeof deleted.updatedAt === 'string' ? deleted.updatedAt : undefined,
+      requestedAt: new Date().toISOString(),
     })
     assertGmcCommand(command)
 

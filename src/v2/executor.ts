@@ -158,12 +158,41 @@ const isSameLocalInventoryResource = (
   state.storeCode === storeCode && getIdentityKey(state.identity) === getIdentityKey(identity)
 
 /**
- * A claim the store reported back unchanged is not this worker's to act on:
- * either a newer desired instant already won, or the identity has since been
- * deleted at or after this instant.
+ * A claim the store reported back unchanged is not this worker's to act on: a
+ * strictly newer desired instant already won. A deletion counts, because
+ * `markDeletePending`/`markDeleted` stamp the deletion instant into
+ * `desiredAt`; no separate status test is needed, and none would fire on its
+ * own, since a refused claim is exactly a row whose `desiredAt` is newer.
  */
 const claimWasRefused = (state: GmcPublicationState, desiredAt: string): boolean =>
-  state.status === 'deleted' || (state.desiredAt !== undefined && state.desiredAt > desiredAt)
+  state.desiredAt !== undefined && state.desiredAt > desiredAt
+
+// Keyed by instance + feed so one installation's warning cannot silence
+// another's, and so a replayed build does not re-log on every attempt.
+const warnedLegacyArtifactPointers = new Set<string>()
+
+/**
+ * Test-only: clears the once-per-process warning dedup so unit tests can assert
+ * the legacy-pointer warning in isolation.
+ */
+export const __resetLegacyArtifactPointerWarningsForTests = (): void => {
+  warnedLegacyArtifactPointers.clear()
+}
+
+const warnOnceAboutLegacyArtifactPointer = (args: {
+  feedId: string
+  instanceId: string
+  payload: Payload
+}): void => {
+  const key = `${args.instanceId}\u0000${args.feedId}`
+  if (warnedLegacyArtifactPointers.has(key)) {
+    return
+  }
+  warnedLegacyArtifactPointers.add(key)
+  args.payload.logger.warn(
+    `payload-plugin-gmc-ecommerce: feed ${args.feedId} has a pre-2.0 artifact pointer with no generatedAt; rebuilding and promoting over it.`,
+  )
+}
 
 const nextPayloadCursor = (args: {
   batchSize: number
@@ -392,6 +421,11 @@ export const createGmcCommandExecutor = (
   const dispatchDeletes = async (args: {
     command: GmcProductDeleteCommand | GmcProductPublishCommand
     identities: GmcProductDeleteCommand['identities']
+    /**
+     * Ordering fence for a delete that carries no owner: the child stands down
+     * when the identity has since been claimed at or after this instant.
+     */
+    onlyIfDesiredBefore?: string
     operationId: string
     payload: Payload
     /**
@@ -410,6 +444,7 @@ export const createGmcCommandExecutor = (
       const child = createOfferDeleteCommand({
         expectedProductId: args.productId,
         identity,
+        onlyIfDesiredBefore: args.onlyIfDesiredBefore,
         requestedAt: args.command.requestedAt,
       })
       receipts.push(
@@ -589,9 +624,14 @@ export const createGmcCommandExecutor = (
   ): Promise<GmcCommandExecutionResult> => {
     const { command, operationId, payload } = context
     if (command.productId === undefined) {
+      // Nothing attributes these identities to a product, so the store's
+      // ownership guard cannot protect them. Fence on the delete's own instant
+      // instead: another product may already have claimed the identity since
+      // this command was queued, and that claim must win.
       const dispatched = await dispatchDeletes({
         command,
         identities: command.identities,
+        onlyIfDesiredBefore: command.requestedAt,
         operationId,
         payload,
         rootOperationId: context.rootOperationId,
@@ -885,15 +925,24 @@ export const createGmcCommandExecutor = (
   /**
    * Because the desired phase now dispatches durable `product.publish` children
    * instead of republishing inline, the `remote` phase can execute before those
-   * children have claimed their identities. It will then see an offer Google
-   * still holds with no publication row and report it as an orphan. Both
-   * execution orders converge, because the two commands share this root's
-   * instant: if the conditional delete lands first it stamps `desiredAt` at
-   * `startedAt`, and the desired child's equal-instant claim reopens the row
-   * and republishes; if the desired child lands first its claim satisfies
-   * `onlyIfDesiredBefore` and the delete stands down. The only cost of the
-   * first order is one delete/insert round trip, and a `verifyRemote` child
-   * that loses its insert to a crash is repaired by the next reconciliation.
+   * children have claimed their identities.
+   *
+   * The orphan predicate is therefore two-step. A remote offer with no
+   * publication row, or with a row the deletion path already retired, is an
+   * orphan outright — a live desired child cannot leave either shape behind. A
+   * row whose `desiredAt` predates `startedAt` is only a candidate, because its
+   * child may simply not have run yet, so the owning product is re-read first
+   * and the offer is kept when that product is still published and eligible.
+   *
+   * A remote offer with no row at all cannot be re-read that way, so it can
+   * still race a desired child. Both orders converge, because the two commands
+   * share this root's instant: if the conditional delete lands first it stamps
+   * `desiredAt` at `startedAt`, and the desired child's equal-instant claim
+   * reopens the row and republishes; if the desired child lands first its claim
+   * satisfies `onlyIfDesiredBefore` and the delete stands down. The only cost
+   * of the first order is one delete/insert round trip, and a `verifyRemote`
+   * child that loses its insert to a crash is repaired by the next
+   * reconciliation.
    */
   const executeCatalogReconcile = async (
     context: {
@@ -1004,14 +1053,26 @@ export const createGmcCommandExecutor = (
     for (const remote of ownedProducts) {
       const state = await stateStore.get({ identity: remote.identity, payload: context.payload })
       // Anything this sweep's own desired phase re-claimed at or after
-      // `startedAt` is still wanted. Everything else — no row at all, a row the
-      // deletion path already retired, or a claim older than the sweep — is a
-      // remote orphan.
-      const isOrphan =
+      // `startedAt` is still wanted. A row with an older claim is only a
+      // candidate: this sweep's `product.publish` child may simply not have run
+      // yet, so re-read the product before calling it an orphan. A row that is
+      // absent or already retired stays a candidate outright — those are the
+      // shapes a live desired child cannot have left behind.
+      let isOrphan =
         !state ||
         state.status === 'deleted' ||
         state.desiredAt === undefined ||
         state.desiredAt < startedAt
+      if (isOrphan && state && state.status !== 'deleted' && state.productId !== undefined) {
+        const owner = await findPublishedDocument({
+          options,
+          payload: context.payload,
+          productId: state.productId,
+        })
+        if (owner) {
+          isOrphan = false
+        }
+      }
       if (!isOrphan) {
         await stateStore.markObserved({
           identity: remote.identity,
@@ -1110,10 +1171,23 @@ export const createGmcCommandExecutor = (
         `Feed ${feed.id} uses dynamic delivery and cannot be promoted as an artifact`,
       )
     }
-    const currentDescriptor = await feed.artifactStore.readCurrentDescriptor({
+    const storedDescriptor = await feed.artifactStore.readCurrentDescriptor({
       feedId: feed.id,
       instanceId: options.instanceId,
     })
+    // An rc.35 pointer is fenced by `sourceVersion` and has no `generatedAt`.
+    // Rejecting it would make every subsequent build of that feed a poison
+    // message, so warn once and rebuild over it; the promotion that follows
+    // replaces the pointer with a current-shaped descriptor.
+    const legacyDescriptor = storedDescriptor !== null && storedDescriptor.generatedAt === undefined
+    if (legacyDescriptor) {
+      warnOnceAboutLegacyArtifactPointer({
+        feedId: feed.id,
+        instanceId: options.instanceId,
+        payload: context.payload,
+      })
+    }
+    const currentDescriptor = legacyDescriptor ? null : storedDescriptor
     if (currentDescriptor) {
       assertFeedArtifactDescriptor({
         descriptor: currentDescriptor,

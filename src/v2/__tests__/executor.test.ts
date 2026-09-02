@@ -25,7 +25,10 @@ import {
   createProductPublishCommand,
 } from '../commands.js'
 import { normalizeGmcV2Options } from '../config.js'
-import { createGmcCommandExecutor } from '../executor.js'
+import {
+  __resetLegacyArtifactPointerWarningsForTests,
+  createGmcCommandExecutor,
+} from '../executor.js'
 import { createMemoryPublicationStateStore } from './helpers/memoryStateStore.js'
 
 const REQUESTED_AT = '2026-08-29T12:00:00.000Z'
@@ -1103,88 +1106,263 @@ describe('GMC v2 command executor', () => {
   it.each([
     ['the orphan delete lands first', 'delete-first'],
     ['the desired child lands first', 'publish-first'],
-  ] as const)(
-    'converges a reconciled offer to published when %s',
-    async (_name, order) => {
-      const find = vi.fn(() =>
-        Promise.resolve({ docs: [{ id: 'product-1' }] }),
-      ) as unknown as Payload['find']
-      const test = build({
-        batchSize: 2,
-        find,
-        reconciliation: { orphanDeletion: 'exclusive-data-sources' },
-      })
+  ] as const)('converges a reconciled offer to published when %s', async (_name, order) => {
+    const find = vi.fn(() =>
+      Promise.resolve({ docs: [{ id: 'product-1' }] }),
+    ) as unknown as Payload['find']
+    const test = build({
+      batchSize: 2,
+      find,
+      reconciliation: { orphanDeletion: 'exclusive-data-sources' },
+    })
 
-      // Desired phase: the identity has no state row yet, because its
-      // product.publish child has not run.
+    // Desired phase: the identity has no state row yet, because its
+    // product.publish child has not run.
+    await test.execute({
+      command: { type: 'catalog.reconcile', requestedAt: REQUESTED_AT, schemaVersion: 2 },
+      operationId: 'reconcile-desired',
+      payload: test.payload,
+    })
+    const desiredChildren = dispatchedCommands(test)
+    const productChild = desiredChildren.find((child) => child.type === 'product.publish')!
+    const remotePhase = desiredChildren.find((child) => child.type === 'catalog.reconcile')!
+    expect(remotePhase).toMatchObject({ phase: 'remote', startedAt: REQUESTED_AT })
+
+    // Remote phase: Google still holds the offer and no row exists, so the
+    // sweep reports it as an orphan and queues a same-instant delete.
+    vi.mocked(test.transport.listProcessedProducts).mockResolvedValueOnce({
+      products: [remoteProduct()],
+    })
+    await test.execute({
+      command: remotePhase,
+      operationId: 'reconcile-remote',
+      payload: test.payload,
+    })
+    const deleteChild = dispatchedCommands(test).find((child) => child.type === 'offer.delete')!
+    expect(deleteChild).toMatchObject({
+      identity: newIdentity,
+      onlyIfDesiredBefore: REQUESTED_AT,
+      requestedAt: REQUESTED_AT,
+    })
+
+    const runProductChild = async (): Promise<void> => {
+      vi.mocked(test.asyncAdapter.dispatch).mockClear()
       await test.execute({
-        command: { type: 'catalog.reconcile', requestedAt: REQUESTED_AT, schemaVersion: 2 },
-        operationId: 'reconcile-desired',
+        command: productChild,
+        operationId: 'product-child',
         payload: test.payload,
       })
-      const desiredChildren = dispatchedCommands(test)
-      const productChild = desiredChildren.find((child) => child.type === 'product.publish')!
-      const remotePhase = desiredChildren.find((child) => child.type === 'catalog.reconcile')!
-      expect(remotePhase).toMatchObject({ phase: 'remote', startedAt: REQUESTED_AT })
-
-      // Remote phase: Google still holds the offer and no row exists, so the
-      // sweep reports it as an orphan and queues a same-instant delete.
-      vi.mocked(test.transport.listProcessedProducts).mockResolvedValueOnce({
-        products: [remoteProduct()],
-      })
+      const offerChild = dispatchedCommands(test).find((child) => child.type === 'offer.publish')
+      expect(offerChild).toBeDefined()
       await test.execute({
-        command: remotePhase,
-        operationId: 'reconcile-remote',
+        command: offerChild!,
+        operationId: 'offer-child',
         payload: test.payload,
       })
-      const deleteChild = dispatchedCommands(test).find((child) => child.type === 'offer.delete')!
-      expect(deleteChild).toMatchObject({
+    }
+    const runDeleteChild = () =>
+      test.execute({ command: deleteChild, operationId: 'delete-child', payload: test.payload })
+
+    if (order === 'delete-first') {
+      await runDeleteChild()
+      expect(test.transport.deleteProductInput).toHaveBeenCalledOnce()
+      await runProductChild()
+    } else {
+      await runProductChild()
+      await runDeleteChild()
+      // The desired claim already stamped this instant, so the sweep's
+      // conditional delete stands down instead of removing a live offer.
+      expect(test.transport.deleteProductInput).not.toHaveBeenCalled()
+    }
+
+    await expect(
+      test.stateStore.get({ identity: newIdentity, payload: test.payload }),
+    ).resolves.toMatchObject({
+      desiredAt: REQUESTED_AT,
+      productId: 'product-1',
+      publishedDigest: newDigest,
+      status: 'published',
+    })
+    expect(test.transport.insertProductInput).toHaveBeenCalledOnce()
+  })
+
+  it('leaves an offer deleted when a later hard delete supersedes a retrying publish', async () => {
+    const test = build()
+    const publish = offerPublish({ requestedAt: '2026-08-29T12:00:00.000Z' })
+    await test.execute({ command: publish, operationId: 'publish-t1', payload: test.payload })
+    expect(test.transport.insertProductInput).toHaveBeenCalledOnce()
+
+    // afterDelete stamps the instant the delete happened, not the deleted
+    // document's stale updatedAt, so it orders strictly after the publish.
+    await test.execute({
+      command: createOfferDeleteCommand({
+        expectedProductId: 'product-1',
         identity: newIdentity,
-        onlyIfDesiredBefore: REQUESTED_AT,
+        requestedAt: '2026-08-29T12:00:05.000Z',
+      }),
+      operationId: 'hard-delete',
+      payload: test.payload,
+    })
+    expect(test.transport.deleteProductInput).toHaveBeenCalledOnce()
+    vi.mocked(test.transport.insertProductInput).mockClear()
+
+    await expect(
+      test.execute({ command: publish, operationId: 'publish-t1-retry', payload: test.payload }),
+    ).resolves.toMatchObject({ outcome: 'skipped' })
+    expect(test.transport.insertProductInput).not.toHaveBeenCalled()
+    await expect(
+      test.stateStore.get({ identity: newIdentity, payload: test.payload }),
+    ).resolves.toMatchObject({ desiredAt: '2026-08-29T12:00:05.000Z', status: 'deleted' })
+  })
+
+  it('keeps a remote offer whose live product has not been re-claimed by this sweep yet', async () => {
+    const test = build({ reconciliation: { orphanDeletion: 'exclusive-data-sources' } })
+    // A row from an earlier publish: its desiredAt predates this sweep, and its
+    // reconcile child has not run yet.
+    await seedPublished(test, { desiredAt: '2026-08-29T11:00:00.000Z', identity: newIdentity })
+    vi.mocked(test.transport.listProcessedProducts).mockResolvedValueOnce({
+      products: [remoteProduct()],
+    })
+
+    const result = await test.execute({
+      command: {
+        type: 'catalog.reconcile',
+        phase: 'remote',
         requestedAt: REQUESTED_AT,
-      })
+        schemaVersion: 2,
+        startedAt: REQUESTED_AT,
+      },
+      operationId: 'reconcile-live-owner',
+      payload: test.payload,
+    })
 
-      const runProductChild = async (): Promise<void> => {
-        vi.mocked(test.asyncAdapter.dispatch).mockClear()
-        await test.execute({
-          command: productChild,
-          operationId: 'product-child',
-          payload: test.payload,
-        })
-        const offerChild = dispatchedCommands(test).find((child) => child.type === 'offer.publish')
-        expect(offerChild).toBeDefined()
-        await test.execute({
-          command: offerChild!,
-          operationId: 'offer-child',
-          payload: test.payload,
-        })
-      }
-      const runDeleteChild = () =>
-        test.execute({ command: deleteChild, operationId: 'delete-child', payload: test.payload })
+    expect(result).toMatchObject({ orphanCount: 0, orphanDeleteCount: 0, remoteCount: 1 })
+    expect(test.payload.findByID).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'product-1', draft: false }),
+    )
+    expect(test.asyncAdapter.dispatch).not.toHaveBeenCalled()
+    expect(test.stateStore.markObserved).toHaveBeenCalledOnce()
+  })
 
-      if (order === 'delete-first') {
-        await runDeleteChild()
-        expect(test.transport.deleteProductInput).toHaveBeenCalledOnce()
-        await runProductChild()
-      } else {
-        await runProductChild()
-        await runDeleteChild()
-        // The desired claim already stamped this instant, so the sweep's
-        // conditional delete stands down instead of removing a live offer.
-        expect(test.transport.deleteProductInput).not.toHaveBeenCalled()
-      }
+  it('deletes a remote offer whose owning product no longer exists', async () => {
+    const test = build({
+      findByID: vi.fn(() =>
+        Promise.reject(Object.assign(new Error('not found'), { status: 404 })),
+      ) as never,
+      reconciliation: { orphanDeletion: 'exclusive-data-sources' },
+    })
+    await seedPublished(test, { desiredAt: '2026-08-29T11:00:00.000Z', identity: newIdentity })
+    vi.mocked(test.transport.listProcessedProducts).mockResolvedValueOnce({
+      products: [remoteProduct()],
+    })
 
-      await expect(
-        test.stateStore.get({ identity: newIdentity, payload: test.payload }),
-      ).resolves.toMatchObject({
-        desiredAt: REQUESTED_AT,
-        productId: 'product-1',
-        publishedDigest: newDigest,
-        status: 'published',
-      })
-      expect(test.transport.insertProductInput).toHaveBeenCalledOnce()
-    },
-  )
+    const result = await test.execute({
+      command: {
+        type: 'catalog.reconcile',
+        phase: 'remote',
+        requestedAt: REQUESTED_AT,
+        schemaVersion: 2,
+        startedAt: REQUESTED_AT,
+      },
+      operationId: 'reconcile-dead-owner',
+      payload: test.payload,
+    })
+
+    expect(result).toMatchObject({ orphanCount: 1, orphanDeleteCount: 1 })
+    expect(dispatchedCommands(test)).toEqual([
+      expect.objectContaining({ type: 'offer.delete', onlyIfDesiredBefore: REQUESTED_AT }),
+    ])
+  })
+
+  it('fences a legacy product.delete that carries no owner on its own instant', async () => {
+    const test = build()
+    // Another product claimed the identity after this delete was queued.
+    await seedPublished(test, {
+      desiredAt: '2026-08-29T12:05:00.000Z',
+      identity: newIdentity,
+      productId: 'product-2',
+    })
+
+    const result = await test.execute({
+      command: {
+        type: 'product.delete',
+        cause: 'delete',
+        identities: [newIdentity],
+        requestedAt: REQUESTED_AT,
+        schemaVersion: 2,
+      },
+      operationId: 'legacy-delete-fenced',
+      payload: test.payload,
+    })
+    const [child] = dispatchedCommands(test)
+    expect(child).toMatchObject({ type: 'offer.delete', onlyIfDesiredBefore: REQUESTED_AT })
+    expect((child as { expectedProductId?: unknown }).expectedProductId).toBeUndefined()
+
+    await expect(
+      test.execute({ command: child, operationId: 'legacy-delete-child', payload: test.payload }),
+    ).resolves.toMatchObject({ outcome: 'skipped' })
+    expect(result.outcome).toBe('completed')
+    expect(test.transport.deleteProductInput).not.toHaveBeenCalled()
+    await expect(
+      test.stateStore.get({ identity: newIdentity, payload: test.payload }),
+    ).resolves.toMatchObject({ productId: 'product-2', status: 'published' })
+  })
+
+  it('rebuilds over a pre-2.0 artifact pointer instead of failing the feed forever', async () => {
+    __resetLegacyArtifactPointerWarningsForTests()
+    let stored: unknown
+    const promote = vi.fn(() => Promise.resolve('promoted' as const))
+    const legacyPointer = {
+      byteLength: 4,
+      checksum: 'a'.repeat(64),
+      contentType: 'text/tab-separated-values; charset=utf-8',
+      createdAt: '2026-08-29T11:00:00.000Z',
+      key: `123456/artifact/9001-${'a'.repeat(64)}.tsv`,
+      sourceVersion: '9001',
+    } as never
+    const feed: GmcFeedConfig = {
+      id: 'artifact',
+      access: 'public',
+      artifactStore: {
+        promote,
+        put: vi.fn((value) => {
+          stored = { body: value.body, descriptor: value.descriptor }
+          return Promise.resolve()
+        }),
+        read: vi.fn(() => Promise.resolve(stored as never)),
+        readCurrent: vi.fn(() => Promise.resolve(null)),
+        readCurrentDescriptor: vi.fn(() => Promise.resolve(legacyPointer)),
+      },
+      delivery: 'artifact',
+      path: '/feeds/artifact.tsv',
+      selector: { contentLanguage: 'en', feedLabel: 'US' },
+    }
+    const test = build({ feed })
+    const warn = vi.fn()
+    ;(test.payload as unknown as { logger: { warn: unknown } }).logger = { warn }
+    const command: Extract<GmcCommand, { type: 'feed.build' }> = {
+      type: 'feed.build',
+      feedId: 'artifact',
+      requestedAt: REQUESTED_AT,
+      schemaVersion: 2,
+    }
+
+    await expect(
+      test.execute({ command, operationId: 'feed-legacy-pointer', payload: test.payload }),
+    ).resolves.toMatchObject({ outcome: 'completed' })
+
+    expect(warn).toHaveBeenCalledOnce()
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/pre-2\.0 artifact pointer/i))
+    expect(promote).toHaveBeenCalledWith(
+      expect.objectContaining({
+        artifact: expect.objectContaining({ generatedAt: REQUESTED_AT }),
+      }),
+    )
+
+    // The warning is deduped per instance and feed across replays.
+    await test.execute({ command, operationId: 'feed-legacy-pointer-2', payload: test.payload })
+    expect(warn).toHaveBeenCalledOnce()
+  })
 
   it('repairs a remotely missing offer even when local publication state is current', async () => {
     const test = build()
