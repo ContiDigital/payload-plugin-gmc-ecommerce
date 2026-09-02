@@ -326,8 +326,9 @@ describe('Payload publication state store', () => {
       }),
     ).resolves.toMatchObject({ desiredAt: DELETED_AT, desiredDigest: undefined, status: 'deleted' })
 
-    // The offer.publish redelivery below was requested before the delete and
-    // must be reported back unchanged rather than re-arming a publish.
+    // The offer.publish redelivery below was requested strictly before the
+    // delete and must be reported back unchanged rather than re-arming a
+    // publish.
     await expect(
       store.claimPublication(
         claim(test.payload, {
@@ -337,8 +338,31 @@ describe('Payload publication state store', () => {
         }),
       ),
     ).resolves.toMatchObject({ operationId: 'delete-1', status: 'deleted' })
-    // An equal instant is also refused: deletion is the desired state at that
-    // instant, and a tie must not reopen it.
+  })
+
+  it('lets an equal-instant publish claim reopen a deleted row', async () => {
+    const test = payloadDouble()
+    const store = newStore()
+    await store.claimPublication(claim(test.payload))
+    await store.markDeletePending({
+      deletedAt: DELETED_AT,
+      identity,
+      operationId: 'delete-1',
+      payload: test.payload,
+      productId: 'product-1',
+    })
+    await store.markDeleted({
+      deletedAt: DELETED_AT,
+      identity,
+      operationId: 'delete-1',
+      payload: test.payload,
+      productId: 'product-1',
+    })
+
+    // One reconciliation root stamps its desired-state children and its orphan
+    // sweep with the same instant. The desired projection is the better
+    // evidence at that instant, so the tie must reopen the row instead of
+    // leaving the offer deleted until the next reconciliation.
     await expect(
       store.claimPublication(
         claim(test.payload, {
@@ -347,7 +371,11 @@ describe('Payload publication state store', () => {
           operationId: 'tie-publish',
         }),
       ),
-    ).resolves.toMatchObject({ operationId: 'delete-1', status: 'deleted' })
+    ).resolves.toMatchObject({
+      desiredDigest: 'digest-tie',
+      operationId: 'tie-publish',
+      status: 'publish-pending',
+    })
   })
 
   it('accepts a publish claim requested after the deletion instant', async () => {

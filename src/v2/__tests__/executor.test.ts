@@ -1100,6 +1100,92 @@ describe('GMC v2 command executor', () => {
     )
   })
 
+  it.each([
+    ['the orphan delete lands first', 'delete-first'],
+    ['the desired child lands first', 'publish-first'],
+  ] as const)(
+    'converges a reconciled offer to published when %s',
+    async (_name, order) => {
+      const find = vi.fn(() =>
+        Promise.resolve({ docs: [{ id: 'product-1' }] }),
+      ) as unknown as Payload['find']
+      const test = build({
+        batchSize: 2,
+        find,
+        reconciliation: { orphanDeletion: 'exclusive-data-sources' },
+      })
+
+      // Desired phase: the identity has no state row yet, because its
+      // product.publish child has not run.
+      await test.execute({
+        command: { type: 'catalog.reconcile', requestedAt: REQUESTED_AT, schemaVersion: 2 },
+        operationId: 'reconcile-desired',
+        payload: test.payload,
+      })
+      const desiredChildren = dispatchedCommands(test)
+      const productChild = desiredChildren.find((child) => child.type === 'product.publish')!
+      const remotePhase = desiredChildren.find((child) => child.type === 'catalog.reconcile')!
+      expect(remotePhase).toMatchObject({ phase: 'remote', startedAt: REQUESTED_AT })
+
+      // Remote phase: Google still holds the offer and no row exists, so the
+      // sweep reports it as an orphan and queues a same-instant delete.
+      vi.mocked(test.transport.listProcessedProducts).mockResolvedValueOnce({
+        products: [remoteProduct()],
+      })
+      await test.execute({
+        command: remotePhase,
+        operationId: 'reconcile-remote',
+        payload: test.payload,
+      })
+      const deleteChild = dispatchedCommands(test).find((child) => child.type === 'offer.delete')!
+      expect(deleteChild).toMatchObject({
+        identity: newIdentity,
+        onlyIfDesiredBefore: REQUESTED_AT,
+        requestedAt: REQUESTED_AT,
+      })
+
+      const runProductChild = async (): Promise<void> => {
+        vi.mocked(test.asyncAdapter.dispatch).mockClear()
+        await test.execute({
+          command: productChild,
+          operationId: 'product-child',
+          payload: test.payload,
+        })
+        const offerChild = dispatchedCommands(test).find((child) => child.type === 'offer.publish')
+        expect(offerChild).toBeDefined()
+        await test.execute({
+          command: offerChild!,
+          operationId: 'offer-child',
+          payload: test.payload,
+        })
+      }
+      const runDeleteChild = () =>
+        test.execute({ command: deleteChild, operationId: 'delete-child', payload: test.payload })
+
+      if (order === 'delete-first') {
+        await runDeleteChild()
+        expect(test.transport.deleteProductInput).toHaveBeenCalledOnce()
+        await runProductChild()
+      } else {
+        await runProductChild()
+        await runDeleteChild()
+        // The desired claim already stamped this instant, so the sweep's
+        // conditional delete stands down instead of removing a live offer.
+        expect(test.transport.deleteProductInput).not.toHaveBeenCalled()
+      }
+
+      await expect(
+        test.stateStore.get({ identity: newIdentity, payload: test.payload }),
+      ).resolves.toMatchObject({
+        desiredAt: REQUESTED_AT,
+        productId: 'product-1',
+        publishedDigest: newDigest,
+        status: 'published',
+      })
+      expect(test.transport.insertProductInput).toHaveBeenCalledOnce()
+    },
+  )
+
   it('repairs a remotely missing offer even when local publication state is current', async () => {
     const test = build()
     await test.execute({

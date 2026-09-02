@@ -219,17 +219,15 @@ export const createPayloadPublicationStateStore = (args: {
       // desired content that already won. `desiredAt` is the host's own
       // ordering stamp for the source change, so it is the only ordering
       // signal the store needs.
+      //
+      // A deletion is not exempt: `markDeletePending`/`markDeleted` stamp the
+      // deletion instant into `desiredAt`, so this one comparison also stops a
+      // publish requested before a delete from resurrecting the offer. The
+      // comparison is strict on purpose. One reconciliation root stamps its
+      // desired-state children and its orphan sweep with the same instant, and
+      // the desired projection is the better evidence at that instant, so an
+      // equal-instant claim proceeds to `publish-pending`.
       if (existing.desiredAt != null && existing.desiredAt > claim.desiredAt) {
-        return toState(existing)
-      }
-      // Deletion is itself a desired state stamped at `deletedAt`. A publish
-      // claim from that same instant is not newer evidence, so a tie must not
-      // resurrect a deleted offer either.
-      if (
-        existing.status === 'deleted' &&
-        existing.desiredAt != null &&
-        existing.desiredAt >= claim.desiredAt
-      ) {
         return toState(existing)
       }
 

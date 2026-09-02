@@ -882,6 +882,19 @@ export const createGmcCommandExecutor = (
     }
   }
 
+  /**
+   * Because the desired phase now dispatches durable `product.publish` children
+   * instead of republishing inline, the `remote` phase can execute before those
+   * children have claimed their identities. It will then see an offer Google
+   * still holds with no publication row and report it as an orphan. Both
+   * execution orders converge, because the two commands share this root's
+   * instant: if the conditional delete lands first it stamps `desiredAt` at
+   * `startedAt`, and the desired child's equal-instant claim reopens the row
+   * and republishes; if the desired child lands first its claim satisfies
+   * `onlyIfDesiredBefore` and the delete stands down. The only cost of the
+   * first order is one delete/insert round trip, and a `verifyRemote` child
+   * that loses its insert to a crash is repaired by the next reconciliation.
+   */
   const executeCatalogReconcile = async (
     context: {
       command: Extract<GmcCommand, { type: 'catalog.reconcile' }>
