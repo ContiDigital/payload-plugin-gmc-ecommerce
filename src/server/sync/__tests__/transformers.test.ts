@@ -573,4 +573,41 @@ describe('reverseTransformProduct', () => {
 
     expect(result.customAttributes).toBeUndefined()
   })
+
+describe('reverseTransformProduct is idempotent', () => {
+  test('leaves array rows that are already in Payload storage shape alone', () => {
+    // A field mapping can hand back a value that is already `[{ value }]` or
+    // `[{ url }]`. Converting it again would stringify the object.
+    const { productAttributes } = reverseTransformProduct({
+      productAttributes: {
+        additionalImageLinks: [{ url: 'https://example.com/a.jpg' }],
+        productTypes: [{ value: 'Shoes' }],
+      },
+    })
+
+    expect(productAttributes.productTypes).toEqual([{ value: 'Shoes' }])
+    expect(productAttributes.additionalImageLinks).toEqual([
+      { url: 'https://example.com/a.jpg' },
+    ])
+  })
+
+  test('still converts the wire shape, and handles a mixed array', () => {
+    const { productAttributes } = reverseTransformProduct({
+      productAttributes: {
+        productTypes: ['Shoes', { value: 'Boots' }],
+      },
+    })
+
+    expect(productAttributes.productTypes).toEqual([{ value: 'Shoes' }, { value: 'Boots' }])
+  })
+
+  test('preserves an existing array row id', () => {
+    const { productAttributes } = reverseTransformProduct({
+      productAttributes: { productTypes: [{ id: 'row-1', value: 'Shoes' }] },
+    })
+
+    expect(productAttributes.productTypes).toEqual([{ id: 'row-1', value: 'Shoes' }])
+  })
+})
+
 })

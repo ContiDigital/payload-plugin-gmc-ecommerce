@@ -14,16 +14,49 @@ import {
   MC_PRODUCT_ATTRIBUTES_FIELD_NAME,
 } from '../../constants.js'
 import { createPluginLogger } from '../utilities/logger.js'
-import { asProductDoc } from '../utilities/recordUtils.js'
+import { asProductDoc , asRecord } from '../utilities/recordUtils.js'
 import { checkPullConflict, extractMCProductLastModified } from './conflictResolver.js'
 import { deepMerge } from './fieldMapping.js'
 import { resolveIdentity } from './identityResolver.js'
-import { writeMCState } from './mcStateWriter.js'
+import { STATE_NOT_PERSISTED_WARNING, writeMCState } from './mcStateWriter.js'
 import { productAttributesContainRemoteSubset, reverseTransformProduct } from './transformers.js'
 
 // ---------------------------------------------------------------------------
 // Pull single product from Merchant Center
 // ---------------------------------------------------------------------------
+
+export const PULL_RACED_A_SAVE_WARNING =
+  'The product changed while it was being pulled from Merchant Center, so it stays queued for another sync.'
+
+/**
+ * The sync-metadata a pull should write, decided against the row as it stands
+ * at write time rather than the document the pull started from.
+ *
+ * A pull cannot declare a product clean if it was saved after the pull read it:
+ * the remote data now landing was reconciled against older content. Clearing
+ * `syncToken` for the same reason stops a push that is still in flight from
+ * certifying content this pull has just overwritten.
+ */
+const pullSyncMeta = (
+  row: Record<string, unknown>,
+  observedDirty: boolean | undefined,
+): { racedASave: boolean; syncMeta: Record<string, unknown> } => {
+  const liveSyncMeta = asRecord(asRecord(row[MC_FIELD_GROUP_NAME]).syncMeta)
+  const racedASave = liveSyncMeta.dirty === true && observedDirty !== true
+
+  return {
+    racedASave,
+    syncMeta: {
+      dirty: racedASave,
+      lastAction: 'pullSync',
+      lastError: null,
+      lastSyncedAt: new Date().toISOString(),
+      state: 'success',
+      syncSource: 'pull',
+      syncToken: null,
+    },
+  }
+}
 
 export const pullProduct = async (args: {
   apiClient: GoogleApiClient
@@ -97,36 +130,53 @@ export const pullProduct = async (args: {
     }
 
     const { customAttributes, productAttributes } = reverseTransformed
-    const mergedProductAttributes = deepMerge(localAttrs ?? {}, productAttributes)
     const populatedFields = Object.keys(productAttributes)
 
-    await writeMCState(payload, collectionSlug, productId, {
-      [MC_FIELD_GROUP_NAME]: {
-        customAttributes,
-        enabled: true,
-        identity: {
-          contentLanguage: identity.contentLanguage,
-          feedLabel: identity.feedLabel,
-          offerId: identity.offerId,
+    let racedASave = false
+
+    const statePersisted = await writeMCState(payload, collectionSlug, productId, (row) => {
+      const meta = pullSyncMeta(row, mcState?.syncMeta?.dirty)
+      racedASave = meta.racedASave
+
+      // Remote data is merged onto the attributes as they stand now, not the
+      // ones read before the Merchant Center round-trip: an edit made during
+      // the fetch keeps whatever the remote does not itself set.
+      const liveAttributes = asRecord(
+        asRecord(row[MC_FIELD_GROUP_NAME])[MC_PRODUCT_ATTRIBUTES_FIELD_NAME],
+      )
+
+      return {
+        [MC_FIELD_GROUP_NAME]: {
+          customAttributes,
+          enabled: true,
+          identity: {
+            contentLanguage: identity.contentLanguage,
+            feedLabel: identity.feedLabel,
+            offerId: identity.offerId,
+          },
+          [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: deepMerge(liveAttributes, productAttributes),
+          snapshot: mcProduct,
+          syncMeta: meta.syncMeta,
         },
-        [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: mergedProductAttributes,
-        snapshot: mcProduct,
-        syncMeta: {
-          dirty: false,
-          lastAction: 'pullSync',
-          lastError: null,
-          lastSyncedAt: new Date().toISOString(),
-          state: 'success',
-          syncSource: 'pull',
-        },
-      },
+      }
     })
+
+    if (!statePersisted) {
+      return {
+        action: 'pull',
+        populatedFields: [],
+        productId,
+        success: false,
+        warning: STATE_NOT_PERSISTED_WARNING,
+      }
+    }
 
     return {
       action: 'pull',
       populatedFields,
       productId,
       success: true,
+      ...(racedASave ? { warning: PULL_RACED_A_SAVE_WARNING } : {}),
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -258,11 +308,11 @@ export const pullAll = async (args: {
 
           const { customAttributes, productAttributes } = reverseTransformProduct(fullProduct)
 
-          await writeMCState(
+          const statePersisted = await writeMCState(
             payload,
             collectionSlug,
             typeof payloadProduct.id === 'string' ? payloadProduct.id : String(payloadProduct.id),
-            {
+            (row) => ({
               [MC_FIELD_GROUP_NAME]: {
                 customAttributes,
                 enabled: true,
@@ -271,22 +321,24 @@ export const pullAll = async (args: {
                   feedLabel: extractFeedLabel(mcProduct),
                   offerId,
                 },
-                [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: productAttributes,
+                [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: deepMerge(
+                  asRecord(asRecord(row[MC_FIELD_GROUP_NAME])[MC_PRODUCT_ATTRIBUTES_FIELD_NAME]),
+                  productAttributes,
+                ),
                 snapshot: fullProduct,
-                syncMeta: {
-                  dirty: false,
-                  lastAction: 'pullSync',
-                  lastError: null,
-                  lastSyncedAt: new Date().toISOString(),
-                  state: 'success',
-                  syncSource: 'pull',
-                },
+                syncMeta: pullSyncMeta(row, localMcState?.syncMeta?.dirty).syncMeta,
               },
-            },
+            }),
           )
 
           report.matched++
-          report.succeeded++
+
+          if (statePersisted) {
+            report.succeeded++
+          } else {
+            report.failed++
+            report.errors.push({ message: STATE_NOT_PERSISTED_WARNING, productId: offerId })
+          }
         } catch (error) {
           report.failed++
           report.errors.push({

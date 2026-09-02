@@ -1,198 +1,251 @@
+import type { Field } from 'payload'
+
 import { describe, expect, test, vi } from 'vitest'
 
-import {
-  collectionHasDrafts,
-  hasPendingDraft,
-  PENDING_DRAFT_SKIP_MESSAGE,
-  UNKNOWN_DRAFT_STATE_SKIP_MESSAGE,
-  writeMCState,
-} from '../mcStateWriter.js'
+import { PRODUCT_MISSING_SKIP_MESSAGE, writeMCState } from '../mcStateWriter.js'
 
-const buildLogger = () => ({
-  error: vi.fn(),
-  info: vi.fn(),
-  warn: vi.fn(),
-})
-
-const buildPayload = (args: {
-  drafts?: boolean
-  findVersions?: unknown
-  update?: unknown
-}) => ({
-  collections: {
-    products: {
-      config: {
-        versions: { drafts: args.drafts ?? false },
+const productFields: Field[] = [
+  { name: 'title', type: 'text' },
+  { name: 'gallery', type: 'array', fields: [{ name: 'caption', type: 'text' }] },
+  {
+    name: 'mc',
+    type: 'group',
+    fields: [
+      { name: 'enabled', type: 'checkbox' },
+      { name: 'snapshot', type: 'json' },
+      {
+        name: 'attrs',
+        type: 'group',
+        fields: [
+          { name: 'title', type: 'text' },
+          { name: 'productTypes', type: 'array', fields: [{ name: 'value', type: 'text' }] },
+        ],
       },
-    },
+      {
+        name: 'syncMeta',
+        type: 'group',
+        fields: [
+          { name: 'state', type: 'text' },
+          { name: 'dirty', type: 'checkbox' },
+          { name: 'lastError', type: 'text' },
+        ],
+      },
+    ],
   },
-  db: args.findVersions === null ? {} : { findVersions: args.findVersions ?? vi.fn() },
-  logger: buildLogger(),
-  update: args.update ?? vi.fn().mockResolvedValue({}),
+]
+
+const liveRow = () => ({
+  id: 'p1',
+  _status: 'published',
+  gallery: [{ id: 'g1', caption: 'first' }],
+  mc: {
+    attrs: { productTypes: [{ id: 't1', value: 'Statues' }], title: 'Synced' },
+    enabled: true,
+    snapshot: { name: 'accounts/1/products/en~PRODUCTS~SKU-1' },
+    syncMeta: { dirty: true, lastError: 'boom', state: 'syncing' },
+  },
+  title: 'Live title',
+  updatedAt: '2026-01-01T00:00:00.000Z',
 })
 
-const versionsResult = (status: unknown) => ({ docs: [{ version: { _status: status } }] })
-
-describe('collectionHasDrafts', () => {
-  test('false when the collection does not store drafts', () => {
-    expect(collectionHasDrafts(buildPayload({ drafts: false }) as never, 'products')).toBe(false)
-  })
-
-  test('true for drafts: true and for drafts as an object', () => {
-    expect(collectionHasDrafts(buildPayload({ drafts: true }) as never, 'products')).toBe(true)
-
-    const withAutosave = {
-      collections: { products: { config: { versions: { drafts: { autosave: true } } } } },
-    }
-    expect(collectionHasDrafts(withAutosave as never, 'products')).toBe(true)
-  })
-
-  test('false for an unknown collection', () => {
-    expect(collectionHasDrafts(buildPayload({ drafts: true }) as never, 'nope')).toBe(false)
-  })
+const buildPayload = (
+  args: { beginTransaction?: unknown; findOne?: unknown; updateOne?: unknown } = {},
+) => ({
+  collections: { products: { config: { fields: productFields } } },
+  db: {
+    beginTransaction: args.beginTransaction ?? vi.fn().mockResolvedValue('txn-1'),
+    commitTransaction: vi.fn().mockResolvedValue(undefined),
+    findOne: args.findOne ?? vi.fn().mockResolvedValue(liveRow()),
+    rollbackTransaction: vi.fn().mockResolvedValue(undefined),
+    updateOne: args.updateOne ?? vi.fn().mockResolvedValue(liveRow()),
+  },
+  logger: { error: vi.fn(), info: vi.fn(), warn: vi.fn() },
+  update: vi.fn(),
 })
 
-describe('hasPendingDraft', () => {
-  test('false when drafts are disabled — no version query is issued', async () => {
-    const findVersions = vi.fn()
-    const payload = buildPayload({ drafts: false, findVersions })
-
-    await expect(hasPendingDraft(payload as never, 'products', 'p1')).resolves.toBe(false)
-    expect(findVersions).not.toHaveBeenCalled()
-  })
-
-  test('true when the latest version is a draft', async () => {
-    const findVersions = vi.fn().mockResolvedValue(versionsResult('draft'))
-    const payload = buildPayload({ drafts: true, findVersions })
-
-    await expect(hasPendingDraft(payload as never, 'products', 'p1')).resolves.toBe(true)
-    expect(findVersions).toHaveBeenCalledWith(
-      expect.objectContaining({
-        collection: 'products',
-        limit: 1,
-        sort: '-updatedAt',
-        where: { and: [{ parent: { equals: 'p1' } }, { latest: { equals: true } }] },
-      }),
-    )
-  })
-
-  test('false when the latest version is published', async () => {
-    const payload = buildPayload({
-      drafts: true,
-      findVersions: vi.fn().mockResolvedValue(versionsResult('published')),
-    })
-
-    await expect(hasPendingDraft(payload as never, 'products', 'p1')).resolves.toBe(false)
-  })
-
-  test('false when drafts are enabled but no version row exists yet', async () => {
-    const payload = buildPayload({ drafts: true, findVersions: vi.fn().mockResolvedValue({ docs: [] }) })
-
-    await expect(hasPendingDraft(payload as never, 'products', 'p1')).resolves.toBe(false)
-  })
-
-  test('handles a localized _status object', async () => {
-    const allPublished = buildPayload({
-      drafts: true,
-      findVersions: vi.fn().mockResolvedValue(versionsResult({ en: 'published', es: 'published' })),
-    })
-    await expect(hasPendingDraft(allPublished as never, 'products', 'p1')).resolves.toBe(false)
-
-    const oneDraft = buildPayload({
-      drafts: true,
-      findVersions: vi.fn().mockResolvedValue(versionsResult({ en: 'published', es: 'draft' })),
-    })
-    await expect(hasPendingDraft(oneDraft as never, 'products', 'p1')).resolves.toBe(true)
-  })
-
-  test('fails safe when the version timeline cannot be read', async () => {
-    const payload = buildPayload({ drafts: true, findVersions: null })
-
-    await expect(hasPendingDraft(payload as never, 'products', 'p1')).resolves.toBe(true)
-  })
-})
+const patch = { mc: { syncMeta: { dirty: false, lastError: null, state: 'success' } } }
 
 describe('writeMCState', () => {
-  const data = { mc: { syncMeta: { state: 'success' } } }
+  test('writes the merged row through the adapter and never through payload.update', async () => {
+    const payload = buildPayload()
 
-  test('refuses to write when a pending draft exists, and warns', async () => {
-    const update = vi.fn()
-    const payload = buildPayload({
-      drafts: true,
-      findVersions: vi.fn().mockResolvedValue(versionsResult('draft')),
-      update,
+    await expect(writeMCState(payload as never, 'products', 'p1', patch)).resolves.toBe(true)
+
+    expect(payload.update).not.toHaveBeenCalled()
+    expect(payload.db.updateOne).toHaveBeenCalledTimes(1)
+
+    const call = (payload.db.updateOne as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(call).toMatchObject({ id: 'p1', collection: 'products' })
+    expect(call.data.mc.syncMeta).toEqual({
+      dirty: false,
+      lastError: null,
+      state: 'success',
     })
-
-    await expect(writeMCState(payload as never, 'products', 'p1', data)).resolves.toBe(false)
-    expect(update).not.toHaveBeenCalled()
-    expect(payload.logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ collection: 'products', operation: 'writeMCState', productId: 'p1' }),
-      `[GMC] ${PENDING_DRAFT_SKIP_MESSAGE}`,
-    )
   })
 
-  test('persists with draft:false and never sends _status when there is no pending draft', async () => {
-    const update = vi.fn().mockResolvedValue({})
+  test('leaves publication state, timestamps and unrelated content exactly as the row had them', async () => {
+    const payload = buildPayload()
+
+    await writeMCState(payload as never, 'products', 'p1', patch)
+
+    const { data } = (payload.db.updateOne as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(data._status).toBe('published')
+    expect(data.updatedAt).toBe('2026-01-01T00:00:00.000Z')
+    expect(data.title).toBe('Live title')
+    expect(data.gallery).toEqual([{ id: 'g1', caption: 'first' }])
+  })
+
+  test('preserves mc fields the patch does not mention', async () => {
+    const payload = buildPayload()
+
+    await writeMCState(payload as never, 'products', 'p1', patch)
+
+    const { data } = (payload.db.updateOne as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(data.mc.enabled).toBe(true)
+    expect(data.mc.attrs).toEqual({ productTypes: [{ id: 't1', value: 'Statues' }], title: 'Synced' })
+    expect(data.mc.snapshot).toEqual({ name: 'accounts/1/products/en~PRODUCTS~SKU-1' })
+  })
+
+  test('reads the row immediately before writing so the merge cannot use stale content', async () => {
+    const calls: string[] = []
     const payload = buildPayload({
-      drafts: true,
-      findVersions: vi.fn().mockResolvedValue(versionsResult('published')),
-      update,
-    })
-
-    await expect(writeMCState(payload as never, 'products', 'p1', data)).resolves.toBe(true)
-    expect(update).toHaveBeenCalledTimes(1)
-
-    const call = update.mock.calls[0][0]
-    expect(call).toMatchObject({
-      id: 'p1',
-      collection: 'products',
-      context: expect.objectContaining({
-        'gmc:skip-sync-hooks': true,
-        skipCollectionHooks: true,
+      findOne: vi.fn().mockImplementation(() => {
+        calls.push('read')
+        return Promise.resolve(liveRow())
       }),
-      data,
-      depth: 0,
-      draft: false,
-      overrideAccess: true,
-    })
-    expect(call.data).not.toHaveProperty('_status')
-    expect(call).not.toHaveProperty('_status')
-  })
-
-  test('persists on a collection without drafts', async () => {
-    const update = vi.fn().mockResolvedValue({})
-    const payload = buildPayload({ drafts: false, update })
-
-    await expect(writeMCState(payload as never, 'products', 'p1', data)).resolves.toBe(true)
-    expect(update).toHaveBeenCalledWith(expect.objectContaining({ draft: false }))
-  })
-
-  test('skips (does not throw) when the draft state cannot be determined', async () => {
-    const update = vi.fn()
-    const payload = buildPayload({
-      drafts: true,
-      findVersions: vi.fn().mockRejectedValue(new Error('versions table missing')),
-      update,
+      updateOne: vi.fn().mockImplementation(() => {
+        calls.push('write')
+        return Promise.resolve(null)
+      }),
     })
 
-    await expect(writeMCState(payload as never, 'products', 'p1', data)).resolves.toBe(false)
-    expect(update).not.toHaveBeenCalled()
+    await writeMCState(payload as never, 'products', 'p1', patch)
+
+    expect(calls).toEqual(['read', 'write'])
+    expect(payload.db.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        collection: 'products',
+        where: { id: { equals: 'p1' } },
+      }),
+    )
+  })
+
+  test('gives new array rows an id so the adapter can insert them', async () => {
+    const payload = buildPayload()
+
+    await writeMCState(payload as never, 'products', 'p1', {
+      mc: { attrs: { productTypes: [{ value: 'Statues > Marble' }] } },
+    })
+
+    const { data } = (payload.db.updateOne as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(data.mc.attrs.productTypes).toEqual([
+      { id: expect.stringMatching(/^[0-9a-f]{24}$/), value: 'Statues > Marble' },
+    ])
+  })
+
+  test('replaces the snapshot wholesale instead of fusing it with the previous one', async () => {
+    const payload = buildPayload()
+
+    await writeMCState(payload as never, 'products', 'p1', {
+      mc: { snapshot: { offerId: 'SKU-1' } },
+    })
+
+    const { data } = (payload.db.updateOne as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(data.mc.snapshot).toEqual({ offerId: 'SKU-1' })
+  })
+
+  test('reports a skipped write when the product no longer exists', async () => {
+    const payload = buildPayload({ findOne: vi.fn().mockResolvedValue(null) })
+
+    await expect(writeMCState(payload as never, 'products', 'p1', patch)).resolves.toBe(false)
+    expect(payload.db.updateOne).not.toHaveBeenCalled()
     expect(payload.logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ error: 'versions table missing' }),
-      `[GMC] ${UNKNOWN_DRAFT_STATE_SKIP_MESSAGE}`,
+      expect.objectContaining({ collection: 'products', productId: 'p1' }),
+      `[GMC] ${PRODUCT_MISSING_SKIP_MESSAGE}`,
     )
   })
 
-  test('swallows a deleted product but rethrows other failures', async () => {
-    const notFound = Object.assign(new Error('Not Found'), { status: 404 })
-    const missing = buildPayload({ drafts: false, update: vi.fn().mockRejectedValue(notFound) })
-    await expect(writeMCState(missing as never, 'products', 'p1', data)).resolves.toBe(false)
-    expect(missing.logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ collection: 'products' }),
-      '[GMC] Skipped MC-state write because product no longer exists',
-    )
+  test('rethrows adapter failures rather than reporting a successful write', async () => {
+    const payload = buildPayload({
+      updateOne: vi.fn().mockRejectedValue(new Error('constraint violation')),
+    })
 
-    const broken = buildPayload({ drafts: false, update: vi.fn().mockRejectedValue(new Error('boom')) })
-    await expect(writeMCState(broken as never, 'products', 'p1', data)).rejects.toThrow('boom')
+    await expect(writeMCState(payload as never, 'products', 'p1', patch)).rejects.toThrow(
+      'constraint violation',
+    )
+  })
+
+  test('reads and writes inside one transaction, then commits', async () => {
+    const payload = buildPayload()
+
+    await writeMCState(payload as never, 'products', 'p1', patch)
+
+    expect(payload.db.beginTransaction).toHaveBeenCalled()
+    expect(payload.db.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({ req: { transactionID: 'txn-1' } }),
+    )
+    expect(payload.db.updateOne).toHaveBeenCalledWith(
+      expect.objectContaining({ req: { transactionID: 'txn-1' } }),
+    )
+    expect(payload.db.commitTransaction).toHaveBeenCalledWith('txn-1')
+    expect(payload.db.rollbackTransaction).not.toHaveBeenCalled()
+  })
+
+  test('rolls the transaction back when the write fails', async () => {
+    const payload = buildPayload({
+      updateOne: vi.fn().mockRejectedValue(new Error('constraint violation')),
+    })
+
+    await expect(writeMCState(payload as never, 'products', 'p1', patch)).rejects.toThrow(
+      'constraint violation',
+    )
+    expect(payload.db.rollbackTransaction).toHaveBeenCalledWith('txn-1')
+    expect(payload.db.commitTransaction).not.toHaveBeenCalled()
+  })
+
+  test('still writes on a host that has transactions turned off', async () => {
+    const payload = buildPayload({ beginTransaction: vi.fn().mockResolvedValue(null) })
+
+    await expect(writeMCState(payload as never, 'products', 'p1', patch)).resolves.toBe(true)
+
+    expect(payload.db.updateOne).toHaveBeenCalledWith(
+      expect.objectContaining({ req: undefined }),
+    )
+    expect(payload.db.commitTransaction).not.toHaveBeenCalled()
+    expect(payload.db.rollbackTransaction).not.toHaveBeenCalled()
+  })
+
+  test('builds the patch from the freshly-read row when given a factory', async () => {
+    const payload = buildPayload()
+
+    await writeMCState(payload as never, 'products', 'p1', (row) => {
+      const current = (row.mc as { syncMeta: { state: string } }).syncMeta.state
+
+      return { mc: { syncMeta: { state: current === 'syncing' ? 'success' : 'conflict' } } }
+    })
+
+    const { data } = (payload.db.updateOne as ReturnType<typeof vi.fn>).mock.calls[0][0]
+    expect(data.mc.syncMeta.state).toBe('success')
+  })
+
+  test('reports a skipped write when the adapter matched no row', async () => {
+    // Mongo's `updateOne` matches nothing and reports no error when the product
+    // was deleted between the read and the write. Returning `true` there would
+    // be the exact false success this module exists to prevent.
+    const payload = buildPayload({ updateOne: vi.fn().mockResolvedValue(null) })
+
+    await expect(writeMCState(payload as never, 'products', 'p1', patch)).resolves.toBe(false)
+    expect(payload.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ productId: 'p1' }),
+      `[GMC] ${PRODUCT_MISSING_SKIP_MESSAGE}`,
+    )
+  })
+
+  test('throws when the collection is not registered rather than silently skipping', async () => {
+    const payload = { ...buildPayload(), collections: {} }
+
+    await expect(writeMCState(payload as never, 'products', 'p1', patch)).rejects.toThrow(
+      /products/,
+    )
   })
 })

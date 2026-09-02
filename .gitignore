@@ -51,3 +51,5 @@ yarn-error.log*
 
 # packed tarballs (local hand-off builds)
 /.pack/
+
+*.tgz

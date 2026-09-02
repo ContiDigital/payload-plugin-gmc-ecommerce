@@ -1,5 +1,10 @@
 # Local Inventory Setup Guide
 
+> Legacy 1.x guide. It documents the retired Content API integration and is
+> retained only for migration archaeology. V2 users must configure the
+> complete `localInventory.project` contract in [v2 setup](./v2-setup.md) and
+> execute reconciliation through the required durable async adapter.
+
 This guide covers how to set up **Local Inventory Ads** and **Free Local Listings** with the `payload-plugin-gmc-ecommerce` plugin.
 
 Local inventory lets your in-stock products appear in Google's local shopping results, tied to your physical store location. Customers see that items are available at your store and click through to YOUR product pages on YOUR website.

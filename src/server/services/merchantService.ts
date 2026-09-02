@@ -20,6 +20,7 @@ import { GMC_SYNC_QUEUE_NAME, MC_FIELD_GROUP_NAME } from '../../constants.js'
 import { resolveIdentity } from '../sync/identityResolver.js'
 import { runInitialSync } from '../sync/initialSync.js'
 import { reconcileLocalInventory } from '../sync/localInventorySync.js'
+import { STATE_NOT_PERSISTED_WARNING } from '../sync/mcStateWriter.js'
 import { pullAll, pullProduct } from '../sync/pullSync.js'
 import { deleteFromMC, deleteFromMCByIdentity, pushProduct, refreshSnapshot } from '../sync/pushSync.js'
 import { createPluginLogger } from '../utilities/logger.js'
@@ -187,13 +188,25 @@ export const createMerchantService = (
           for (let j = 0; j < results.length; j++) {
             const result = results[j]
             report.processed++
-            if (result.status === 'fulfilled' && result.value.success) {
+
+            // A push that succeeded remotely but could not record the outcome
+            // locally is not a clean success: the product is gone and its
+            // Merchant Center listing may now be orphaned. Counting it as
+            // succeeded would hide that from every scheduled report.
+            const unrecorded =
+              result.status === 'fulfilled' &&
+              result.value.success &&
+              result.value.statePersisted === false
+
+            if (result.status === 'fulfilled' && result.value.success && !unrecorded) {
               report.succeeded++
             } else {
               report.failed++
               const message = result.status === 'rejected'
                 ? (result.reason instanceof Error ? result.reason.message : String(result.reason))
-                : 'Sync failed'
+                : unrecorded
+                  ? STATE_NOT_PERSISTED_WARNING
+                  : 'Sync failed'
               report.errors.push({ message, productId: chunk[j] ?? 'unknown' })
             }
           }

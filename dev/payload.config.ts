@@ -3,7 +3,7 @@ import { sqliteAdapter } from '@payloadcms/db-sqlite'
 import { lexicalEditor } from '@payloadcms/richtext-lexical'
 import path from 'path'
 import { buildConfig } from 'payload'
-import { payloadGmcEcommerce } from 'payload-plugin-gmc-ecommerce'
+import { payloadGmcEcommerce } from 'payload-plugin-gmc-ecommerce/legacy'
 import sharp from 'sharp'
 import { fileURLToPath } from 'url'
 
@@ -18,16 +18,16 @@ if (!process.env.ROOT_DIR) {
 }
 
 const buildDatabaseUrl = (): string => {
-  if (process.env.DATABASE_URL) {
-    return process.env.DATABASE_URL
-  }
-
   if (process.env.VITEST || process.env.VITEST_WORKER_ID) {
     const tmpDir = path.resolve(dirname, '.tmp')
     fs.mkdirSync(tmpDir, { recursive: true })
 
     const workerId = process.env.VITEST_WORKER_ID ?? process.pid.toString()
     return `file:${path.resolve(tmpDir, `vitest-${workerId}.db`)}`
+  }
+
+  if (process.env.DATABASE_URL) {
+    return process.env.DATABASE_URL
   }
 
   return 'file:./dev/dev-database.db'

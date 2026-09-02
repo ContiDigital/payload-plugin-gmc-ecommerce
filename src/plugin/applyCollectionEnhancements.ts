@@ -151,8 +151,8 @@ const buildMerchantCenterFields = (options: NormalizedPluginOptions): Field => (
           type: 'group',
           admin: { description: 'ISO 8601 timestamps (e.g. 2026-04-03T00:00:00.000Z)' },
           fields: [
-            { name: 'startDate', type: 'text' },
-            { name: 'endDate', type: 'text' },
+            { name: 'startTime', type: 'text' },
+            { name: 'endTime', type: 'text' },
           ],
         },
         {
@@ -412,6 +412,11 @@ const buildMerchantCenterFields = (options: NormalizedPluginOptions): Field => (
           ],
         },
         {
+          name: 'syncToken',
+          type: 'text',
+          admin: { hidden: true, readOnly: true },
+        },
+        {
           name: 'dirty',
           type: 'checkbox',
           admin: { readOnly: true },
@@ -449,7 +454,7 @@ const buildMerchantCenterTab = (options: NormalizedPluginOptions) => ({
       type: 'ui' as const,
       admin: {
         components: {
-          Field: `${PLUGIN_SLUG}/client#MerchantCenterSyncControls`,
+          Field: `${PLUGIN_SLUG}/legacy/client#MerchantCenterSyncControls`,
         },
       },
     },
@@ -477,7 +482,7 @@ export const MerchantCenterUIPlaceholder: Field = {
   type: 'ui' as const,
   admin: {
     components: {
-      Field: `${PLUGIN_SLUG}/client#MerchantCenterSyncControls`,
+      Field: `${PLUGIN_SLUG}/legacy/client#MerchantCenterSyncControls`,
     },
   },
 }

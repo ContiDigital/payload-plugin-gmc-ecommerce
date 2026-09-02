@@ -13,6 +13,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   quality:
     name: Quality Gates
@@ -21,19 +24,19 @@ jobs:
       fail-fast: false
       matrix:
         node-version:
-          - 18
-          - 20
+          - 22
+          - 24
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
-          version: 10
+          version: 10.16.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           cache: pnpm
           node-version: ${{ matrix.node-version }}
@@ -51,7 +54,7 @@ jobs:
         run: pnpm test:int
 
       - name: Coverage
-        if: matrix.node-version == 20
+        if: matrix.node-version == 22
         run: pnpm test:coverage
 
       - name: Build
@@ -60,23 +63,95 @@ jobs:
       - name: Pack Install Smoke Test
         run: pnpm pack:smoke
 
+      - name: Audit production dependencies
+        if: matrix.node-version == 24
+        run: pnpm audit --prod --audit-level low
+
+  payload-compatibility:
+    name: Payload ${{ matrix.payload-version }} Compatibility
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        payload-version:
+          - 3.37.0
+          - 3.88.0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.16.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          cache: pnpm
+          node-version: 22
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Select Payload version
+        run: >-
+          pnpm add --save-dev --lockfile=false
+          payload@${{ matrix.payload-version }}
+          @payloadcms/db-mongodb@${{ matrix.payload-version }}
+          @payloadcms/db-postgres@${{ matrix.payload-version }}
+          @payloadcms/db-sqlite@${{ matrix.payload-version }}
+          @payloadcms/next@${{ matrix.payload-version }}
+          @payloadcms/richtext-lexical@${{ matrix.payload-version }}
+          @payloadcms/ui@${{ matrix.payload-version }}
+
+      - name: Type check
+        run: pnpm exec tsc --noEmit
+
+      - name: Run v2 compatibility suite
+        run: pnpm exec vitest --run src/v2 dev/v2.int.spec.ts
+
+  v2-database-matrix:
+    name: V2 Database Matrix
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.16.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          cache: pnpm
+          node-version: 22
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run SQLite, PostgreSQL, and MongoDB suite
+        run: pnpm test:v2:db-matrix
+
   gmc-live-smoke:
     name: GMC Live Smoke
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
-          version: 10
+          version: 10.16.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           cache: pnpm
-          node-version: 20
+          node-version: 22
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
@@ -84,14 +159,15 @@ jobs:
       - name: Check required secrets
         id: secret-check
         run: |
-          if [ -n "${GOOGLE_MERCHANT_ID}" ] && [ -n "${GOOGLE_MERCHANT_DATA_SOURCE_ID}" ] && [ -n "${GOOGLE_SERVICE_ACCOUNT_EMAIL}" ] && [ -n "${GOOGLE_SERVICE_ACCOUNT_KEY}" ]; then
+          if [ "${GOOGLE_MERCHANT_LIVE_TESTS_ENABLED}" = "true" ] && [ -n "${GOOGLE_MERCHANT_ID}" ] && [ -n "${GOOGLE_MERCHANT_TEST_DATA_SOURCE_ID}" ] && [ -n "${GOOGLE_SERVICE_ACCOUNT_EMAIL}" ] && [ -n "${GOOGLE_SERVICE_ACCOUNT_KEY}" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
         env:
-          GOOGLE_MERCHANT_DATA_SOURCE_ID: ${{ secrets.GOOGLE_MERCHANT_DATA_SOURCE_ID }}
+          GOOGLE_MERCHANT_LIVE_TESTS_ENABLED: ${{ secrets.GOOGLE_MERCHANT_LIVE_TESTS_ENABLED }}
           GOOGLE_MERCHANT_ID: ${{ secrets.GOOGLE_MERCHANT_ID }}
+          GOOGLE_MERCHANT_TEST_DATA_SOURCE_ID: ${{ secrets.GOOGLE_MERCHANT_TEST_DATA_SOURCE_ID }}
           GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
           GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
 
@@ -103,7 +179,9 @@ jobs:
         if: steps.secret-check.outputs.enabled == 'true'
         run: pnpm test:live
         env:
-          GOOGLE_MERCHANT_DATA_SOURCE_ID: ${{ secrets.GOOGLE_MERCHANT_DATA_SOURCE_ID }}
+          GOOGLE_MERCHANT_LIVE_TESTS_ENABLED: 'true'
           GOOGLE_MERCHANT_ID: ${{ secrets.GOOGLE_MERCHANT_ID }}
+          GOOGLE_MERCHANT_TEST_DATA_SOURCE_ID: ${{ secrets.GOOGLE_MERCHANT_TEST_DATA_SOURCE_ID }}
+          GOOGLE_MERCHANT_TEST_FEED_LABEL: ${{ secrets.GOOGLE_MERCHANT_TEST_FEED_LABEL }}
           GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
           GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}

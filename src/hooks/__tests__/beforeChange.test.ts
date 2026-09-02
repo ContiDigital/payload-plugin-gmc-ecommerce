@@ -212,4 +212,30 @@ describe('createBeforeChangeHook', () => {
 
     expect(result[MC_FIELD_GROUP_NAME]).toBeUndefined()
   })
+
+  test('clears the sync token when marking a product dirty', () => {
+    // A push in flight recognises its own token on the way back. An editorial
+    // save invalidates it, so that push cannot mark this new content as synced.
+    const hook = createBeforeChangeHook(mockOptions())
+
+    const data = hook({
+      collection: {} as never,
+      context: {},
+      data: { [MC_FIELD_GROUP_NAME]: { enabled: true }, sku: 'SKU-1' },
+      operation: 'update',
+      originalDoc: {
+        [MC_FIELD_GROUP_NAME]: {
+          enabled: true,
+          syncMeta: { dirty: false, state: 'syncing', syncToken: 'token-from-push' },
+        },
+        sku: 'SKU-1',
+      },
+      req: {} as never,
+    }) as Record<string, { syncMeta?: Record<string, unknown> }>
+
+    expect(data[MC_FIELD_GROUP_NAME]?.syncMeta).toMatchObject({
+      dirty: true,
+      syncToken: null,
+    })
+  })
 })

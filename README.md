@@ -1,1042 +1,339 @@
 # payload-plugin-gmc-ecommerce
 
-Google Merchant Center sync for [Payload CMS](https://payloadcms.com) v3.
+Durable, one-way Google Merchant Center publication and canonical product feeds for Payload CMS 3.
 
-Push products to Google Merchant Center, pull processed data back, manage field mappings, run batch operations, and monitor sync state, all from inside Payload's admin panel.
+Version 2 treats Payload commerce data as the sole content authority. A host-supplied projector derives complete Merchant API `ProductInput` records from published product documents; the plugin validates and canonicalizes that projection, generates feeds from the same input, and converges Google through bounded durable commands.
 
-Uses the **Merchant API v1** (stable). Raw `fetch` to `merchantapi.googleapis.com`, no `@googleapis/content` dependency.
+There is no Google-to-Payload content sync, no editable Merchant shadow attached to Products, no process-local background work, and no optional “fire and forget” mode.
 
-**Demo: plugin running in production on [Fine's Gallery](https://finesgallery.com)**
+## Status
 
-https://github.com/user-attachments/assets/21adb3d0-6f6b-4031-8aa2-33e622db4f1b
-
-This plugin powers the [Fine's Gallery](https://finesgallery.com) Google Shopping integration, which is their primary revenue channel.
-
-<img width="1209" height="607" alt="Fine's Gallery dominates Google Shopping for high-ticket marble sculptures" src="https://github.com/user-attachments/assets/cadf256d-ba85-4e3f-956e-57c1eba1baa8" />
-
-<img width="1193" height="561" alt="Fine's Gallery Shopping listings across marble fountain searches" src="https://github.com/user-attachments/assets/020fb736-a4e9-444d-81f1-c42148578917" />
-
-<img width="1193" height="667" alt="Fine's Gallery product listings powered by Merchant Center sync" src="https://github.com/user-attachments/assets/fa0435c0-83f9-4559-90db-3dc49894847a" />
-
-The plugin manages Fine's entire Merchant Center catalog - syncing thousands of products, segmenting them into paid Shopping campaigns via `customLabel` fields, and providing a simple way for non-technical users to manage everything from the admin panel.
-
-Read more for how Fine's Gallery uses Google Shopping to generate $200+k in monthly revenue: [Google Shopping for High-Ticket Ecommerce: The Fine's Gallery Playbook](https://www.petertconti.com/blog/google-shopping-for-high-ticket-ecommerce-the-fines-gallery-playbook)
+`2.0.0-rc.35` is a breaking release candidate. Release-candidate tarballs are immutable. The final `2.0.0` package may be published only by the repository owner after the plugin release gates pass: deterministic executor/adapter/feed/state suites, exact-artifact install smoke, and the isolated packaged-transport lifecycle against a designated Merchant test source. The live transport smoke deliberately does not claim to prove a consumer's durable adapter, migration, or deployment. Publishing the reusable package does not authorize or perform any consumer deployment: each host must then install the registry release, regenerate its lockfile, run its own migration and integration gates, and obtain separate deployment approval. RC31 and later use durable command schema 2; drain or quarantine every RC30 command before upgrading because `localInventory.apply` now requires its canonical `productId`. RC32 makes an explicitly configured empty local-inventory store set schema-stable and inactive. RC33 tracks the current Merchant API v1 product-availability vocabulary, emits Google's exact documented TSV destination spellings, and fails closed when an API destination has no documented text-feed representation. RC34 makes the registry-release/consumer-deployment boundary explicit and prohibits committed vendored or local-file package dependencies. RC35 makes the live stable-release gate build and import the public package boundary and documents exactly which external lifecycle it proves. The v2 API is the package root and is also available from `payload-plugin-gmc-ecommerce/v2`. The historical 1.x engine is not exported or shipped in the v2 package. Existing v1 deployments must stay pinned to a 1.x release during their rollback window.
 
 ## Requirements
 
-- Payload CMS `^3.37.0`
-- Node.js `^18.20.2 || >=20.9.0`
-- **A long-running server process** (EC2, ECS, EKS, a VPS, etc.). See [Serverless Compatibility](#serverless-compatibility).
+- Payload `>=3.37.0 <4.0.0`
+- Node.js `^22.12.0 || >=24.0.0` (supported LTS lines only; Node 18 and 20 are EOL)
+- an API-backed primary Merchant Center product data source and service-account credentials
+- a host-provided durable async adapter with atomic deduplication, transactional enqueue/outbox behavior, FIFO execution per subject, retries, durable operation lookup, aggregate workflow status, and atomic exclusion of overlapping full reconciliations for the same complete raw catalog subject. Exact-key reconciliation replay must return the original operation; a different key must fail with `GmcAsyncWorkflowConflictError` while any member of the earlier workflow is nonterminal
+- database transactions enabled for every collection/Global write carrying an automatic v2 hook; the plugin awaits the actual transaction handle and fails with `GMC_TRANSACTION_REQUIRED` before mutation when it is absent (including a disabled adapter's `Promise<null>`). Payload's SQLite adapter requires an explicit `transactionOptions` object, MongoDB requires a transaction-capable replica set, and PostgreSQL must not set `transactionOptions: false`
+- one of Payload's official SQLite, PostgreSQL, or MongoDB adapters for the built-in product and local-inventory publication-state stores, or custom atomic stores for both configured state domains
+
+After the owner publishes the stable package, install it from the registry and
+commit the resulting package-manager lockfile:
 
 ```bash
-pnpm add payload-plugin-gmc-ecommerce
+pnpm add --save-exact payload-plugin-gmc-ecommerce@2.0.0
 ```
 
-## Serverless Compatibility
+An immutable candidate tarball may be installed from outside a consumer
+repository for pre-release compatibility testing. Do not copy it into the
+consumer repository, commit a `file:` dependency, publish it, or deploy it.
 
-**This plugin is not compatible with serverless environments like AWS Lambda or Vercel Functions.**
+## The v2 data flow
 
-The plugin relies on background work that continues after the HTTP response is returned:
+```text
+published Payload product
+          |
+          v
+host projector -> validated canonical ProductInput
+                         |                 |
+                         v                 v
+             canonical export only   durable command ledger
+               (TSV/XML/etc.)                |
+                                             v
+                                    FIFO worker by subject
+                                            |
+                                            v
+                               verified API-primary source
+                                            |
+                                            v
+                                    Merchant API v1
+                                            |
+                                            v
+                              read-only status/diagnostics
+```
 
-- **onChange sync** uses `setImmediate` to push products to MC after the save response is sent. On Lambda, the function freezes or terminates once the response is returned, killing the push mid-flight.
-- **Batch operations** (initial sync, push-dirty, pull-all) use `void (async () => {...})()` to run asynchronously after the endpoint returns `{ jobId, status: 'running' }`. On Lambda, this background work is killed when the function invocation ends.
-- **Large catalogs** (1000+ products) will exceed Lambda's 15-minute maximum timeout during batch operations, even if the function stayed alive. A 5000-product initial sync at 4 concurrent with rate limiting can take 20+ minutes.
-- **In-memory state** (rate limiter buckets, service singleton) is lost between cold starts, which can cause duplicate pushes or quota overruns.
+The projector is pure desired-state policy. Returning `products: []` means that none of the document's previous Google offers should remain. A document may produce one offer or multiple variant offers.
 
-**Supported environments**: EC2, ECS, EKS, Docker on any long-running host, or any platform where your Node.js process runs continuously.
-
-If your Payload deployment runs on Lambda (e.g., Vercel, SST), a common pattern is to run your main Payload instance on ECS/EC2 for admin and sync workloads while keeping your frontend on Lambda/Vercel.
-
-## Minimal Setup
+## Minimal configuration
 
 ```ts
 import { buildConfig } from 'payload'
-import { payloadGmcEcommerce } from 'payload-plugin-gmc-ecommerce'
+import { payloadGmcEcommerceV2, type GmcAsyncAdapter } from 'payload-plugin-gmc-ecommerce'
+
+const asyncAdapter: GmcAsyncAdapter = {
+  name: 'host-async-operations',
+  capabilities: {
+    delivery: 'at-least-once',
+    durable: true,
+    exclusiveCatalogReconciliation: true,
+    globalSourceVersion: true,
+    orderedBySubject: true,
+    scheduledDelivery: true,
+    transactionAware: true,
+    workflowStatus: true,
+  },
+
+  // These three methods must bridge to your durable ledger/queue. See the
+  // adapter contract; do not replace this with an in-memory Promise or timer.
+  dispatch: async (args) => hostAsyncOperations.enqueueUnique(args),
+  getOperation: async (args) => hostAsyncOperations.getAggregate(args),
+  health: async (args) => hostAsyncOperations.health(args),
+}
 
 export default buildConfig({
+  collections: [Products],
   plugins: [
-    payloadGmcEcommerce({
+    payloadGmcEcommerceV2({
       merchantId: process.env.GMC_MERCHANT_ID!,
       dataSourceId: process.env.GMC_DATA_SOURCE_ID!,
-      // Local dev: keyFilename reads the JSON file for you
-      // Production: use type: 'json' with your secret manager (see setup guide)
+      instanceId: 'primary-store',
+      productIngestion: { mode: 'api-primary' },
+
       getCredentials: async () => ({
-        type: 'keyFilename',
-        path: process.env.GMC_SERVICE_ACCOUNT_PATH!,
+        type: 'json',
+        credentials: await secrets.getGoogleMerchantServiceAccount(),
       }),
-      collections: {
-        products: {
-          slug: 'products',
-          identityField: 'sku',
+
+      async: asyncAdapter,
+      access: ({ user }) => {
+        const role = user && typeof user === 'object' && 'role' in user ? user.role : undefined
+        return role === 'admin' || role === 'owner'
+      },
+      workerAccess: ({ req }) => verifyInternalWorkerRequest(req),
+
+      // Collections which can change ProductInput without changing a Product.
+      // The plugin owns their catalog fan-out; select only projection inputs.
+      catalogDependencies: [
+        {
+          collection: 'promotions',
+          select: ({ doc }) => ({
+            status: doc._status,
+            starts: doc.starts,
+            ends: doc.ends,
+            price: doc.price,
+          }),
+          // Requires async.capabilities.scheduledDelivery === true.
+          scheduleAt: ({ doc }) =>
+            [doc.starts, doc.ends].filter((value): value is string => typeof value === 'string'),
         },
-      },
-    }),
-  ],
-})
-```
-
-This mounts API endpoints under `/api/gmc/*`, injects a Merchant Center tab into your products collection, registers hidden utility collections, and adds an admin dashboard route at `/admin/merchant-center`.
-
-Sync mode defaults to `manual`. Nothing syncs until you trigger it.
-
-For the complete integration walkthrough, see [docs/setup-guide.md](./docs/setup-guide.md).
-
-## What the Plugin Does
-
-When enabled, the plugin:
-
-1. Injects a `mc` field group into your products collection with identity fields, all Merchant Center product attributes, a read-only API snapshot, and sync metadata.
-2. Adds a **Merchant Center** tab to each product's edit view with push/pull/delete/refresh controls, MC approval status per destination, performance analytics (impressions, clicks, CTR, conversions), and a read-only snapshot viewer.
-3. Mounts REST endpoints for single-product and batch operations, health checks, field mapping management, and worker/cron scheduling.
-4. Creates two hidden collections: `gmc-field-mappings` (runtime field mapping rules) and `gmc-sync-log` (operation history with progress tracking).
-5. Adds an admin dashboard (or dashboard widget, or both) showing connection health, bulk operations, field mappings, and sync history.
-6. Optionally registers Payload job task definitions when using the `payload-jobs` scheduling strategy.
-
-## Configuration Reference
-
-### Required Options
-
-| Option                               | Type             | Description                                    |
-| ------------------------------------ | ---------------- | ---------------------------------------------- |
-| `merchantId`                         | `string`         | Your Google Merchant Center account ID         |
-| `dataSourceId`                       | `string`         | The data source ID products will sync through  |
-| `getCredentials`                     | `function`       | Returns Google service account credentials     |
-| `collections.products.slug`          | `CollectionSlug` | Your products collection slug                  |
-| `collections.products.identityField` | `string`         | Field used to derive `offerId` (e.g., `'sku'`) |
-
-### All Options
-
-```ts
-payloadGmcEcommerce({
-  // --- Required ---
-  merchantId: string,
-  dataSourceId: string,
-  getCredentials: async ({ payload }) => CredentialResolution,
-  collections: {
-    products: {
-      slug: CollectionSlug,
-      identityField: string,
-      autoInjectTab?: boolean,       // default: true
-      tabPosition?: 'append' | 'before-last' | number,  // default: 'append'
-      fetchDepth?: number,           // default: 1, depth for fetching product docs during push
-      fieldMappings?: FieldMapping[], // default: []
-    },
-    categories?: {
-      slug: CollectionSlug,
-      nameField: string,
-      googleCategoryIdField?: string,
-      parentField?: string,
-      productCategoryField?: string,  // relationship field on products
-      productTypeField?: string,      // field used for MC productTypes
-    },
-  },
-
-  // --- Credentials ---
-  // getCredentials returns one of:
-  //   { type: 'json', credentials: { client_email, private_key } }
-  //   { type: 'keyFilename', path: '/path/to/service-account.json' }
-
-  // --- Defaults ---
-  defaults?: {
-    contentLanguage?: string,  // default: 'en'
-    feedLabel?: string,        // default: 'PRODUCTS'
-    currency?: string,         // default: 'USD'
-    condition?: string,        // default: 'NEW'
-  },
-
-  // --- Admin UI ---
-  admin?: {
-    mode?: 'route' | 'dashboard' | 'both' | 'headless',  // default: 'route'
-    route?: string,       // default: '/merchant-center'
-    navLabel?: string,    // default: 'Merchant Center'
-  },
-
-  // --- API ---
-  api?: {
-    basePath?: string,    // default: '/gmc'
-  },
-
-  // --- Site URL ---
-  siteUrl?: string,
-    // Base URL for resolving relative paths (e.g., 'https://example.com')
-    // Required if using the 'extractAbsoluteUrl' transform preset
-
-  // --- Sync ---
-  sync?: {
-    mode?: 'manual' | 'onChange' | 'scheduled',  // default: 'manual'
-    permanentSync?: boolean,        // default: false
-    conflictStrategy?: 'mc-wins' | 'payload-wins' | 'newest-wins',  // default: 'newest-wins'
-    initialSync?: {
-      enabled?: boolean,            // default: true
-      dryRun?: boolean,             // default: true
-      batchSize?: number,           // default: 100
-      onlyIfRemoteMissing?: boolean, // default: true
-    },
-    schedule?: {
-      strategy?: 'external' | 'payload-jobs',  // default: 'external'
-      apiKey?: string,              // required for external strategy
-      cron?: string,                // default: '0 4 * * *'
-    },
-    scheduleCron?: string,            // shorthand for schedule.cron (same default)
-  },
-
-  // --- Rate Limiting ---
-  rateLimit?: {
-    enabled?: boolean,              // default: true
-    maxConcurrency?: number,        // default: 4
-    maxQueueSize?: number,          // default: 200
-    maxRequestsPerMinute?: number,  // default: 120
-    maxRetries?: number,            // default: 4
-    baseRetryDelayMs?: number,      // default: 300
-    maxRetryDelayMs?: number,       // default: 4000
-    jitterFactor?: number,          // default: 0.2
-    requestTimeoutMs?: number,      // default: 15000
-    store?: DistributedRateLimitStore,  // for multi-instance deployments
-  },
-
-  // --- Access Control ---
-  access?: async ({ req, payload, user }) => boolean,
-    // Default: user.isAdmin === true || user.roles includes 'admin'
-
-  // --- Lifecycle Hook ---
-  beforePush?: async ({ doc, operation, payload, productInput }) => MCProductInput,
-    // The key integration point. See "The beforePush Hook" below.
-
-  // --- Local Inventory (for Local Ads / Free Local Listings) ---
-  localInventory?: {
-    enabled?: boolean,              // default: false
-    storeCode: string,              // Google Business Profile store code
-    pickup?: {
-      sla: LocalInventoryPickupSla,
-        // 'SAME_DAY' | 'NEXT_DAY' | 'TWO_DAY' | ... | 'SEVEN_DAY' | 'MULTI_WEEK'
-        // Omit pickup entirely for "On Display in Store" only (ships to customer)
-    },
-    availabilityResolver?: (doc) => 'in_stock' | null,
-      // Optional custom resolver. Return 'in_stock' for products that should
-      // appear as locally available; return null to remove the local entry.
-      // Default: checks if MC availability is 'IN_STOCK' after beforePush.
-  },
-
-  // --- Disable ---
-  disabled?: boolean,  // default: false
-})
-```
-
-## Local Inventory (Local Ads & Free Local Listings)
-
-The plugin supports Google's [Inventories sub-API](https://developers.google.com/merchant/api/guides/inventories) for **Local Inventory Ads** and **Free Local Listings**. This lets your in-stock products appear in Google's local shopping results, tied to your physical store location.
-
-### How It Works
-
-When `localInventory.enabled` is `true`:
-
-1. **On every product push**: after the product is successfully synced to Merchant Center, the plugin checks if the product is in-stock (via `availabilityResolver` or the resolved MC `availability` attribute).
-   - **In-stock**: inserts a local inventory entry for your store (`insertLocalInventory`)
-   - **Not in-stock**: deletes the local inventory entry (`deleteLocalInventory`)
-2. Local inventory sync is **non-critical** - failures are logged but do not fail the product push.
-3. A **reconciliation endpoint** is available for batch operations and nightly cron jobs.
-
-For the complete local inventory walkthrough (Merchant Center setup, GBP linking, product page experience selection, pickup configuration, troubleshooting), see **[docs/local-inventory-setup.md](./docs/local-inventory-setup.md)**.
-
-### Prerequisites
-
-Before enabling local inventory in the plugin, complete these steps in Google Merchant Center:
-
-1. **Link your Google Business Profile** to your Merchant Center account (your physical store must be listed)
-2. **Enable the Free Local Listings and/or Local Inventory Ads add-on** (Settings > Add-ons)
-3. **Configure your in-store product experience** (e.g., "On Display in Store" for showroom products shipped to customers)
-4. **Note your store code** from Google Business Profile - this is the `storeCode` you'll pass to the plugin
-
-### Configuration
-
-```ts
-payloadGmcEcommerce({
-  // ... other options
-  localInventory: {
-    enabled: true,
-    storeCode: 'your-gbp-store-code',
-
-    // Optional: pickup configuration for "Pickup Later"
-    // Omit this for "On Display in Store" only (items ship to customer)
-    pickup: {
-      sla: 'MULTI_WEEK',  // or 'SAME_DAY', 'NEXT_DAY', 'TWO_DAY' ... 'SEVEN_DAY'
-    },
-
-    // Optional: custom logic for which products are locally available
-    availabilityResolver: (doc) => {
-      return doc.stockStatus === 'in-stock' ? 'in_stock' : null
-    },
-  },
-})
-```
-
-### Pickup Configuration
-
-The `pickup` option controls whether in-stock products are also available for in-store pickup. This is separate from "On Display in Store" (which shows products viewable in the showroom but shipped to customers).
-
-| `pickup.sla` | Google Annotation | Use Case |
-|---|---|---|
-| `'SAME_DAY'` | "Pickup today" | Item is ready for same-day pickup |
-| `'NEXT_DAY'` | "Pickup tomorrow" | Ready next business day |
-| `'TWO_DAY'` to `'SEVEN_DAY'` | "Pickup in X days" | Needs packaging/preparation time |
-| `'MULTI_WEEK'` | "Store pick-up" | Generic annotation, no specific date shown |
-| *(omit pickup entirely)* | No pickup annotation | "On Display in Store" only - item ships to customer |
-
-> **Note:** As of September 2024, Google only requires `pickupSla`. The `pickupMethod` attribute is deprecated and is NOT submitted by this plugin.
-
-**Example: Showroom with 7-day pickup prep time**
-```ts
-localInventory: {
-  enabled: true,
-  storeCode: 'bonita-springs-01',
-  pickup: { sla: 'SEVEN_DAY' },  // Google rounds to next open day based on GBP hours
-}
-```
-
-### Reconciliation Endpoint
-
-For nightly cron jobs or manual reconciliation, use:
-
-```
-POST /api/gmc/local-inventory/reconcile        (authenticated user)
-POST /api/gmc/worker/local-inventory/reconcile  (API key via X-GMC-API-Key header)
-```
-
-This iterates all MC-enabled products and ensures local inventory entries match their current stock status.
-
-### Programmatic Access
-
-```ts
-const service = getMerchantServiceInstance()
-const report = await service.reconcileLocalInventory({ payload })
-// { inserted: 42, deleted: 5, errors: 0, processed: 47, total: 47 }
-```
-
-## Merchant Center Product Identity
-
-Product identity in Google Merchant Center is derived from three values:
-
-```
-contentLanguage~feedLabel~offerId
-```
-
-For example: `en~PRODUCTS~SKU-123`
-
-These three values together form a unique product in Merchant Center. Changing any of them creates a **new** Merchant Center product rather than updating the existing one.
-
-The plugin resolves identity as follows:
-
-1. `contentLanguage` from per-product override (`mc.identity.contentLanguage`) or `defaults.contentLanguage`
-2. `feedLabel` from per-product override (`mc.identity.feedLabel`) or `defaults.feedLabel`
-3. `offerId` from per-product override (`mc.identity.offerId`) or the value of your `identityField`
-
-If you are connecting to an existing live Merchant Center data source, your identity values **must match your current production identity exactly**. If your live catalog uses `PRODUCTS` as the feed label and you configure the plugin with `US`, you will create duplicate products.
-
-## Sync Modes
-
-| Mode        | Behavior                                                                                                                                                                                   |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `manual`    | Nothing syncs automatically. Use the admin UI or API endpoints to trigger operations.                                                                                                      |
-| `onChange`  | Products auto-sync to Merchant Center on every successful save. The push runs asynchronously via `setImmediate` and never blocks the save response. Failures are logged to `gmc-sync-log`. |
-| `scheduled` | Products are marked dirty on save. A scheduled job pushes all dirty products in batch.                                                                                                     |
-
-Start with `manual`. Move to `onChange` or `scheduled` only after you have verified identity alignment and pushed a few products successfully.
-
-### How onChange Works
-
-When a product is saved and `mode` is `onChange`:
-
-1. The `afterChange` hook fires and queues a push via `setImmediate` (or enqueues a Payload job if using `payload-jobs` strategy).
-2. The HTTP response returns immediately. The user never waits for the MC API call.
-3. The push runs in the background: resolve identity, apply field mappings, apply `beforePush`, insert product input, fetch snapshot, update sync metadata.
-4. If the push fails, the error is written to `mc.syncMeta.lastError` and `mc.syncMeta.state` is set to `'error'`.
-
-### Drafts and Versioned Product Collections
-
-If your products collection has `versions: { drafts: true }`, the plugin treats the **published (live) row** as the source of truth and never writes across the draft boundary:
-
-- **What gets pushed to Merchant Center** is the live row. `pushProduct` reads the product without `draft: true`, so a pending draft's unpublished content is never sent to Google.
-- **Sync bookkeeping** (`mc.syncMeta.*`, `mc.snapshot`, `mc.attrs.*`) is written with an explicit `draft: false`, and only when there is **no pending draft** in front of the live row.
-- **When a pending draft does exist**, the write is skipped and logged:
-
-  ```
-  [GMC] MC state not persisted: pending draft; will persist on next publish/sync
-  ```
-
-  `mc.syncMeta.dirty` stays `true`, so the state is persisted on the next publish or scheduled sync. Nothing is lost; the admin UI's sync panel simply shows the previous state until then.
-
-This matters because Payload's update operation resolves its base document from the *latest* version. Merging bookkeeping onto a published document that has a newer draft would copy that draft's content — and its `_status: 'draft'` — onto the live row, unpublishing it. See CHANGELOG 1.2.2.
-
-> **Note:** In `onChange` mode the `afterChange` hook does not distinguish a draft save from a publish, so saving a draft on a Merchant-Center-enabled product triggers a push. That push is harmless — it re-sends the already-published content — but it does consume MC API quota. Use `scheduled` mode if draft-heavy editing is making the push volume noisy.
-
-### Rate Limiter Behavior Under Load
-
-If many products save simultaneously (e.g., a bulk update triggers 1000 onChange pushes):
-
-- **4 products** process concurrently (default `maxConcurrency`)
-- **200 products** queue behind them (default `maxQueueSize`)
-- **Remaining products** receive a `RateLimitQueueOverflowError` and are marked dirty with `syncMeta.state: 'error'`
-- Dirty products are picked up on the next scheduled sync or can be pushed via "Push Dirty" in the admin UI
-
-This is by design. The rate limiter protects your MC API quota and prevents runaway API calls.
-
-## Field Mappings
-
-Field mappings copy values from your Payload document fields into Merchant Center product attributes. There are two sources of field mappings, and they are merged at push time:
-
-### Config-Time Mappings
-
-Defined in your plugin config. These are static and version-controlled:
-
-```ts
-collections: {
-  products: {
-    slug: 'products',
-    identityField: 'sku',
-    fieldMappings: [
-      { source: 'title', target: 'productAttributes.title', syncMode: 'permanent' },
-      { source: 'description', target: 'productAttributes.description', syncMode: 'permanent' },
-      { source: 'price', target: 'productAttributes.price.amountMicros', syncMode: 'permanent', transformPreset: 'toMicrosString' },
-      { source: 'featuredImage', target: 'productAttributes.imageLink', syncMode: 'permanent', transformPreset: 'extractAbsoluteUrl' },
-    ],
-  },
-},
-```
-
-Field mappings are good for simple 1:1 field-to-attribute copies with optional transforms. For anything more complex (conditional logic, cross-collection lookups, computed values), use `beforePush`.
-
-### Runtime Mappings (Admin UI)
-
-Defined in the Merchant Center admin dashboard. These are stored in the `gmc-field-mappings` collection. Useful for non-developer users who need to adjust mappings without code changes.
-
-Runtime mappings are additive. They are appended to config-time mappings, not replacing them.
-
-### Sync Modes for Mappings
-
-| Mode          | Behavior                                                                                                                                                                       |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `permanent`   | Applied on every push. If `sync.permanentSync` is `true`, also applied in the `beforeChange` hook on every document save (pre-populating MC attribute fields before the push). |
-| `initialOnly` | Applied only when a product has no existing snapshot (first sync).                                                                                                             |
-
-### Transform Presets
-
-| Preset               | What It Does                                                                                                                 |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `none`               | Pass value through unchanged                                                                                                 |
-| `toMicros`           | Convert a number to micros string (15.99 becomes `"15990000"`). Non-numbers pass through unchanged.                          |
-| `toMicrosString`     | Same as `toMicros` but also accepts numeric string input (`"15.99"` becomes `"15990000"`)                                    |
-| `extractUrl`         | Extract `.url`, `.src`, or `.href` from an object (e.g., Payload media/upload field)                                         |
-| `extractAbsoluteUrl` | Same as `extractUrl`, but prepends `siteUrl` for paths starting with `/`. Bare strings (e.g., slugs) pass through unchanged. |
-| `toArray`            | Wrap a scalar value in an array. Arrays pass through unchanged.                                                              |
-| `toString`           | Convert value to string                                                                                                      |
-| `toBoolean`          | Convert value to boolean                                                                                                     |
-
-> **Important**: `amountMicros` is a **string** in the Merchant API v1, not a number. Always use `toMicrosString` for price fields.
-
-## Category Resolution
-
-If you configure a `categories` collection, the plugin resolves `googleProductCategory` and `productTypes` from your product's category relationships during push.
-
-```ts
-collections: {
-  categories: {
-    slug: 'categories',
-    nameField: 'title',
-    googleCategoryIdField: 'googleCategoryId',  // Google taxonomy ID field
-    parentField: 'parent',                       // self-referencing relationship
-    productCategoryField: 'category',            // relationship field on products
-    productTypeField: 'fullTitle',               // field for MC productTypes breadcrumb
-  },
-},
-```
-
-- `googleProductCategory`: Set to the Google taxonomy ID from the most specific category that has one.
-- `productTypes`: Built from the category chain using `productTypeField` (falls back to `nameField`).
-- Both are only set if not already manually populated on the product.
-
-The category resolver handles single values, arrays, populated objects, and polymorphic relationships.
-
-## The `beforePush` Hook
-
-`beforePush` is the primary integration point of this plugin. While field mappings handle simple 1:1 copies, real-world ecommerce products almost always require conditional logic, cross-collection lookups, computed values, and business rules that field mappings cannot express. `beforePush` is where you put all of that.
-
-It runs **after** field mappings and category resolution, right before the API call. It receives the prepared `MCProductInput` (already populated by field mappings) and the source Payload document, and must return the (potentially modified) input.
-
-| Argument       | Description                                                                                 |
-| -------------- | ------------------------------------------------------------------------------------------- |
-| `doc`          | The Payload document, hydrated to `fetchDepth` (relationships resolved as objects, not IDs) |
-| `operation`    | `'insert'` or `'update'`                                                                    |
-| `payload`      | Payload instance for querying other collections, running local API calls, etc.              |
-| `productInput` | The prepared MC product input. Modify this and return it.                                   |
-
-### Simple Example
-
-```ts
-beforePush: async ({ doc, productInput }) => {
-  productInput.productAttributes ??= {}
-  productInput.productAttributes.availability =
-    (doc as any).inventory > 0 ? 'IN_STOCK' : 'OUT_OF_STOCK'
-  productInput.productAttributes.link =
-    `${process.env.SITE_URL}/products/${(doc as any).slug}`
-  return productInput
-},
-```
-
-### Production Example
-
-This is the actual `beforePush` implementation running in production for a ~5400-product ecommerce catalog. It demonstrates the full power of the hook: price fallback logic, sale price validation, category-derived material resolution, dimension unit overrides based on product type, cross-collection promo lookups, and image prioritization.
-
-```ts
-beforePush: async ({ doc, productInput, payload }) => {
-  const product = doc as unknown as Product
-  productInput.productAttributes ??= {}
-  const attrs = productInput.productAttributes
-
-  // --- Title / description fallback ---
-  if (!attrs.title && product.title) attrs.title = product.title
-  if (!attrs.description && product.description) attrs.description = product.description
-
-  // --- Static fields ---
-  attrs.brand = "Fine's Gallery"
-  attrs.identifierExists = false
-  attrs.condition = 'NEW'
-  attrs.availability = product.stockStatus === 'out-of-stock' ? 'OUT_OF_STOCK' : 'IN_STOCK'
-
-  // --- Link ---
-  if (product.slug) {
-    attrs.link = `${process.env.NEXT_PUBLIC_SERVER_URL}/products/${product.slug}`
-  }
-
-  // --- Pricing with fallback + sale price validation ---
-  const toMicros = (value: number) => String(Math.round(value * 1_000_000))
-  if (!product.suggestedPrice && product.price) {
-    attrs.price = { amountMicros: toMicros(product.price), currencyCode: 'USD' }
-  }
-  const primaryPrice = product.suggestedPrice || product.price || 0
-  if (!product.effectivePrice || product.effectivePrice >= primaryPrice) {
-    delete attrs.salePrice  // remove invalid sale price
-  }
-
-  // --- Dimension units: rugs use feet, everything else uses inches ---
-  const isRug = product.inheritedCategories?.some(
-    (cat) => (typeof cat === 'object' ? cat?.title === 'Rugs' : false),
-  )
-  const unit = isRug ? 'ft' : 'in'
-  if (attrs.productHeight?.value) attrs.productHeight.unit = unit
-  if (attrs.productWidth?.value) attrs.productWidth.unit = unit
-  if (attrs.productLength?.value) attrs.productLength.unit = unit
-
-  // --- Category-derived fields ---
-  const categoryRef = product.productCategories?.[0] ?? product.inheritedCategories?.[0]
-  let category = typeof categoryRef === 'object' ? categoryRef : null
-
-  if (!category && categoryRef && payload) {
-    try {
-      category = await payload.findByID({ collection: 'categories', id: categoryRef as number })
-    } catch { /* skip */ }
-  }
-
-  if (category) {
-    attrs.material = getMaterial(category)  // marble, bronze, limestone, etc.
-    if (category.googleCategoryId) {
-      attrs.googleProductCategory = String(category.googleCategoryId)
-    }
-    if (category.fullTitle) {
-      attrs.productTypes = [category.fullTitle]
-    }
-    // Custom label: marble vs non-marble for Shopping campaign segmentation
-    // Only set on products opted into the Google Shopping feed
-    const shoppingEnabled = (product as any).googleFeed === true
-    if (shoppingEnabled) {
-      const isMarble = category.displayName?.toLowerCase().includes('marble')
-      attrs.customLabel0 = isMarble ? 'marbleShopping' : 'nonMarbleShopping'
-    }
-  }
-
-  // --- Promo fields (cross-collection lookup) ---
-  try {
-    const promos = await payload.find({
-      collection: 'promos',
-      where: { 'promoProducts.product': { equals: product.id } },
-      limit: 200,
-      depth: 1,
-    })
-    const promoLabels = getActivePromoCustomLabels(promos)
-    if (promoLabels.length > 0) {
-      attrs.customLabel1 = promoLabels.join(' | ')
-    }
-    if (hasEligibleFreeShippingPromo(promos)) {
-      attrs.shipping = [{
-        country: 'US', service: 'Standard',
-        price: { amountMicros: '0', currencyCode: 'USD' },
-      }]
-    }
-  } catch (err) {
-    console.error('[GMC] Failed to hydrate promos:', err)
-  }
-
-  // --- Image handling: ad images first, then main image fallback ---
-  const adImages = product.adImages as Array<{ url?: string }> | undefined
-  const mainImage = product.mainImage as { url?: string } | undefined
-  if (adImages?.length) {
-    attrs.imageLink = adImages[0]?.url || ''
-    const additional = adImages.slice(1).map((img) => img?.url).filter(Boolean)
-    if (additional.length > 0) attrs.additionalImageLinks = additional as string[]
-  } else if (mainImage?.url) {
-    attrs.imageLink = mainImage.url
-  }
-
-  return productInput
-},
-```
-
-### Surfacing Product Videos to Merchant Center
-
-Google Merchant Center accepts up to 10 `video_link` URLs per product, surfaced via the plugin's `videoLinks` attribute (stored as `[{ url }]` in Payload, sent as `string[]` to the API). Field mappings can't safely produce this shape because they only support a fixed list of [transform presets](#transform-presets) - none of them filter, normalize, or cap a list of URLs by extension or hostname. Videos belong in `beforePush`.
-
-The example below assumes a `videos` upload field on the products collection (`hasMany: true`, `relationTo: 'media'`) hydrated to depth >= 1 so each item has `url` and `mimeType`.
-
-```ts
-const SUPPORTED_VIDEO_EXTENSIONS = /\.(mp4|mov|mpg|mpeg|wmv|avi|flv|mpegps)(\?.*)?$/i
-const YOUTUBE_HOSTS = /(^|\.)((youtube\.com)|(youtu\.be))$/i
-
-const isAcceptableVideoUrl = (url: string, mimeType?: string): boolean => {
-  if (!/^https?:\/\//i.test(url)) return false
-  if (mimeType && !mimeType.startsWith('video/')) return false
-  try {
-    const parsed = new URL(url)
-    if (YOUTUBE_HOSTS.test(parsed.hostname)) return true
-    return SUPPORTED_VIDEO_EXTENSIONS.test(parsed.pathname)
-  } catch {
-    return false
-  }
-}
-
-beforePush: async ({ doc, productInput }) => {
-  productInput.productAttributes ??= {}
-  const attrs = productInput.productAttributes
-
-  const videos = (doc as any).videos as Array<{ url?: string; mimeType?: string }> | undefined
-  const videoUrls = (videos ?? [])
-    .filter((v): v is { url: string; mimeType?: string } => typeof v?.url === 'string')
-    .filter((v) => isAcceptableVideoUrl(v.url, v.mimeType))
-    .map((v) => v.url)
-    .slice(0, 10)
-
-  if (videoUrls.length > 0) {
-    attrs.videoLinks = videoUrls
-  } else {
-    delete attrs.videoLinks
-  }
-
-  return productInput
-}
-```
-
-A few things to note:
-
-- **Always set or delete deterministically.** The plugin seeds `productInput.productAttributes` from the stored `mc.attrs` group, and `productInputs.insert` is a full-record replace. Leaving `videoLinks` alone in `beforePush` is not a no-op when stale URLs are stored - explicitly `delete` it when there are no valid videos.
-- **Filter HLS / streaming manifests.** Google's video format support is raw video files (`.mp4`, `.mov`, `.mpg`, `.mpeg`, `.wmv`, `.avi`, `.flv`, `.mpegps`) or YouTube URLs. `.m3u8` HLS manifests and `.mpd` DASH manifests are not supported and will be rejected. If your media collection stores both an original upload and a transcoded streaming URL (e.g. MediaConvert `manifestUrl`), surface the original `url` only.
-- **Public access required.** Googlebot must be able to fetch the URL without authentication. Strip signed/expiring URLs unless you can guarantee long-lived public access.
-- **Cap at 10.** Google's `video_link` field allows up to 10 entries per product.
-- **Inline validation in admin UI.** When users edit `videoLinks` directly in the admin (rather than through `beforePush`), each row's `url` is blocked from saving if it isn't `http(s)://` or exceeds 2000 characters. Server-side rejections from Google still surface through the sync log.
-
-### What `beforePush` Can Do
-
-Because `beforePush` receives the full Payload instance, you can do anything:
-
-- **Query other collections**: Look up promos, inventory records, warehouse data, related products, or any other collection to derive MC attributes.
-- **Conditional logic**: Set different values based on product type, category, status, or any field on the document. Rugs get feet for dimensions, everything else gets inches. Products with no GTIN set `identifierExists: false`.
-- **Price computation**: Validate sale prices against regular prices, apply currency conversions, handle tax-inclusive pricing.
-- **Image prioritization**: Choose between multiple image sources (ad images, main image, gallery) and set primary vs. additional image links.
-- **Video link surfacing**: Filter your products' video uploads to Google's supported formats (raw video files or YouTube URLs) and emit them as `videoLinks` for video carousel placement. See [Surfacing Product Videos to Merchant Center](#surfacing-product-videos-to-merchant-center) above.
-- **Custom labels for campaigns**: Derive custom labels from category hierarchies, active promotions, or any business logic for Google Shopping campaign segmentation.
-- **Override or delete fields**: Remove invalid sale prices, override values set by field mappings, or conditionally suppress fields.
-
-The pattern is straightforward: use `fieldMappings` for simple copies, use `beforePush` for everything else. In practice, most production integrations do the bulk of their work in `beforePush`.
-
-## Conflict Strategy
-
-Controls how pull operations handle conflicts between local and remote data. Default: **`newest-wins`**.
-
-| Strategy       | Pull Behavior                                                                                                                                                                                                                    |
-| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `mc-wins`      | MC values always overwrite local. Pull always proceeds.                                                                                                                                                                          |
-| `payload-wins` | Pull is skipped if the local document has been modified since last sync (`dirty === true`). Otherwise, pull proceeds.                                                                                                            |
-| `newest-wins`  | Pull is skipped if the local document is dirty. If not dirty, the plugin compares the MC product's `updateTime` against the local `lastSyncedAt`. Pull proceeds only if the remote is newer, or if timestamps can't be compared. |
-
-### Pull Merge Behavior
-
-When a single-product pull proceeds, the remote MC attributes are **deep-merged** into the local MC attributes (`deepMerge(local, remote)`). Remote values overwrite local values for the same keys, but local-only keys are preserved.
-
-When a pull-all operation proceeds, the remote MC attributes **replace** the local MC attributes entirely (no merge).
-
-Both operations always update the snapshot and sync metadata.
-
-## Admin UI Modes
-
-| Mode        | What You Get                                                   |
-| ----------- | -------------------------------------------------------------- |
-| `route`     | Dedicated admin page at `/admin/merchant-center` with nav link |
-| `dashboard` | Widget on the Payload dashboard linking to a full-page view    |
-| `both`      | Both the dedicated route and the dashboard widget              |
-| `headless`  | No admin UI. Endpoints and sync logic only.                    |
-
-All modes include the per-product Merchant Center tab with sync controls (unless `autoInjectTab` is `false`).
-
-## Scheduling Strategies
-
-### External Strategy (default)
-
-Use when you already have a cron or scheduling system (i.e. AWS eventbridge / lambda). Set up your external system to POST to the cron endpoint:
-
-```bash
-curl -X POST https://your-site.com/api/gmc/cron/sync \
-  -H "Authorization: Bearer YOUR_API_KEY"
-```
-
-Configure:
-
-```ts
-sync: {
-  mode: 'scheduled',
-  schedule: {
-    strategy: 'external',
-    apiKey: process.env.GMC_WORKER_API_KEY,
-    cron: '0 * * * *',  // informational, your cron system uses this
-  },
-},
-```
-
-The `cron` value is informational. The plugin does not run a scheduler itself. Your external system is responsible for calling the endpoint on the desired schedule.
-
-The plugin also exposes worker endpoints for more granular external job orchestration:
-
-- `POST /api/gmc/worker/product/push` - Push single product
-- `POST /api/gmc/worker/product/delete` - Delete single product
-- `POST /api/gmc/worker/batch/push-dirty` - Push all dirty products
-- `POST /api/gmc/worker/batch/initial-sync` - Run initial sync
-- `POST /api/gmc/worker/batch/pull-all` - Pull all from MC
-
-Worker endpoints authenticate via `Authorization: Bearer {apiKey}` or `x-gmc-api-key` header.
-
-### Payload Jobs Strategy
-
-Use when you want Payload to own job queueing:
-
-```ts
-sync: {
-  mode: 'scheduled',
-  schedule: {
-    strategy: 'payload-jobs',
-  },
-},
-```
-
-This registers six task definitions on the `gmc-sync` queue:
-
-| Task               | Description                                                |
-| ------------------ | ---------------------------------------------------------- |
-| `gmcPushProduct`   | Push a single product (used by onChange)                   |
-| `gmcDeleteProduct` | Delete a single product from MC (used by afterDelete hook) |
-| `gmcSyncDirty`     | Push all dirty products (used by scheduled sync)           |
-| `gmcBatchPush`     | Push a batch of products by IDs or filter                  |
-| `gmcInitialSync`   | Run initial sync across all products                       |
-| `gmcPullAll`       | Pull all products from MC back into Payload                |
-
-**You must run a Payload jobs worker** for the `gmc-sync` queue. The plugin does not process jobs inside the web process.
-
-## API Endpoints
-
-Default base path: `/api/gmc`
-
-There are two auth boundaries:
-
-- **User endpoints** (product actions, batch actions, mappings) require a Payload-authenticated user (`req.user`). Authenticate via session cookie, or [Payload API key](https://payloadcms.com/docs/authentication/api-keys) (`Authorization: {slug} API-Key {key}`). Access is controlled by the plugin `access` function.
-- **Worker endpoints** (`/cron/*`, `/worker/*`) use the plugin's own API key (set via `sync.schedule.apiKey`). Pass it via `Authorization: Bearer {key}` or `x-gmc-api-key` header. Designed for server-to-server calls, scripts, and cron.
-
-### Product Actions (user auth)
-
-| Method | Path                 | Body                        | Description                                                                            |
-| ------ | -------------------- | --------------------------- | -------------------------------------------------------------------------------------- |
-| `POST` | `/product/push`      | `{ productId }`             | Push product to MC                                                                     |
-| `POST` | `/product/pull`      | `{ productId }`             | Pull product data from MC                                                              |
-| `POST` | `/product/delete`    | `{ productId }`             | Delete product from MC                                                                 |
-| `POST` | `/product/refresh`   | `{ productId }`             | Refresh snapshot from MC                                                               |
-| `POST` | `/product/analytics` | `{ productId, rangeDays? }` | Get MC approval status and performance metrics (impressions, clicks, CTR, conversions) |
-
-### Batch Actions (user auth)
-
-| Method | Path                  | Body                                                    | Description               |
-| ------ | --------------------- | ------------------------------------------------------- | ------------------------- |
-| `POST` | `/batch/push`         | `{ productIds?, filter? }`                              | Push multiple products    |
-| `POST` | `/batch/push-dirty`   | -                                                       | Push all dirty products   |
-| `POST` | `/batch/initial-sync` | `{ dryRun?, batchSize?, limit?, onlyIfRemoteMissing? }` | Run initial sync          |
-| `POST` | `/batch/pull-all`     | -                                                       | Pull all products from MC |
-
-Batch operations return a `jobId` and run asynchronously. Progress is tracked in the `gmc-sync-log` collection and visible in the admin dashboard. The operation starts immediately and the endpoint returns `{ jobId, status: 'running' }`. Poll the sync log for progress.
-
-### Health & Mappings
-
-| Method | Path        | Description                                                                             |
-| ------ | ----------- | --------------------------------------------------------------------------------------- |
-| `GET`  | `/health`   | Basic health check (public; `?deep=true` requires user auth and tests API connectivity) |
-| `GET`  | `/mappings` | List current field mappings (user auth)                                                 |
-| `POST` | `/mappings` | Replace all runtime field mappings (user auth)                                          |
-
-### Scheduling & Workers (API key auth)
-
-| Method | Path                         | Body                                                    | Description                             |
-| ------ | ---------------------------- | ------------------------------------------------------- | --------------------------------------- |
-| `POST` | `/cron/sync`                 | -                                                       | Trigger scheduled sync (push all dirty) |
-| `POST` | `/worker/product/push`       | `{ productId }`                                         | Push single product                     |
-| `POST` | `/worker/product/delete`     | `{ productId, identity }`                               | Delete product from MC                  |
-| `POST` | `/worker/batch/push-dirty`   | -                                                       | Push all dirty products                 |
-| `POST` | `/worker/batch/initial-sync` | `{ dryRun?, batchSize?, limit?, onlyIfRemoteMissing? }` | Run initial sync                        |
-| `POST` | `/worker/batch/pull-all`     | -                                                       | Pull all products from MC               |
-
-## Batch Operation Architecture
-
-All batch operations (push-dirty, initial-sync, pull-all, batch-push) follow the same pattern:
-
-1. A sync log document is created in `gmc-sync-log` with `status: 'running'`.
-2. The operation runs asynchronously. The endpoint returns `{ jobId, status: 'running' }` immediately.
-3. Progress callbacks update the sync log document periodically (counters: `processed`, `succeeded`, `failed`, `total`).
-4. When the operation completes, the sync log is updated with `status: 'completed'` (or `'failed'`) and `completedAt`.
-
-Products within a batch are processed through the rate limiter (default: 4 concurrent, 200 queued). The rate limiter coordinates per-minute API budget and prevents exceeding Google's quota.
-
-## Access Control
-
-If you do not provide `access`, the plugin checks:
-
-- `user.isAdmin === true`, or
-- `user.roles` contains `'admin'`
-
-For production apps with a different role model, provide `access` explicitly:
-
-```ts
-access: async ({ req }) => {
-  return req.user?.role === 'admin' || req.user?.role === 'seo'
-},
-```
-
-## Manual UI Placement
-
-By default, the plugin auto-injects the Merchant Center tab into your products collection. To control placement manually:
-
-1. Set `autoInjectTab: false`
-2. Use the exported helpers:
-
-```ts
-import { getMerchantCenterTab, MerchantCenterUIPlaceholder } from 'payload-plugin-gmc-ecommerce'
-```
-
-- `getMerchantCenterTab(options)` returns a complete tab config to place in your collection's tabs
-- `getMerchantCenterField(options)` returns the field group without the tab wrapper
-- `MerchantCenterUIPlaceholder` is a placeholder field; if placed inside an existing tab, the plugin replaces it with the full Merchant Center tab during initialization
-
-## Distributed Rate Limiting
-
-For multi-instance deployments, provide a `rateLimit.store` to coordinate API budget across processes:
-
-```ts
-rateLimit: {
-  maxRequestsPerMinute: 120,
-  store: {
-    async claimSlot({ key, limit, scope, windowMs }) {
-      // Implement with Redis, DynamoDB, etc.
-      return { allowed: true, count: 1, resetAt: Date.now() + windowMs }
-    },
-  },
-},
-```
-
-The store coordinates per-minute budget windows. It does not replace a queue.
-
-## Compatibility
-
-### Payload Ecommerce Template
-
-This plugin works with the [official Payload ecommerce template](https://github.com/payloadcms/payload/tree/main/templates/ecommerce). Set `identityField` to whatever field holds your product SKU or unique identifier. The plugin injects its own tab alongside existing ones.
-
-### payload-ai Plugin
-
-Compatible with [payload-ai](https://github.com/ashbuilds/payload-ai). The two plugins do not conflict. payload-ai adds AI content generation to your collection fields, while this plugin syncs product data to Merchant Center. The typical workflow: payload-ai generates or refines content in your product fields, then field mappings push that content to MC attributes.
-
-## Exports
-
-### Main Entry Point (`payload-plugin-gmc-ecommerce`)
-
-```ts
-// Plugin
-export { payloadGmcEcommerce }
-
-// Manual UI placement
-export { getMerchantCenterField, getMerchantCenterTab, MerchantCenterUIPlaceholder }
-
-// Service (for programmatic use outside endpoints)
-export { createMerchantService }
-export type { MerchantService }
-
-// Utilities
-export { applyFieldMappings, buildUpdateMask, deepMerge, fromMicros, resolveIdentity, toMicros }
-
-// All types
-export type {
-  AccessFn,
-  AdminMode,
-  BatchSyncReport,
-  BeforePushHook,
-  BeforePushHookArgs,
-  ConflictStrategy,
-  CredentialResolution,
-  FieldMapping,
-  FieldSyncMode,
-  GetCredentialsFn,
-  GoogleServiceAccount,
-  HealthResult,
-  InitialSyncReport,
-  MCAvailability,
-  MCCondition,
-  MCCustomAttribute,
-  MCPerformanceRow,
-  MCPrice,
-  MCProductAnalytics,
-  MCProductAttributes,
-  MCProductIdentity,
-  MCProductInput,
-  MCProductState,
-  MCSyncMeta,
-  NormalizedPluginOptions,
-  PayloadGMCEcommercePluginOptions,
-  PullAllReport,
-  PullResult,
-  ResolvedMCIdentity,
-  ScheduleConfig,
-  SyncAction,
-  SyncMode,
-  SyncResult,
-  SyncSource,
-  SyncState,
-  TransformPreset,
-}
-```
-
-### Client Entry Point (`payload-plugin-gmc-ecommerce/client`)
-
-```ts
-export { MerchantCenterDashboardClient }
-export { MerchantCenterNavLink }
-export { MerchantCenterSyncControls }
-```
-
-### RSC Entry Point (`payload-plugin-gmc-ecommerce/rsc`)
-
-```ts
-export { MerchantCenterAdminView }
-export { MerchantCenterDashboardWidget }
-```
-
-## Production Configuration Example
-
-```ts
-import { buildConfig } from 'payload'
-import { payloadGmcEcommerce } from 'payload-plugin-gmc-ecommerce'
-
-export default buildConfig({
-  plugins: [
-    payloadGmcEcommerce({
-      merchantId: process.env.GMC_MERCHANT_ID!,
-      dataSourceId: process.env.GMC_DATA_SOURCE_ID!,
-      siteUrl: process.env.SITE_URL!,
-
-      getCredentials: async () => ({
-        type: 'keyFilename',
-        path: process.env.GMC_SERVICE_ACCOUNT_PATH!,
-      }),
-
-      access: async ({ req }) => {
-        return req.user?.role === 'admin' || req.user?.role === 'seo'
-      },
-
-      admin: {
-        mode: 'both',
-      },
-
-      collections: {
-        products: {
-          slug: 'products',
-          identityField: 'sku',
-          fieldMappings: [
-            { source: 'title', target: 'productAttributes.title', syncMode: 'permanent' },
+      ],
+
+      // Payload Globals can also affect every ProductInput. The same durable,
+      // bounded catalog workflow is plugin-owned; no host Merchant hook is needed.
+      catalogGlobalDependencies: [
+        {
+          global: 'catalogRules',
+          select: ({ doc }) => ({ enabled: doc.enabled, featuredProduct: doc.product }),
+        },
+      ],
+
+      // Fail-closed default: reconciliation reports remote orphan candidates
+      // but does not delete them. Opt in only for dedicated plugin-owned
+      // primary sources after a verified ownership inventory.
+      reconciliation: { orphanDeletion: 'disabled' },
+
+      products: {
+        collection: 'products',
+        batchSize: 25,
+        fetchDepth: 1,
+        // Hard ceiling for every local catalog scan. Size this from the
+        // maximum expected product count and batchSize, including one
+        // terminal probe page. Exceeding it fails closed before continuation.
+        maxCatalogPages: 2_000,
+        where: { isSellable: { equals: true } },
+
+        resolveIdentities: ({ doc }) => [
+          {
+            contentLanguage: 'en',
+            feedLabel: 'US',
+            offerId: String(doc.sku),
+          },
+        ],
+
+        project: ({ doc }) => ({
+          sourceVersion: String(doc.canonicalRevision),
+          products: [
             {
-              source: 'description',
-              target: 'productAttributes.description',
-              syncMode: 'permanent',
-            },
-            {
-              source: 'price',
-              target: 'productAttributes.price.amountMicros',
-              syncMode: 'permanent',
-              transformPreset: 'toMicrosString',
-            },
-            {
-              source: 'featuredImage',
-              target: 'productAttributes.imageLink',
-              syncMode: 'permanent',
-              transformPreset: 'extractAbsoluteUrl',
+              contentLanguage: 'en',
+              feedLabel: 'US',
+              offerId: String(doc.sku),
+              productAttributes: {
+                availability: doc.inStock ? 'IN_STOCK' : 'OUT_OF_STOCK',
+                brand: String(doc.brand),
+                description: String(doc.description),
+                imageLink: String(doc.imageUrl),
+                link: `https://example.com/products/${String(doc.slug)}`,
+                price: {
+                  amountMicros: String(doc.priceMicros),
+                  currencyCode: 'USD',
+                },
+                title: String(doc.title),
+              },
             },
           ],
+        }),
+      },
+
+      feeds: [
+        {
+          id: 'google-us',
+          path: '/feeds/google-us.tsv',
+          access: 'public',
+          delivery: 'dynamic',
+          format: 'tsv',
+          selector: { contentLanguage: 'en', feedLabel: 'US' },
         },
-        categories: {
-          slug: 'categories',
-          nameField: 'title',
-          googleCategoryIdField: 'googleCategoryId',
-          parentField: 'parent',
-          productCategoryField: 'category',
-          productTypeField: 'breadcrumbLabel',
-        },
-      },
-
-      defaults: {
-        contentLanguage: 'en',
-        feedLabel: 'PRODUCTS',
-        currency: 'USD',
-      },
-
-      beforePush: async ({ doc, productInput }) => {
-        const slug = (doc as any).slug
-        if (slug) {
-          productInput.productAttributes ??= {}
-          productInput.productAttributes.link = `${process.env.SITE_URL}/products/${slug}`
-        }
-        return productInput
-      },
-
-      sync: {
-        mode: 'onChange',
-        permanentSync: true,
-        // conflictStrategy defaults to 'newest-wins'
-        schedule: {
-          strategy: 'external',
-          apiKey: process.env.GMC_WORKER_API_KEY!,
-          cron: '0 4 * * *', // daily 4am push-dirty as safety net
-        },
-      },
-
-      rateLimit: {
-        maxConcurrency: 4,
-        maxRequestsPerMinute: 120,
-      },
+      ],
     }),
   ],
 })
 ```
+
+`sourceVersion` is a monotonic non-negative int64 string. It is sent as Google's `versionNumber`, so it must increase whenever the canonical offer can change. Do not derive it from a non-monotonic hash or reset it during a database migration.
+
+Enabled configurations require `productIngestion.mode: 'api-primary'` and canonical positive int64 `merchantId`, `dataSourceId`, and `additionalDataSourceIds` values matching Merchant API resource IDs. Do not pass display names or whole resource names. Before the first remote action in a worker process—and again after a bounded cache expires—the executor reads the relevant Data Sources v1 control plane and requires `input: API`, `primaryProductDataSource`, the exact configured resource name/ID, and compatible language/label targeting. When multiple sources are configured, every source must have both immutable `contentLanguage` and `feedLabel` restrictions and every pair must be unique; an unrestricted or overlapping topology fails before any product-plane call. A file-backed, supplemental, mismatched, or malformed source fails with `GMC_API_PRIMARY_DATA_SOURCE_REQUIRED`. Disabled configurations alone may use inert placeholders so local tooling can start without production secrets.
+
+Google's processed-product identity is `contentLanguage` + `feedLabel` + `offerId`; a data source owns that identity but is not part of it. Immediately before every ProductInput insert and local-inventory mutation, v2 reads the processed product. If another source owns it, the operation fails permanently with `GMC_PRODUCT_DATA_SOURCE_CONFLICT` and performs no mutation. This is deliberate: [Google's insert contract](https://developers.google.com/merchant/api/reference/rest/products_v1/accounts.productInputs/insert) otherwise moves the product silently, while local inventory addresses the processed identity without a source-qualified path. V2.0 has no implicit transfer flag; source migrations require a stopped old writer and an explicit, audited migration procedure. An active local-inventory insert retries with `GMC_PROCESSED_PRODUCT_NOT_READY` while an accepted ProductInput is still being processed; deletion is already converged when no processed product exists. Capacity plans must budget one processed-product GET for every physical ProductInput insert and local-inventory mutation attempt in addition to control-plane validation and retries.
+
+`resolveIdentities` must work on the deleted document and on the previous version supplied to hooks. It is how the plugin removes old offers after deletion, unpublishing, source-filter changes, or an identity change.
+
+`catalogDependencies` declares canonical collections such as promotions, taxonomy, colors, media, or shared pricing rules whose changes can alter projections without touching Product rows. `catalogGlobalDependencies` does the same for Payload Globals such as account-wide merchandising rules or a featured-product selector. The plugin appends transaction-aware hooks, compares selected projection inputs, and dispatches one bounded `catalog.publish` root when they differ; collection dependencies also receive delete hooks. An optional `resolveProductIds` returns the complete affected Product set, `[]` for no work, or `null` for a full sweep. Targeted sets are canonicalized and capped at 1,000 IDs; oversized sets fail safely to one full root, and the worker—not the Payload write transaction—pages durable children. Immediate event keys include the complete before/after event envelope and target scope so a later cyclic transition cannot be mistaken for an old operation. Declare every relation and Global whose projection-relevant value can change independently; otherwise only a later sweep can discover drift. `scheduleAt` works on either dependency kind and adds exact future boundaries for time-derived rules; schedules deliberately do not capture target IDs because that set can be stale by activation. The adapter must advertise `scheduledDelivery: true`, retain `scheduledFor` durably, and never execute early. Replaced/deleted schedules may still fire, but they re-read current canonical state and are therefore harmless convergence sweeps rather than stale payloads.
+
+Payload transactions are part of the automatic-hook contract, not an optional performance setting. Keep the database adapter's transactions enabled and never pass `disableTransaction: true` to a Product, dependency-collection, or dependency-Global write. V2 awaits `req.transactionID` and validates the resolved handle; a truthy Promise which resolves to `null` is not a transaction. Without one ambient transaction there is no atomic boundary spanning the canonical commit and durable operation insert, so v2 throws `GmcTransactionalHookRequiredError` (`code: GMC_TRANSACTION_REQUIRED`) before mutation instead of silently accepting a crash-loss window. On-demand and scheduled roots are not coupled to a canonical write and continue to dispatch through their own durable adapter transaction.
+
+## Durable async contract
+
+Every hook, API request, batch, continuation, reconciliation pass, feed build, and local-inventory operation enters the host ledger. Merchant calls occur only inside `offer.publish`, `offer.delete`, `status.refresh`, or local-inventory worker commands.
+
+An adapter must guarantee all of the following:
+
+- persist before acknowledging dispatch;
+- atomically reuse the original operation for the same `idempotencyKey`, including after terminal completion; compare `getGmcCommandIdempotencyDigest(command)` on conflicts so diagnostic `requestedAt` changes do not break a legitimate replay;
+- never supersede or concurrently replace that operation;
+- join the caller transaction and leave queue publication behind its commit whenever an automatic hook supplies `req`; v2 rejects such a hook when the ambient transaction is absent;
+- deliver at least once and serialize all commands with the same `subject`;
+- retain `parentOperationId` and `rootOperationId` for every descendant;
+- return aggregate root status: a coordinator is not `succeeded` while a descendant is queued, running, failed, or dead-lettered;
+- return the requested ledger row's own `requestedState` separately from aggregate `state`, and a fixed-size `reconciliation` summary across completed remote pages so orphan/remote metrics are observable without materializing descendants; treat summary counts as partial until aggregate success;
+- expose queue/ledger health and durable operation lookup;
+- pass the authoritative command, operation ID, root operation ID, Payload instance, and restore-safe global int64 `sourceVersion` to a singleton command executor in the worker;
+- derive each immediate root's execution `sourceVersion` from a committed global ledger sequence (or an equally strong dedicated sequence), and pass that exact value to every descendant regardless of later child-row allocation;
+- when `scheduledDelivery` is declared, persist `scheduledFor` with the immutable registration, make it visible only after the host transaction commits, never execute early, and atomically allocate and retain one new globally ordered activation version before any child or Merchant write; every scheduled descendant inherits that activation version.
+
+Adapter health details and retained errors are control-plane output. Keep them bounded and free of credentials, bearer tokens, signed requests, private keys, or private product content even when the operations endpoint itself is authenticated.
+
+The worker integration is intentionally small:
+
+```ts
+const executeGmc = createGmcCommandExecutor(normalizeGmcV2Options(gmcOptions))
+
+// Called only after the host ledger atomically claims one queued operation.
+await executeGmc({
+  command: ledgerRow.input.command,
+  operationId: String(ledgerRow.id),
+  rootOperationId: ledgerRow.rootOperationId ?? String(ledgerRow.id),
+  payload,
+  sourceVersion: String(ledgerRow.rootCausalSourceVersion),
+})
+```
+
+`sourceVersion` on the execution context is mandatory. It identifies the root causal workflow, not the current delivery row: an immediate root receives a globally ordered version when retained, all of its continuations and children reuse it exactly, and a future registration receives a fresh version only when its time boundary becomes active. Activation allocation must be persisted before work so retries reuse it. Never derive descendant freshness from later child IDs; an old batch could otherwise outrank a newer Product event. The sequence must remain monotonic across every worker and restore and never reuse one version for divergent canonical intent. The projector still returns a source version for direct canonical/feed evaluation, but worker correctness never falls back to a product timestamp. The plugin pins one `projectionTime` for each catalog/feed collection pass so host time-derived rules do not drift from row to row. Hosts must still make relation reads fail closed and deterministic enough for a retry; silently omitting a relation after a database error corrupts the claimed canonical result.
+
+Create the executor once per worker process. Recreating it for every message also recreates its token cache and in-process rate limiter. Multi-process workers should configure a distributed `rateLimit.store` or enforce an equivalent account-wide limit in the queue infrastructure.
+
+See [the complete async adapter contract](./docs/v2-async-adapter.md) and [the Fine's ECS deployment mapping](./docs/v2-fines-ecs.md).
+
+## Feeds
+
+Every feed pins a content language, feed label, and optional configured data source. Feed/API drift is structurally avoided because both originate from the same canonical projection.
+
+V2.0 has exactly one Merchant ingestion authority: the configured API-backed primary source. Plugin feeds are canonical exports/read models for auditing, downstream providers, golden comparisons, or archival delivery. **Do not register one as another Merchant Center primary product source for the same identities.** Google treats API and file uploads as different data sources; a second primary source can move ownership or conflict with the API-owned offer. A future file-primary mode would have to disable ProductInput mutations and define fetch lifecycle explicitly—it is not silently approximated by this release.
+
+The built-in TSV serializer is deterministic, stable-order, UTF-8, correctly escapes repeated structured values, formats price micros without floating-point loss, and fails closed if a Merchant API field has no TSV mapping. API-native fields newly added by Google are preserved by canonical hashing/publication; a custom format adapter or plugin update must add their specification-correct feed representation. Recursive Merchant API `customAttributes.groupValues` are preserved and validated for API publication but intentionally reject built-in TSV generation because flattening them would lose structure. A custom format adapter can produce provider-specific TSV, XML, JSONL, or another canonical endpoint without adding channel fields to Products.
+
+Dynamic feeds build during the GET request and are appropriate only when catalog size and request budgets make that safe. Production catalogs should normally use artifact delivery:
+
+```ts
+{
+  id: 'google-us',
+  path: '/feeds/google-us.tsv',
+  access: 'public',
+  delivery: 'artifact',
+  format: 'tsv',
+  selector: { contentLanguage: 'en', feedLabel: 'US' },
+  limits: { maxProducts: 50_000, maxSerializedBytes: 128 * 1024 * 1024 },
+  artifactStore,
+}
+```
+
+Artifact publication is write → exact immutable read-back → byte length/checksum/metadata verification → atomic pointer promotion. Every store action receives `instanceId`, and generated descriptor keys include `instanceId/feedId`; shared stores must namespace both immutable objects and current pointers accordingly. On every artifact-backed feed read, the plugin independently verifies that the returned descriptor key matches the requested instance, feed, source version, checksum, and safe extension before serving bytes. A failed, corrupted, or cross-namespace artifact cannot replace or impersonate the last-known-good feed. Public feeds send short cache headers plus an ETag; protected feeds are `private, no-store`.
+
+The store's `readCurrentDescriptor` method must read only the atomically promoted pointer descriptor. Before rebuilding, the executor uses that small read to make at-least-once replay safe: a newer pointer skips obsolete work without downloading a body, while an equal-version pointer is accepted only after the executor reads and verifies the exact immutable artifact. This closes the crash window after promotion but before durable command completion.
+
+The built-in catalog reader uses bounded keyset pages, not a database-wide snapshot transaction. A build is therefore a deterministic projection-time view over rows observed during that scan, while concurrent commits converge through hooks and the next build. `products.maxCatalogPages` (default `10_000`) is a hard local-scan ceiling shared by feed collection, catalog publication/reconciliation, and local-inventory reconciliation; exceeding it aborts rather than returning a truncated authoritative result. Size it from the maximum expected eligible document count divided by `batchSize`, plus a terminal-probe margin, and alert on any breach. If the business requires a strict point-in-time feed, the host projector must read from a versioned snapshot/read model under the same canonical contract.
+
+`maxSerializedBytes` is also enforced while canonical ProductInput JSON is accumulated, before the formatter can receive an unbounded collection. It is not a process-memory ceiling: object overhead and the simultaneous canonical and serialized representations mean hosts must leave substantial memory headroom. Artifact stores must retain every object referenced by a current pointer; an age-only deletion rule is unsafe unless a pointer-aware collector first proves the object is unreachable.
+
+Local inventory is a separate, complete store/offer projection published through Merchant Inventories v1. V2 supports the current API-native local fields, including loyalty member benefits, local shipping labels, and recursive custom attributes. It validates the current Business Profile/store and protobuf wire constraints before a command reaches Google; see the [v2 setup contract](./docs/v2-setup.md#9-configure-local-inventory-only-when-authoritative).
+
+## API
+
+The default base path is `/gmc/v2`. Mutation endpoints require an authenticated user accepted by `access` and a caller-supplied `Idempotency-Key` header. Product endpoints accept only `{ productId }`; mutation routes whose intent is fully represented by their path accept no request body and reject one rather than silently ignoring fields.
+
+| Method | Path                                | Purpose                                                          |
+| ------ | ----------------------------------- | ---------------------------------------------------------------- |
+| `POST` | `/gmc/v2/data-sources/validate`     | Durably preflight API-primary source type and configured scopes  |
+| `POST` | `/gmc/v2/products/publish`          | Re-read and converge one published product                       |
+| `POST` | `/gmc/v2/products/status/refresh`   | Refresh read-only processed status                               |
+| `POST` | `/gmc/v2/catalog/publish`           | Publish the eligible catalog through bounded children            |
+| `POST` | `/gmc/v2/catalog/reconcile`         | Repair missing offers and detect/optionally delete owned orphans |
+| `POST` | `/gmc/v2/feeds/:feedId/build`       | Build an artifact-backed feed                                    |
+| `POST` | `/gmc/v2/local-inventory/reconcile` | Reconcile configured stores                                      |
+| `GET`  | `/gmc/v2/operations/:operationId`   | Read aggregate durable workflow status                           |
+| `GET`  | `/gmc/v2/health`                    | Read adapter capability and measured health                      |
+
+Feed GET paths are configured per feed. The optional `/gmc/v2/worker/execute` endpoint is disabled by default; invoke the executor directly only inside the host's already-claimed durable worker. Never execute it as request-local background work. If an HTTP worker bridge is unavoidable, protect it with independent machine authentication through `workerAccess`.
+
+## Publication state and reconciliation
+
+The built-in hidden `gmc-publications-v2` and `gmc-local-inventory-publications-v2` collections are non-versioned and contain only operational state. Nothing is injected into Products. Updates use an actual adapter-level revision compare-and-set on SQLite, PostgreSQL, and MongoDB; Payload's hook-oriented bulk update is deliberately not used because its `where` predicate is not atomic with the final per-ID write. Successful and pending product deletions retain a monotonic `deleteVersion` fence, so an older or equal delayed publish cannot resurrect an identity after cross-subject execution races.
+
+Google LocalInventory is a whole-resource replacement with no `versionNumber` or conditional write. The second collection therefore retains the greatest desired global source version and digest per processed identity/store. Every local command carries the canonical `productId`, claims that fence before Google I/O, and rechecks both base-product and per-store state immediately before mutation. An equal-version content divergence fails terminally; an older child from an independently dispatched catalog/local workflow skips even if it reached the FIFO after newer work.
+
+Reconciliation has a desired-state barrier. It first marks every currently projected identity, verifies every configured source is an API-backed primary source, then scans only products owned by those sources. The default `reconciliation.orphanDeletion: 'disabled'` detects and reports orphan candidates but performs no destructive remote action. `exclusive-data-sources` may be selected only when every configured source is dedicated to this plugin instance. In that mode, an orphan is deleted only if no desired claim at or after the reconciliation start exists, and the delete command repeats that comparison before transport. The mandatory durable root `startedVersion` makes this causal rather than clock-based. Higher canonical source versions therefore win both publish/delete orderings; equal-version divergent content fails closed.
+
+Status refresh is also durably bounded: a multi-offer request fans into one ordered child per offer, and each child performs at most one processed-product read before bounded retries.
+
+## Security and operating rules
+
+- `access` and `workerAccess` are required; there is no anonymous mutation default.
+- Feed access is explicit: use `'public'` or an authorization callback.
+- Credentials are resolved only in the worker and are never serialized into commands.
+- Product reads use `overrideAccess: true` because the plugin is system work; command dispatch remains authenticated.
+- Published reads use `draft: false` and additionally reject an explicit non-published `_status`; draft-only rows are absence, and a pending draft over a live row never becomes Merchant content.
+- Worker command bodies are schema-versioned and validated before execution. RC31 and later emit schema 2; do not roll them over a ledger containing RC30 schema-1 rows without a deliberate drain or quarantine.
+- Request bodies are limited to 1 MiB and user idempotency keys to 200 characters.
+- Projection errors fail the durable operation; invalid products are never partially submitted.
+- Deleting from an explicitly configured primary source treats Google 404 as idempotent success.
+
+`disabled: true` removes plugin hooks and endpoints from the generated config; it does not cancel or pause durable rows already committed to the host ledger. A real pause is host-owned: stop schedules/ingress, stop or scale down workers, and preserve or explicitly quarantine queued rows.
+
+## Migration from 1.x
+
+Do not enable v1 and v2 writers against the same data source. Build and compare the v2 projection first, deploy the async adapter and worker, canary a dedicated data source or offer subset, then cut hooks and schedulers over atomically. The plugin never silently removes historical `mc`, sync-log, mapping, version, or job schema from a host database.
+
+Follow [the v2 migration runbook](./docs/v2-migration.md). Keep the previous application artifact and its pinned 1.x package available for rollback until legacy schema cleanup is complete.
 
 ## Documentation
 
-- [Setup Guide](./docs/setup-guide.md) - Step-by-step integration walkthrough for new and existing Merchant Center setups
+- [Architecture and invariants](./docs/v2-architecture.md)
+- [Setup and projection guide](./docs/v2-setup.md)
+- [Durable async adapter contract](./docs/v2-async-adapter.md)
+- [Fine's ECS AsyncOperations mapping](./docs/v2-fines-ecs.md)
+- [Operations and incident runbook](./docs/v2-operations.md)
+- [1.x to 2.0 migration](./docs/v2-migration.md)
 
 ## License
 

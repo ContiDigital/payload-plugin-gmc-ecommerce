@@ -59,29 +59,30 @@ export const applyJobEnhancements = (
   options: NormalizedPluginOptions,
 ): Config => {
   const jobs = ensureJobsConfig(config)
+  const tasks = jobs.tasks ?? (jobs.tasks = [])
 
   if (!getTaskConfigBySlug(config, GMC_PUSH_PRODUCT_TASK_SLUG)) {
-    jobs.tasks.push(buildPushProductTaskConfig(options) as never)
+    tasks.push(buildPushProductTaskConfig(options) as never)
   }
 
   if (!getTaskConfigBySlug(config, GMC_DELETE_PRODUCT_TASK_SLUG)) {
-    jobs.tasks.push(buildDeleteProductTaskConfig() as never)
+    tasks.push(buildDeleteProductTaskConfig() as never)
   }
 
   if (!getTaskConfigBySlug(config, GMC_SYNC_DIRTY_TASK_SLUG)) {
-    jobs.tasks.push(buildSyncDirtyTaskConfig() as never)
+    tasks.push(buildSyncDirtyTaskConfig() as never)
   }
 
   if (!getTaskConfigBySlug(config, GMC_BATCH_PUSH_TASK_SLUG)) {
-    jobs.tasks.push(buildBatchPushTaskConfig() as never)
+    tasks.push(buildBatchPushTaskConfig() as never)
   }
 
   if (!getTaskConfigBySlug(config, GMC_INITIAL_SYNC_TASK_SLUG)) {
-    jobs.tasks.push(buildInitialSyncTaskConfig() as never)
+    tasks.push(buildInitialSyncTaskConfig() as never)
   }
 
   if (!getTaskConfigBySlug(config, GMC_PULL_ALL_TASK_SLUG)) {
-    jobs.tasks.push(buildPullAllTaskConfig() as never)
+    tasks.push(buildPullAllTaskConfig() as never)
   }
 
   return config

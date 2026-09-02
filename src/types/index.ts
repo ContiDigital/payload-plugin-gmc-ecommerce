@@ -31,7 +31,13 @@ export type JobStatus = (typeof JOB_STATUSES)[number]
 export const JOB_TYPES = ['push', 'pull', 'initialSync', 'pullAll', 'batch'] as const
 export type JobType = (typeof JOB_TYPES)[number]
 
-export const MC_AVAILABILITY = ['IN_STOCK', 'OUT_OF_STOCK', 'PREORDER', 'BACKORDER'] as const
+export const MC_AVAILABILITY = [
+  'IN_STOCK',
+  'LIMITED_AVAILABILITY',
+  'OUT_OF_STOCK',
+  'PREORDER',
+  'BACKORDER',
+] as const
 export type MCAvailability = (typeof MC_AVAILABILITY)[number]
 
 export const MC_CONDITION = ['NEW', 'USED', 'REFURBISHED'] as const
@@ -112,6 +118,23 @@ export type ResolvedMCIdentity = {
 export type MCPrice = {
   amountMicros: string
   currencyCode: string
+}
+
+/** Merchant API shared Interval: inclusive start, exclusive end. */
+export type MCInterval = {
+  endTime?: string
+  startTime?: string
+}
+
+export type MCProductDetail = {
+  attributeName: string
+  attributeValue: string
+  sectionName?: string
+}
+
+export type MCStructuredContent = {
+  content: string
+  digitalSourceType?: 'DEFAULT' | 'DIGITAL_SOURCE_TYPE_UNSPECIFIED' | 'TRAINED_ALGORITHMIC_MEDIA'
 }
 
 // ---------------------------------------------------------------------------
@@ -230,8 +253,12 @@ export type LocalInventorySyncResult = {
 
 export type MCProductAttributes = {
   additionalImageLinks?: MCUrlArrayField
+  adsGrouping?: string
+  adsLabels?: MCArrayField
+  adsRedirect?: string
   adult?: boolean
   ageGroup?: string
+  autoPricingMinPrice?: MCPrice
   availability?: string
   availabilityDate?: string
   brand?: string
@@ -245,8 +272,15 @@ export type MCProductAttributes = {
   customLabel3?: string
   customLabel4?: string
   description?: string
+  disclosureDate?: string
+  displayAdsId?: string
+  displayAdsLink?: string
+  displayAdsSimilarIds?: MCArrayField
+  displayAdsTitle?: string
+  displayAdsValue?: number
   energyEfficiencyClass?: string
   excludedDestinations?: MCArrayField
+  expirationDate?: string
   externalSellerId?: string
   freeShippingThreshold?: MCFreeShippingThreshold[]
   gender?: string
@@ -257,35 +291,56 @@ export type MCProductAttributes = {
   includedDestinations?: MCArrayField
   isBundle?: boolean
   itemGroupId?: string
+  lifestyleImageLinks?: MCUrlArrayField
   link?: string
+  linkTemplate?: string
   material?: string
   maxEnergyEfficiencyClass?: string
+  maxHandlingTime?: string
+  maximumRetailPrice?: MCPrice
   minEnergyEfficiencyClass?: string
+  minHandlingTime?: string
   mobileLink?: string
+  mobileLinkTemplate?: string
   mpn?: string
-  multipack?: number
+  multipack?: number | string
   pattern?: string
   pause?: string
+  pickupMethod?: string
+  pickupSla?: string
   price?: MCPrice
+  productDetails?: MCProductDetail[]
   productHeight?: MCShippingDimension
+  productHighlights?: string[]
   productLength?: MCShippingDimension
   productTypes?: MCArrayField
   productWeight?: MCShippingDimension
   productWidth?: MCShippingDimension
   promotionIds?: MCArrayField
+  returnPolicyLabel?: string
   salePrice?: MCPrice
-  salePriceEffectiveDate?: { endDate?: string; startDate?: string }
+  salePriceEffectiveDate?: MCInterval
+  sellOnGoogleQuantity?: string
   shipping?: MCShipping[]
   shippingHeight?: MCShippingDimension
+  shippingLabel?: string
   shippingLength?: MCShippingDimension
   shippingWeight?: MCShippingDimension
   shippingWidth?: MCShippingDimension
+  shoppingAdsExcludedCountries?: MCArrayField
+  shortTitle?: string
   size?: string
   sizeSystem?: string
+  /** @deprecated Merchant API v1 uses the repeated `sizeTypes` field. */
   sizeType?: string
+  sizeTypes?: string[]
+  structuredDescription?: MCStructuredContent
+  structuredTitle?: MCStructuredContent
   taxes?: MCTax[]
   title?: string
+  transitTimeLabel?: string
   videoLinks?: MCUrlArrayField
+  virtualModelLink?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +375,12 @@ export type MCSyncMeta = {
   lastSyncedAt?: string
   state: SyncState
   syncSource?: SyncSource
+  /**
+   * Written by a push before it calls Merchant Center and checked again when it
+   * comes back. Any save in between clears it, which is how the push knows not
+   * to mark content it never sent as synced.
+   */
+  syncToken?: null | string
 }
 
 // ---------------------------------------------------------------------------
@@ -367,6 +428,16 @@ export type SyncResult = {
   productId: string
   skipped?: boolean
   snapshot?: Record<string, unknown>
+  /**
+   * `false` when Merchant Center accepted the operation but its outcome could
+   * not be recorded on the product — the product was deleted while the request
+   * was in flight, so a remote listing may now be orphaned.
+   *
+   * `success` describes the Merchant Center call; this describes the local
+   * record of it. Callers that need to escalate or retry should read this
+   * rather than pattern-matching `warning`.
+   */
+  statePersisted?: boolean
   success: boolean
   warning?: string
 }

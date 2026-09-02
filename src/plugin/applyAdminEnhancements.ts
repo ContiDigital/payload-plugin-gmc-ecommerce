@@ -106,7 +106,7 @@ export const applyAdminEnhancements = (
         label: options.admin.navLabel,
       },
       exportName: 'MerchantCenterNavLink',
-      path: `${PLUGIN_SLUG}/client`,
+      path: `${PLUGIN_SLUG}/legacy/client`,
     } as NavComponent
 
     nextConfig.admin!.components!.beforeNavLinks = withUniqueComponent(
@@ -117,7 +117,7 @@ export const applyAdminEnhancements = (
     const merchantCenterView = {
       Component: {
         exportName: 'MerchantCenterAdminView',
-        path: `${PLUGIN_SLUG}/rsc`,
+        path: `${PLUGIN_SLUG}/legacy/rsc`,
         serverProps: {
           apiRoute: apiBasePath,
           endpointBasePath: options.api.basePath,
@@ -138,7 +138,7 @@ export const applyAdminEnhancements = (
   if (options.admin.mode === 'dashboard' || options.admin.mode === 'both') {
     const dashboardComponent = {
       exportName: 'MerchantCenterDashboardWidget',
-      path: `${PLUGIN_SLUG}/rsc`,
+      path: `${PLUGIN_SLUG}/legacy/rsc`,
     } as DashboardComponent
 
     nextConfig.admin!.components!.beforeDashboard = withUniqueDashboardComponent(

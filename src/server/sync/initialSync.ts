@@ -9,11 +9,11 @@ import type { GoogleApiClient } from '../services/sub-services/googleApiClient.j
 import type { RateLimiterService } from '../services/sub-services/rateLimiterService.js'
 import type { RetryService } from '../services/sub-services/retryService.js'
 
-import { MC_FIELD_GROUP_NAME } from '../../constants.js'
+import { MC_FIELD_GROUP_NAME, MC_PRODUCT_ATTRIBUTES_FIELD_NAME } from '../../constants.js'
 import { GoogleApiError } from '../services/sub-services/googleApiClient.js'
-import { asProductDoc } from '../utilities/recordUtils.js'
+import { asProductDoc, asRecord } from '../utilities/recordUtils.js'
 import { resolveIdentity } from './identityResolver.js'
-import { writeMCState } from './mcStateWriter.js'
+import { STATE_NOT_PERSISTED_WARNING, writeMCState } from './mcStateWriter.js'
 import { prepareProductForSync, validateRequiredProductInput } from './productPreparation.js'
 
 type InitialSyncOptions = {
@@ -240,7 +240,7 @@ const processInitialSyncProduct = async (args: {
   }
 
   try {
-    const { input } = await prepareProductForSync({
+    const { derivedAttributes, input } = await prepareProductForSync({
       identity,
       options,
       payload,
@@ -291,20 +291,57 @@ const processInitialSyncProduct = async (args: {
       // Non-critical
     }
 
-    // Persist MC state on the document
-    await writeMCState(payload, collectionSlug, productId, {
-      [MC_FIELD_GROUP_NAME]: {
-        ...doc[MC_FIELD_GROUP_NAME],
-        snapshot,
+    // Persist only what this sync produced, assembled against the row as it
+    // stands at write time. Spreading the document's own `mc` group back over
+    // itself would re-assert state read before the Merchant Center round-trip
+    // and revert anything saved in the meantime.
+    //
+    // `dirty` is cleared because this sync has just sent the product — unless
+    // the live row went dirty while the request was in flight, in which case
+    // Merchant Center holds the earlier content and the product stays queued.
+    const observedDirty = asRecord(asRecord(doc[MC_FIELD_GROUP_NAME]).syncMeta).dirty === true
+
+    const statePersisted = await writeMCState(payload, collectionSlug, productId, (row) => {
+      const liveMCState = asRecord(row[MC_FIELD_GROUP_NAME])
+      const liveAttributes = asRecord(liveMCState[MC_PRODUCT_ATTRIBUTES_FIELD_NAME])
+      const racedASave = asRecord(liveMCState.syncMeta).dirty === true && !observedDirty
+
+      const persistedMCState: Record<string, unknown> = {
         syncMeta: {
+          dirty: racedASave,
           lastAction: 'initialSync',
           lastError: null,
           lastSyncedAt: new Date().toISOString(),
           state: 'success',
           syncSource: 'initial',
         },
-      },
+      }
+
+      if (snapshot) {
+        persistedMCState.snapshot = snapshot
+      }
+
+      // Derived values only ever fill a gap; the live row always wins.
+      const attributeFill = Object.fromEntries(
+        Object.entries(derivedAttributes).filter(([key]) => liveAttributes[key] === undefined),
+      )
+      if (Object.keys(attributeFill).length > 0) {
+        persistedMCState[MC_PRODUCT_ATTRIBUTES_FIELD_NAME] = attributeFill
+      }
+
+      return { [MC_FIELD_GROUP_NAME]: persistedMCState }
     })
+
+    if (!statePersisted) {
+      return {
+        error: {
+          message: STATE_NOT_PERSISTED_WARNING,
+          offerId: identity.offerId,
+          productId,
+        },
+        result: 'failed',
+      }
+    }
 
     return { result: 'succeeded' }
   } catch (error) {

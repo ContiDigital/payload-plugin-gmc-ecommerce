@@ -100,8 +100,13 @@ export const createBeforeChangeHook = (
 
     // 3. Mark enabled products as dirty on create and update so onChange and
     // scheduled flows both see the same state transition.
+    //
+    // Clearing `syncToken` is what stops a push that is still mid-flight from
+    // reporting this new content as already synced: the push only clears
+    // `dirty` if it finds the token it wrote still there. See `pushSync`.
     const incomingSyncMeta: MCSyncMeta = (incomingMCState.syncMeta ?? {}) as MCSyncMeta
     incomingSyncMeta.dirty = true
+    incomingSyncMeta.syncToken = null
 
     const existingSyncMeta: MCSyncMeta = mcState.syncMeta ?? { state: 'idle' }
     incomingMCState.syncMeta = deepMerge(

@@ -1,5 +1,8 @@
 # Setup Guide
 
+> Legacy 1.x guide. Do not use this configuration for v2. Start with
+> [v2 setup](./v2-setup.md) and [the migration guide](./v2-migration.md).
+
 This guide walks through integrating `payload-plugin-gmc-ecommerce` into a Payload CMS project.
 
 **Choose your path:**

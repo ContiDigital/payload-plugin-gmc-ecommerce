@@ -323,6 +323,35 @@ const deepContains = (target: unknown, subset: unknown): boolean => {
   return target === subset
 }
 
+/**
+ * Payload array rows for a Merchant Center string array.
+ *
+ * Idempotent on purpose: the value being converted is not always fresh from the
+ * API. A field mapping, or a caller normalizing values it derived, can hand
+ * over rows that are already in storage shape, and `String({ value: 'Shoes' })`
+ * would persist `'[object Object]'`. A row that already carries the target key
+ * is passed through untouched, id included; an object that carries no usable
+ * key is dropped rather than stringified into the document.
+ */
+const toArrayRows = (items: unknown[], key: 'url' | 'value'): Record<string, unknown>[] =>
+  items.flatMap((item) => {
+    if (typeof item === 'string') {
+      return [{ [key]: item }]
+    }
+
+    if (typeof item === 'number' || typeof item === 'boolean') {
+      return [{ [key]: String(item) }]
+    }
+
+    if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
+      const row = item as Record<string, unknown>
+
+      return key in row ? [row] : []
+    }
+
+    return []
+  })
+
 export const reverseTransformProduct = (
   mcProduct: Record<string, unknown>,
 ): {
@@ -338,13 +367,13 @@ export const reverseTransformProduct = (
 
     // Convert string arrays to Payload array-of-objects format
     if (STRING_ARRAY_FIELDS.has(key) && Array.isArray(value)) {
-      productAttributes[key] = value.map((v: unknown) => ({ value: String(v) }))
+      productAttributes[key] = toArrayRows(value, 'value')
       continue
     }
 
     // Convert URL string arrays (additionalImageLinks, videoLinks) to [{ url }]
     if (URL_ARRAY_FIELDS.has(key) && Array.isArray(value)) {
-      productAttributes[key] = value.map((v: unknown) => ({ url: String(v) }))
+      productAttributes[key] = toArrayRows(value, 'url')
       continue
     }
 
