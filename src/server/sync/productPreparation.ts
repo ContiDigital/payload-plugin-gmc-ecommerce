@@ -18,7 +18,7 @@ import {
 import { asRecord } from '../utilities/recordUtils.js'
 import { resolveGoogleCategory } from './categoryResolver.js'
 import { applyFieldMappings, deepMerge } from './fieldMapping.js'
-import { buildProductInput } from './transformers.js'
+import { buildProductInput, reverseTransformProduct } from './transformers.js'
 
 const isFieldMappingRecord = (value: unknown): value is FieldMapping => {
   const record = asRecord(value)
@@ -88,6 +88,17 @@ export const prepareProductForSync = async (args: {
   product: PayloadProductDoc | Record<string, unknown>
 }): Promise<{
   action: 'insert' | 'update'
+  /**
+   * Attributes preparation computed that the stored document does not already
+   * own, in Payload storage shape, keyed as they sit under `mc.attrs`.
+   *
+   * The push persists exactly these and nothing else. Values the document
+   * already owns — anything an editor typed, and anything a `permanent`
+   * mapping recomputes on every save — are deliberately absent: writing them
+   * back from a document read before the Merchant Center round-trip would
+   * revert whatever was saved in the meantime.
+   */
+  derivedAttributes: Record<string, unknown>
   input: MCProductInput
   product: PayloadProductDoc
 }> => {
@@ -124,6 +135,26 @@ export const prepareProductForSync = async (args: {
     }
   }
 
+  // `initialOnly` mappings seed an attribute once, on the first insert, and the
+  // editor owns it from then on. That seeding only survives if the push writes
+  // it back, so it is recorded as derived. It is computed as its own pass so
+  // the combined pass above keeps deciding the wire input exactly as before.
+  const wireDerivedAttributes: Record<string, unknown> = {}
+
+  if (action === 'insert') {
+    const seeded = applyFieldMappings(
+      preparedProduct as Record<string, unknown>,
+      allMappings,
+      'initialOnly',
+      { siteUrl: options.siteUrl },
+    )
+
+    Object.assign(
+      wireDerivedAttributes,
+      (seeded.productAttributes ?? seeded) as Record<string, unknown>,
+    )
+  }
+
   const resolvedCategories = await resolveGoogleCategory(
     preparedProduct as Record<string, unknown>,
     options,
@@ -133,20 +164,28 @@ export const prepareProductForSync = async (args: {
     const currentMC: MCProductState = preparedProduct[MC_FIELD_GROUP_NAME] ?? {}
     const currentAttrs: MCProductAttributes = currentMC[MC_PRODUCT_ATTRIBUTES_FIELD_NAME] ?? {}
 
+    // Resolution only ever fills a gap — an attribute the document sets itself
+    // always wins — so whatever it contributes here is by definition derived.
+    const resolvedFill = {
+      ...(currentAttrs.googleProductCategory
+        ? {}
+        : resolvedCategories.googleProductCategory
+          ? { googleProductCategory: resolvedCategories.googleProductCategory }
+          : {}),
+      ...(currentAttrs.productTypes
+        ? {}
+        : resolvedCategories.productTypes
+          ? { productTypes: resolvedCategories.productTypes }
+          : {}),
+    }
+
+    Object.assign(wireDerivedAttributes, resolvedFill)
+
     preparedProduct[MC_FIELD_GROUP_NAME] = {
       ...currentMC,
       [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: {
         ...currentAttrs,
-        ...(currentAttrs.googleProductCategory
-          ? {}
-          : resolvedCategories.googleProductCategory
-            ? { googleProductCategory: resolvedCategories.googleProductCategory }
-            : {}),
-        ...(currentAttrs.productTypes
-          ? {}
-          : resolvedCategories.productTypes
-            ? { productTypes: resolvedCategories.productTypes }
-            : {}),
+        ...resolvedFill,
       },
     }
   }
@@ -162,7 +201,17 @@ export const prepareProductForSync = async (args: {
     })
   }
 
-  return { action, input, product: preparedProduct }
+  // Everything above is in Merchant Center wire shape — `productTypes` is a
+  // `string[]` (categoryResolver.ts:9), `additionalImageLinks` likewise. The
+  // document stores those as Payload array rows (`[{ value }]`, `[{ url }]`),
+  // so the derived set is converted before any caller can persist it. Writing
+  // wire shape into an array field would leave the adapter with rows it cannot
+  // give a primary key to, after it has already emptied the array's table.
+  const derivedAttributes = (reverseTransformProduct({
+    productAttributes: wireDerivedAttributes,
+  }).productAttributes ?? {})
+
+  return { action, derivedAttributes, input, product: preparedProduct }
 }
 
 const REQUIRED_PRODUCT_FIELDS = ['title', 'link', 'imageLink', 'availability'] as const

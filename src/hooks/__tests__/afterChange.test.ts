@@ -121,7 +121,7 @@ describe('createAfterChangeHook', () => {
       operation: 'update',
       previousDoc: doc,
       req: req as never,
-    })
+    } as never)
 
     expect(result).toBe(doc)
     expect(queueProductPushJob).toHaveBeenCalledWith({
@@ -159,7 +159,7 @@ describe('createAfterChangeHook', () => {
       req: {
         payload: {},
       } as never,
-    })
+    } as never)
 
     await vi.runAllTimersAsync()
     expect(pushProduct).toHaveBeenCalledWith({ payload: {}, productId: 'prod-2' })
@@ -182,10 +182,81 @@ describe('createAfterChangeHook', () => {
       operation: 'update',
       previousDoc: {} as never,
       req: { payload: {} } as never,
-    })
+    } as never)
 
     expect(queueProductPushJob).not.toHaveBeenCalled()
     expect(pushProduct).not.toHaveBeenCalled()
+  })
+
+  test('does not push a draft save on a drafts-enabled collection', async () => {
+    const hook = createAfterChangeHook(mockOptions())
+
+    await hook({
+      collection: { versions: { drafts: true } } as never,
+      context: {},
+      doc: {
+        id: 'prod-draft',
+        _status: 'draft',
+        [MC_FIELD_GROUP_NAME]: {
+          enabled: true,
+          syncMeta: { dirty: true },
+        },
+      },
+      operation: 'update',
+      previousDoc: {} as never,
+      req: { payload: {} } as never,
+    } as never)
+
+    await vi.runAllTimersAsync()
+    expect(queueProductPushJob).not.toHaveBeenCalled()
+    expect(pushProduct).not.toHaveBeenCalled()
+  })
+
+  test('pushes once a draft is published', async () => {
+    const hook = createAfterChangeHook(mockOptions())
+
+    await hook({
+      collection: { versions: { drafts: true } } as never,
+      context: {},
+      doc: {
+        id: 'prod-published',
+        _status: 'published',
+        [MC_FIELD_GROUP_NAME]: {
+          enabled: true,
+          syncMeta: { dirty: true },
+        },
+      },
+      operation: 'update',
+      previousDoc: {} as never,
+      req: { payload: {} } as never,
+    } as never)
+
+    expect(queueProductPushJob).toHaveBeenCalledWith(
+      expect.objectContaining({ productId: 'prod-published' }),
+    )
+  })
+
+  test('still pushes on a collection that does not store drafts', async () => {
+    const hook = createAfterChangeHook(mockOptions())
+
+    await hook({
+      collection: { versions: { drafts: false } } as never,
+      context: {},
+      doc: {
+        id: 'prod-nodrafts',
+        [MC_FIELD_GROUP_NAME]: {
+          enabled: true,
+          syncMeta: { dirty: true },
+        },
+      },
+      operation: 'update',
+      previousDoc: {} as never,
+      req: { payload: {} } as never,
+    } as never)
+
+    expect(queueProductPushJob).toHaveBeenCalledWith(
+      expect.objectContaining({ productId: 'prod-nodrafts' }),
+    )
   })
 
   test('does not queue a push when the host app skips collection hooks', async () => {
@@ -204,7 +275,7 @@ describe('createAfterChangeHook', () => {
       operation: 'update',
       previousDoc: {} as never,
       req: { payload: {} } as never,
-    })
+    } as never)
 
     expect(queueProductPushJob).not.toHaveBeenCalled()
     expect(pushProduct).not.toHaveBeenCalled()

@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 import type { NormalizedPluginOptions, ResolvedMCIdentity } from '../../../types/index.js'
+import type { WrittenRow } from './helpers/payloadDouble.js'
 
 import { MC_FIELD_GROUP_NAME } from '../../../constants.js'
+import { buildPayloadDouble, buildRow, writtenMC, writtenRow } from './helpers/payloadDouble.js'
 
 const prepareProductForSync = vi.fn()
 const validateRequiredProductInput = vi.fn()
@@ -102,12 +104,12 @@ describe('runInitialSync', () => {
   test('syncs eligible products through the shared preparation pipeline', async () => {
     const identity = buildIdentity()
     const payload = {
+      ...buildPayloadDouble(),
       find: vi.fn().mockResolvedValue({
         docs: [{ id: 'prod-1', [MC_FIELD_GROUP_NAME]: {} }],
         hasNextPage: false,
         totalDocs: 1,
       }),
-      update: vi.fn().mockResolvedValue({}),
     }
     const apiClient = {
       getProduct: vi.fn()
@@ -125,6 +127,7 @@ describe('runInitialSync', () => {
     resolveIdentity.mockReturnValue({ ok: true, value: identity })
     prepareProductForSync.mockResolvedValue({
       action: 'insert',
+      derivedAttributes: {},
       input: {
         contentLanguage: 'en',
         feedLabel: 'US',
@@ -161,19 +164,143 @@ describe('runInitialSync', () => {
       payload,
       product: { id: 'prod-1', [MC_FIELD_GROUP_NAME]: {} },
     }))
-    expect(payload.update).toHaveBeenCalledWith(expect.objectContaining({
-      data: {
-        [MC_FIELD_GROUP_NAME]: {
-          snapshot: { name: 'snapshot-1' },
-          syncMeta: {
-            lastAction: 'initialSync',
-            lastError: null,
-            lastSyncedAt: expect.any(String),
-            state: 'success',
-            syncSource: 'initial',
-          },
-        },
+    expect(payload.update).not.toHaveBeenCalled()
+    expect(writtenMC(payload)).toMatchObject({
+      snapshot: { name: 'snapshot-1' },
+      syncMeta: {
+        lastAction: 'initialSync',
+        lastError: null,
+        lastSyncedAt: expect.any(String),
+        state: 'success',
+        syncSource: 'initial',
       },
-    }))
+    })
+    // The live row's own content is carried across untouched.
+    expect(writtenRow(payload)).toMatchObject({ _status: 'published', title: 'Live title' })
+  })
+
+  test('clears the dirty flag it was queued by, and fills only attributes the row still lacks', async () => {
+    resolveIdentity.mockReturnValue({ ok: true, value: buildIdentity() })
+    prepareProductForSync.mockResolvedValue({
+      action: 'insert',
+      derivedAttributes: { brand: 'Derived', description: 'Seeded once' },
+      input: { contentLanguage: 'en', feedLabel: 'US', offerId: 'SKU-1', productAttributes: {} },
+      product: { id: 'prod-1' },
+    })
+    validateRequiredProductInput.mockReturnValue([])
+
+    const row = buildRow()
+    ;(row.mc as WrittenRow).attrs = { description: 'Written by an editor' }
+    const payload = {
+      ...buildPayloadDouble({ rowsById: { 'prod-1': row } }),
+      find: vi.fn().mockResolvedValue({
+        docs: [{ id: 'prod-1', [MC_FIELD_GROUP_NAME]: {} }],
+        hasNextPage: false,
+        totalDocs: 1,
+      }),
+    }
+
+    await runInitialSync({
+      apiClient: {
+        getProduct: vi.fn().mockRejectedValue(new GoogleApiError('Not found', 404)),
+        insertProductInput: vi.fn().mockResolvedValue({}),
+      } as never,
+      options: buildOptions(),
+      payload: payload as never,
+      rateLimiter: { execute: vi.fn((fn: () => Promise<unknown>) => fn()) } as never,
+      retryService: { execute: vi.fn((fn: () => Promise<unknown>) => fn()) } as never,
+    })
+
+    expect(writtenMC(payload).syncMeta.dirty).toBe(false)
+    expect(writtenMC(payload).attrs).toEqual({
+      brand: 'Derived',
+      description: 'Written by an editor',
+    })
+  })
+
+  test('leaves the product queued when an editor saved during the insert', async () => {
+    resolveIdentity.mockReturnValue({ ok: true, value: buildIdentity() })
+    prepareProductForSync.mockResolvedValue({
+      action: 'insert',
+      derivedAttributes: {},
+      input: { contentLanguage: 'en', feedLabel: 'US', offerId: 'SKU-1', productAttributes: {} },
+      product: { id: 'prod-1' },
+    })
+    validateRequiredProductInput.mockReturnValue([])
+
+    const payload = {
+      ...buildPayloadDouble(),
+      find: vi.fn().mockResolvedValue({
+        docs: [{ id: 'prod-1', [MC_FIELD_GROUP_NAME]: { syncMeta: { dirty: false } } }],
+        hasNextPage: false,
+        totalDocs: 1,
+      }),
+    }
+
+    await runInitialSync({
+      apiClient: {
+        getProduct: vi.fn().mockRejectedValue(new GoogleApiError('Not found', 404)),
+        insertProductInput: vi.fn().mockImplementation(async () => {
+          const current = (await payload.db.findOne({
+            collection: 'products',
+            where: { id: { equals: 'prod-1' } },
+          } as never)) as WrittenRow
+
+          await payload.db.updateOne({
+            id: 'prod-1',
+            collection: 'products',
+            data: {
+              ...current,
+              [MC_FIELD_GROUP_NAME]: {
+                ...current[MC_FIELD_GROUP_NAME],
+                syncMeta: { ...current[MC_FIELD_GROUP_NAME].syncMeta, dirty: true },
+              },
+            },
+          } as never)
+
+          return {}
+        }),
+      } as never,
+      options: buildOptions(),
+      payload: payload as never,
+      rateLimiter: { execute: vi.fn((fn: () => Promise<unknown>) => fn()) } as never,
+      retryService: { execute: vi.fn((fn: () => Promise<unknown>) => fn()) } as never,
+    })
+
+    expect(writtenMC(payload).syncMeta.dirty).toBe(true)
+  })
+
+  test('reports a failure when Merchant Center accepted the insert but the state could not be recorded', async () => {
+    resolveIdentity.mockReturnValue({ ok: true, value: buildIdentity() })
+    prepareProductForSync.mockResolvedValue({
+      action: 'insert',
+      derivedAttributes: {},
+      input: { contentLanguage: 'en', feedLabel: 'US', offerId: 'SKU-1', productAttributes: {} },
+      product: { id: 'prod-1' },
+    })
+    validateRequiredProductInput.mockReturnValue([])
+
+    const payload = {
+      ...buildPayloadDouble({ row: null }),
+      find: vi.fn().mockResolvedValue({
+        docs: [{ id: 'prod-1', [MC_FIELD_GROUP_NAME]: {} }],
+        hasNextPage: false,
+        totalDocs: 1,
+      }),
+    }
+
+    const report = await runInitialSync({
+      apiClient: {
+        getProduct: vi.fn().mockRejectedValue(new GoogleApiError('Not found', 404)),
+        insertProductInput: vi.fn().mockResolvedValue({}),
+      } as never,
+      options: buildOptions(),
+      payload: payload as never,
+      rateLimiter: { execute: vi.fn((fn: () => Promise<unknown>) => fn()) } as never,
+      retryService: { execute: vi.fn((fn: () => Promise<unknown>) => fn()) } as never,
+    })
+
+    expect(report).toMatchObject({ failed: 1, succeeded: 0 })
+    expect(report.errors[0]?.message).toMatch(/could not be recorded/)
   })
 })

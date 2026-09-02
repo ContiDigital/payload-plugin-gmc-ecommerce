@@ -5,15 +5,9 @@ import {
   TRANSFORM_PRESETS,
   type TransformPreset,
 } from '../../types/index.js'
+import { ValidationError } from './httpError.js'
 
-export class ValidationError extends Error {
-  public readonly statusCode = 400
-
-  constructor(message: string) {
-    super(message)
-    this.name = 'ValidationError'
-  }
-}
+export { ValidationError } from './httpError.js'
 
 export const requireString = (
   value: unknown,

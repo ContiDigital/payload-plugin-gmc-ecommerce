@@ -6,6 +6,7 @@ import { GMC_SYNC_LOG_SLUG, MC_FIELD_GROUP_NAME } from '../constants.js'
 import { queueProductPushJob } from '../plugin/jobTasks.js'
 import { getMerchantServiceInstance } from '../plugin/serviceRegistry.js'
 import { shouldSkipSyncHooks } from '../server/sync/hookContext.js'
+import { isLiveDocument } from '../server/sync/publicationState.js'
 import { createPluginLogger } from '../server/utilities/logger.js'
 
 // Prevents duplicate concurrent pushes for the same product when rapid saves
@@ -15,8 +16,15 @@ const inFlightPushes = new Set<string>()
 export const createAfterChangeHook = (
   options: NormalizedPluginOptions,
 ): CollectionAfterChangeHook => {
-  return async ({ context, doc, operation, req }) => {
+  return async ({ collection, context, doc, operation, req }) => {
     if (shouldSkipSyncHooks(context) || options.sync.mode !== 'onChange') {
+      return doc
+    }
+
+    // Merchant Center mirrors live content only. Saving a draft on a published
+    // product must not ship the draft — and must not spend a Merchant Center
+    // write re-pushing the live row either. The next publish triggers the push.
+    if (!isLiveDocument({ collection, doc: doc as Record<string, unknown> })) {
       return doc
     }
 

@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 import type { NormalizedPluginOptions } from '../../../types/index.js'
 
+import { STATE_NOT_PERSISTED_WARNING } from '../../sync/mcStateWriter.js'
+
 const pushProduct = vi.fn()
 const deleteFromMC = vi.fn()
 const deleteFromMCByIdentity = vi.fn()
@@ -144,6 +146,37 @@ describe('createMerchantService', () => {
     createGoogleApiClient.mockReturnValue(apiClient)
     createRateLimiterService.mockReturnValue(rateLimiter)
     createRetryService.mockReturnValue(retryService)
+  })
+
+  test('pushBatch records a push whose result was never persisted instead of counting it clean', async () => {
+    // Merchant Center accepted the operation but the product had gone, so a
+    // remote listing may now be orphaned. Counting that as a plain success
+    // hides it from every scheduled report.
+    pushProduct.mockResolvedValue({
+      action: 'insert',
+      productId: 'prod-1',
+      statePersisted: false,
+      success: true,
+      warning: `${STATE_NOT_PERSISTED_WARNING} Snapshot may also lag.`,
+    })
+
+    const payload = {
+      find: vi.fn().mockResolvedValue({
+        docs: [{ id: 'prod-1' }],
+        hasNextPage: false,
+        totalDocs: 1,
+      }),
+    }
+
+    const report = await createMerchantService(buildOptions()).pushBatch({
+      filter: { 'mc.syncMeta.dirty': { equals: true } },
+      payload: payload as never,
+    })
+
+    expect(report.succeeded).toBe(0)
+    expect(report.failed).toBe(1)
+    expect(report.errors[0]).toMatchObject({ productId: 'prod-1' })
+    expect(report.errors[0]?.message).toMatch(/could not be recorded/)
   })
 
   test('pushBatch snapshots all matching IDs before syncing products', async () => {

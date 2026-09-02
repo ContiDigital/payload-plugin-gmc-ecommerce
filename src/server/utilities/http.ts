@@ -1,6 +1,6 @@
 import type { PayloadRequest } from 'payload'
 
-import { ValidationError } from './validation.js'
+import { ValidationError } from './httpError.js'
 
 export const jsonResponse = (data: unknown, status = 200): Response => {
   return new Response(JSON.stringify(data), {
@@ -10,16 +10,26 @@ export const jsonResponse = (data: unknown, status = 200): Response => {
 }
 
 export const errorResponse = (req: PayloadRequest, error: unknown): Response => {
-  const statusCode =
+  const candidateStatus =
     typeof error === 'object' && error !== null && 'statusCode' in error
-      ? (error as { statusCode: number }).statusCode
+      ? (error as { statusCode?: unknown }).statusCode
+      : undefined
+  // Errors can cross adapter and HTTP-library boundaries. Never allow an
+  // arbitrary `statusCode` property to make the Response constructor throw,
+  // emit a non-error status, or disclose an internal message as a 2xx/3xx.
+  const statusCode =
+    typeof candidateStatus === 'number' &&
+      Number.isInteger(candidateStatus) &&
+      candidateStatus >= 400 &&
+      candidateStatus <= 599
+      ? candidateStatus
       : 500
 
   const message =
     error instanceof Error ? error.message : 'Internal server error'
 
   if (statusCode >= 500) {
-    req.payload?.logger?.error(`[GMC Plugin] ${message}`, error)
+    req.payload?.logger?.error({ err: error }, `[GMC Plugin] ${message}`)
   }
 
   // Don't leak internal details to the client for 500+ errors

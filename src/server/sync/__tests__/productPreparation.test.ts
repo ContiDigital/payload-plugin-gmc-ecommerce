@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 import type { NormalizedPluginOptions, ResolvedMCIdentity } from '../../../types/index.js'
+import type * as TransformersModule from '../transformers.js'
 
 import { MC_FIELD_GROUP_NAME, MC_PRODUCT_ATTRIBUTES_FIELD_NAME } from '../../../constants.js'
 
@@ -20,9 +21,15 @@ vi.mock('../fieldMapping.js', async () => {
   }
 })
 
-vi.mock('../transformers.js', () => ({
-  buildProductInput,
-}))
+vi.mock('../transformers.js', async () => {
+  // `reverseTransformProduct` normalizes derived attributes into Payload
+  // storage shape, so the suite must exercise the real one.
+  const actual = await vi.importActual<typeof TransformersModule>('../transformers.js')
+  return {
+    ...actual,
+    buildProductInput,
+  }
+})
 
 const {
   loadMergedFieldMappings,
@@ -220,6 +227,132 @@ describe('productPreparation', () => {
       payload,
     }))
     expect(result.input.productAttributes?.title).toBe('Before Push Title')
+  })
+
+  describe('derivedAttributes — what the push is allowed to persist back', () => {
+    const prepare = async (args: {
+      action: 'insert' | 'update'
+      existingAttrs?: Record<string, unknown>
+      mappingDocs?: Record<string, unknown>[]
+    }) => {
+      const payload = { find: vi.fn().mockResolvedValue({ docs: args.mappingDocs ?? [] }) }
+      buildProductInput.mockReturnValue({ productAttributes: {} })
+
+      return prepareProductForSync({
+        identity: buildIdentity(),
+        options: buildOptions(),
+        payload: payload as never,
+        product: {
+          id: 'prod-1',
+          [MC_FIELD_GROUP_NAME]: {
+            [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: args.existingAttrs ?? {},
+            // A stored snapshot is what makes preparation treat the push as an
+            // update rather than a first insert.
+            ...(args.action === 'update' ? { snapshot: { existing: true } } : {}),
+          },
+          sku: 'SKU-1',
+          title: 'Source Title',
+        },
+      })
+    }
+
+    test('reports initialOnly mapping output on the first insert', async () => {
+      applyFieldMappings.mockImplementation((_product, _mappings, filterMode) =>
+        filterMode === 'initialOnly'
+          ? { productAttributes: { description: 'Seeded once' } }
+          : { productAttributes: { description: 'Seeded once', title: 'Mapped Title' } },
+      )
+      resolveGoogleCategory.mockResolvedValue(null)
+
+      const result = await prepare({
+        action: 'insert',
+        mappingDocs: [
+          { source: 'description', syncMode: 'initialOnly', target: 'productAttributes.description' },
+        ],
+      })
+
+      expect(result.derivedAttributes).toEqual({ description: 'Seeded once' })
+    })
+
+    test('never reports permanent mapping output — the document already owns it', async () => {
+      applyFieldMappings.mockImplementation((_product, _mappings, filterMode) =>
+        filterMode === 'initialOnly' ? {} : { productAttributes: { title: 'Mapped Title' } },
+      )
+      resolveGoogleCategory.mockResolvedValue(null)
+
+      const result = await prepare({ action: 'insert' })
+
+      expect(result.derivedAttributes).not.toHaveProperty('title')
+    })
+
+    test('reports no initialOnly output once the product has been synced before', async () => {
+      applyFieldMappings.mockReturnValue({ productAttributes: { title: 'Mapped Title' } })
+      resolveGoogleCategory.mockResolvedValue(null)
+
+      const result = await prepare({ action: 'update' })
+
+      expect(result.derivedAttributes).toEqual({})
+    })
+
+    test('reports resolved categories the document did not already carry, in Payload storage shape', async () => {
+      applyFieldMappings.mockReturnValue({})
+      // `resolveGoogleCategory` really returns `productTypes: string[]`
+      // (categoryResolver.ts:9). `mc.attrs.productTypes` is a Payload array of
+      // `{ value }` rows, so what gets persisted has to be converted.
+      resolveGoogleCategory.mockResolvedValue({
+        googleProductCategory: 'Arts & Entertainment',
+        productTypes: ['Art > Painting', 'Art'],
+      })
+
+      const result = await prepare({ action: 'update' })
+
+      expect(result.derivedAttributes).toEqual({
+        googleProductCategory: 'Arts & Entertainment',
+        productTypes: [{ value: 'Art > Painting' }, { value: 'Art' }],
+      })
+    })
+
+    test('converts wire-format arrays from initialOnly mappings into storage shape too', async () => {
+      applyFieldMappings.mockImplementation((_product, _mappings, filterMode) =>
+        filterMode === 'initialOnly'
+          ? { productAttributes: { additionalImageLinks: ['https://example.com/a.jpg'] } }
+          : {},
+      )
+      resolveGoogleCategory.mockResolvedValue(null)
+
+      const result = await prepare({
+        action: 'insert',
+        mappingDocs: [
+          {
+            source: 'images',
+            syncMode: 'initialOnly',
+            target: 'productAttributes.additionalImageLinks',
+          },
+        ],
+      })
+
+      expect(result.derivedAttributes).toEqual({
+        additionalImageLinks: [{ url: 'https://example.com/a.jpg' }],
+      })
+    })
+
+    test('does not report categories the document already sets itself', async () => {
+      applyFieldMappings.mockReturnValue({})
+      resolveGoogleCategory.mockResolvedValue({
+        googleProductCategory: 'Arts & Entertainment',
+        productTypes: ['Art > Painting'],
+      })
+
+      const result = await prepare({
+        action: 'update',
+        existingAttrs: {
+          googleProductCategory: 'Home & Garden',
+          productTypes: [{ value: 'Editor > Choice' }],
+        },
+      })
+
+      expect(result.derivedAttributes).toEqual({})
+    })
   })
 
   test('validateRequiredProductInput reports missing required fields', () => {

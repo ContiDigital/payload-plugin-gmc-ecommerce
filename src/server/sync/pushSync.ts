@@ -1,6 +1,12 @@
 import type { Payload } from 'payload'
 
-import type { NormalizedPluginOptions, ResolvedMCIdentity, SyncResult } from '../../types/index.js'
+import { randomBytes } from 'crypto'
+
+import type {
+  NormalizedPluginOptions,
+  ResolvedMCIdentity,
+  SyncResult,
+} from '../../types/index.js'
 import type { GoogleApiClient } from '../services/sub-services/googleApiClient.js'
 import type { RetryService } from '../services/sub-services/retryService.js'
 
@@ -10,13 +16,57 @@ import {
 } from '../../constants.js'
 import { GoogleApiError } from '../services/sub-services/googleApiClient.js'
 import { createPluginLogger } from '../utilities/logger.js'
-import { asProductDoc } from '../utilities/recordUtils.js'
+import { asProductDoc, asRecord } from '../utilities/recordUtils.js'
 import { extractMCProductLastModified, isRemoteNewerThanLocal } from './conflictResolver.js'
 import { resolveIdentity } from './identityResolver.js'
 import { syncLocalInventory } from './localInventorySync.js'
-import { writeMCState } from './mcStateWriter.js'
+import { STATE_NOT_PERSISTED_WARNING, writeMCState } from './mcStateWriter.js'
 import { prepareProductForSync, validateRequiredProductInput } from './productPreparation.js'
-import { productAttributesContainRemoteSubset, reverseTransformProduct } from './transformers.js'
+import {
+  productAttributesContainRemoteSubset,
+  productAttributesEquivalent,
+  reverseTransformProduct,
+} from './transformers.js'
+
+/**
+ * Value equality for one stored attribute, ignoring array-row ids — the sent
+ * value has none and the stored one does.
+ */
+const attributeEquivalent = (left: unknown, right: unknown): boolean =>
+  productAttributesEquivalent({ value: left }, { value: right })
+
+export const CONTENT_CHANGED_MID_PUSH_WARNING =
+  'The product changed while Merchant Center was being updated, so it stays queued for another sync. Merchant Center currently holds the earlier version.'
+
+/**
+ * The identity fields the live row does not set for itself, filled in with the
+ * values this push actually used.
+ *
+ * `resolveIdentity` falls back to the plugin defaults for a blank
+ * `contentLanguage` or `feedLabel`, so materialising them here pins the product
+ * to the remote object it was really written to: a later change to those
+ * defaults then cannot silently re-point the product and orphan its Merchant
+ * Center listing. Fields the row already has are never touched, so this can
+ * only ever fill a gap — including one an editor filled in mid-push.
+ */
+const blankIdentityFields = (
+  stored: Record<string, unknown>,
+  identity: ResolvedMCIdentity,
+): Record<string, string> | undefined => {
+  const seed: Record<string, string> = {}
+
+  if (!stored.offerId) {
+    seed.offerId = identity.offerId
+  }
+  if (!stored.contentLanguage) {
+    seed.contentLanguage = identity.contentLanguage
+  }
+  if (!stored.feedLabel) {
+    seed.feedLabel = identity.feedLabel
+  }
+
+  return Object.keys(seed).length > 0 ? seed : undefined
+}
 
 // ---------------------------------------------------------------------------
 // Single product push
@@ -33,23 +83,35 @@ export const pushProduct = async (args: {
   const log = createPluginLogger(payload.logger, { operation: 'push', productId })
   const collectionSlug = options.collections.products.slug
 
-  // 1. Fetch the product document (depth hydrates relationships for field mappings)
-  const product = await payload.findByID({
-    id: productId,
-    collection: collectionSlug,
-    depth: options.collections.products.fetchDepth,
-  }).then(asProductDoc)
+  // 1. Set syncing state, stamped with a token this push will look for again on
+  //    the way back. `beforeChange` nulls it on every save, so finding it intact
+  //    is proof that nothing was edited while Merchant Center was being updated.
+  //
+  //    This has to happen BEFORE the content is read: a save landing between the
+  //    read and the stamp would be sent to Merchant Center stale and then
+  //    certified clean by this push's own freshly-stamped token.
+  const syncToken = randomBytes(12).toString('hex')
 
-  // 2. Set syncing state
   await updateSyncMeta(payload, collectionSlug, productId, {
     lastAction: 'saveSync',
     lastError: undefined,
     state: 'syncing',
     syncSource: 'push',
+    syncToken,
   })
 
   try {
     const pushStartedAt = new Date().toISOString()
+
+    // 2. Fetch the product document (depth hydrates relationships for field
+    //    mappings). Inside the try: the state has already been stamped, so a
+    //    read failure has to be recorded rather than leaving the product
+    //    stranded in `syncing` with a token nobody will clear.
+    const product = await payload.findByID({
+      id: productId,
+      collection: collectionSlug,
+      depth: options.collections.products.fetchDepth,
+    }).then(asProductDoc)
 
     // 3. Resolve identity
     const identityResult = resolveIdentity(product, options)
@@ -63,7 +125,7 @@ export const pushProduct = async (args: {
     }
 
     const identity = identityResult.value
-    const { action, input, product: preparedProduct } = await prepareProductForSync({
+    const { action, derivedAttributes, input, product: preparedProduct } = await prepareProductForSync({
       identity,
       options,
       payload,
@@ -102,7 +164,7 @@ export const pushProduct = async (args: {
 
     // 7. Fetch processed snapshot
     let snapshot: Record<string, unknown> | undefined
-    let warning: string | undefined
+    const warnings: string[] = []
     try {
       const snapshotResponse = await retryService.execute(
         () => apiClient.getProduct(identity.productName, payload),
@@ -131,8 +193,9 @@ export const pushProduct = async (args: {
           remoteProductAttributes,
         )
       ) {
-        warning =
-          'Push succeeded, but Merchant Center is still serving an older processed product. Snapshot and pull may lag this push for a few minutes.'
+        warnings.push(
+          'Push succeeded, but Merchant Center is still serving an older processed product. Snapshot and pull may lag this push for a few minutes.',
+        )
       } else {
         snapshot = fetchedSnapshot
       }
@@ -144,44 +207,91 @@ export const pushProduct = async (args: {
       })
     }
 
-    const {
-      customAttributes: storedCustomAttributes,
-      productAttributes: storedProductAttributes,
-    } = reverseTransformProduct({
-      ...(input.customAttributes ? { customAttributes: input.customAttributes } : {}),
+    // What the push is allowed to persist back.
+    //
+    // Everything here was either produced by this push or is plugin
+    // bookkeeping. Editorial state — anything an editor typed, and anything a
+    // `permanent` mapping recomputes on every save — is deliberately absent,
+    // and what remains is assembled against the row as it stands at write time
+    // rather than the document read before the Merchant Center round-trip. A
+    // save that landed in between is therefore respected, not reverted.
+    // What this push actually put on the wire, in storage shape, and the
+    // attributes as they stood when the push read the product.
+    const sentAttributes = reverseTransformProduct({
       productAttributes: input.productAttributes ?? {},
+    }).productAttributes
+    const attributesAtPushStart = asRecord(
+      asRecord(product[MC_FIELD_GROUP_NAME])[MC_PRODUCT_ATTRIBUTES_FIELD_NAME],
+    )
+
+    let contentChangedMidPush = false
+
+    const statePersisted = await writeMCState(payload, collectionSlug, productId, (row) => {
+      const liveMCState = asRecord(row[MC_FIELD_GROUP_NAME])
+      const liveSyncMeta = asRecord(liveMCState.syncMeta)
+      const liveAttributes = asRecord(liveMCState[MC_PRODUCT_ATTRIBUTES_FIELD_NAME])
+
+      contentChangedMidPush = liveSyncMeta.syncToken !== syncToken
+
+      const persistedMCState: Record<string, unknown> = {
+        syncMeta: {
+          // Merchant Center holds what this push sent. If the product changed
+          // since, that is not what the product says now, so it stays queued.
+          dirty: contentChangedMidPush,
+          lastAction: 'saveSync',
+          lastError: null,
+          lastSyncedAt: new Date().toISOString(),
+          state: 'success',
+          syncSource: 'push',
+          syncToken: null,
+        },
+      }
+
+      // Omitted rather than nulled when the refresh failed, so the merge keeps
+      // whatever snapshot the document already had.
+      if (snapshot) {
+        persistedMCState.snapshot = snapshot
+      }
+
+      // Record what was sent, attribute by attribute.
+      //
+      // `mc.attrs` is what `refreshSnapshot` and `pullProduct` compare the
+      // remote product against, and with the default `permanentSync: false` —
+      // or for mappings defined in the runtime mappings collection, which
+      // `beforeChange` never applies — this write is the only thing that puts
+      // the sent values there.
+      //
+      // An attribute is only written when the row still holds what the push
+      // read: anything an editor changed while the round-trip was in flight
+      // keeps the editor's value. Attributes that already match are skipped so
+      // an unchanged push does not churn the array tables.
+      const attributeWrite = Object.fromEntries(
+        Object.entries({ ...sentAttributes, ...derivedAttributes }).filter(([key, value]) => {
+          const unchangedSinceRead = attributeEquivalent(
+            liveAttributes[key],
+            attributesAtPushStart[key],
+          )
+
+          return unchangedSinceRead && !attributeEquivalent(liveAttributes[key], value)
+        }),
+      )
+      if (Object.keys(attributeWrite).length > 0) {
+        persistedMCState[MC_PRODUCT_ATTRIBUTES_FIELD_NAME] = attributeWrite
+      }
+
+      const identitySeed = blankIdentityFields(asRecord(liveMCState.identity), identity)
+      if (identitySeed) {
+        persistedMCState.identity = identitySeed
+      }
+
+      return { [MC_FIELD_GROUP_NAME]: persistedMCState }
     })
 
-    const preparedMCState = preparedProduct[MC_FIELD_GROUP_NAME]
-    const persistedMCState = {
-      ...(typeof preparedMCState === 'object' && preparedMCState ? preparedMCState : {}),
-      ...(storedCustomAttributes ? { customAttributes: storedCustomAttributes } : {}),
-      identity: {
-        ...(typeof preparedMCState?.identity === 'object' && preparedMCState.identity
-          ? preparedMCState.identity
-          : {}),
-        contentLanguage: input.contentLanguage,
-        feedLabel: input.feedLabel,
-        offerId: input.offerId,
-      },
-      [MC_PRODUCT_ATTRIBUTES_FIELD_NAME]: storedProductAttributes,
-      snapshot: snapshot ?? preparedMCState?.snapshot,
-      syncMeta: {
-        ...(typeof preparedMCState?.syncMeta === 'object' && preparedMCState.syncMeta
-          ? preparedMCState.syncMeta
-          : {}),
-        dirty: false,
-        lastAction: 'saveSync',
-        lastError: null,
-        lastSyncedAt: new Date().toISOString(),
-        state: 'success',
-        syncSource: 'push',
-      },
+    if (!statePersisted) {
+      warnings.push(STATE_NOT_PERSISTED_WARNING)
+    } else if (contentChangedMidPush) {
+      warnings.push(CONTENT_CHANGED_MID_PUSH_WARNING)
     }
-
-    await writeMCState(payload, collectionSlug, productId, {
-      [MC_FIELD_GROUP_NAME]: persistedMCState,
-    })
 
     // 9. Sync local inventory (non-critical — failures are logged but don't fail the push)
     if (options.localInventory.enabled) {
@@ -209,9 +319,10 @@ export const pushProduct = async (args: {
     return {
       action,
       productId,
-      snapshot: snapshot ?? preparedMCState?.snapshot,
+      snapshot: snapshot ?? preparedProduct[MC_FIELD_GROUP_NAME]?.snapshot,
+      statePersisted,
       success: true,
-      ...(warning ? { warning } : {}),
+      ...(warnings.length > 0 ? { warning: warnings.join(' ') } : {}),
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -258,6 +369,13 @@ export const deleteFromMC = async (args: {
     syncSource: 'push',
   })
 
+  const recordDeleteSuccess = () =>
+    updateSyncMeta(payload, collectionSlug, productId, {
+      lastError: undefined,
+      lastSyncedAt: new Date().toISOString(),
+      state: 'success',
+    }, null)
+
   try {
     await retryService.execute(
       () =>
@@ -275,22 +393,11 @@ export const deleteFromMC = async (args: {
       },
     )
 
-    await updateSyncMeta(payload, collectionSlug, productId, {
-      lastError: undefined,
-      lastSyncedAt: new Date().toISOString(),
-      state: 'success',
-    }, null)
-
-    return { action: 'delete', productId, success: true }
+    return deleteSucceeded(await recordDeleteSuccess(), productId)
   } catch (error) {
     // 404 means already deleted — treat as success
     if (error instanceof GoogleApiError && error.statusCode === 404) {
-      await updateSyncMeta(payload, collectionSlug, productId, {
-        lastError: undefined,
-        lastSyncedAt: new Date().toISOString(),
-        state: 'success',
-      }, null)
-      return { action: 'delete', productId, success: true }
+      return deleteSucceeded(await recordDeleteSuccess(), productId)
     }
 
     const message = error instanceof Error ? error.message : String(error)
@@ -301,6 +408,14 @@ export const deleteFromMC = async (args: {
     return { action: 'delete', productId, success: false }
   }
 }
+
+const deleteSucceeded = (statePersisted: boolean, productId: string): SyncResult => ({
+  action: 'delete',
+  productId,
+  statePersisted,
+  success: true,
+  ...(statePersisted ? {} : { warning: STATE_NOT_PERSISTED_WARNING }),
+})
 
 // ---------------------------------------------------------------------------
 // Delete from MC by pre-resolved identity (used by afterDelete hook where
@@ -398,12 +513,17 @@ export const refreshSnapshot = async (args: {
       ? 'Merchant Center is still serving an older processed product than the latest local sync. Snapshot was left unchanged; try again in a few minutes.'
       : undefined
 
-    await updateSyncMeta(payload, collectionSlug, productId, {
+    const statePersisted = await updateSyncMeta(payload, collectionSlug, productId, {
       lastAction: 'refresh',
       lastError: undefined,
       state: 'success',
       syncSource: 'pull',
     }, remoteIsNewer === false && !remoteMatchesLocal ? undefined : response.data)
+
+    const warnings = [
+      ...(warning ? [warning] : []),
+      ...(statePersisted ? [] : [STATE_NOT_PERSISTED_WARNING]),
+    ]
 
     return {
       action: 'update',
@@ -412,8 +532,9 @@ export const refreshSnapshot = async (args: {
         remoteIsNewer === false && !remoteMatchesLocal
           ? product[MC_FIELD_GROUP_NAME]?.snapshot
           : response.data,
+      statePersisted,
       success: true,
-      ...(warning ? { warning } : {}),
+      ...(warnings.length > 0 ? { warning: warnings.join(' ') } : {}),
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -430,13 +551,22 @@ export const refreshSnapshot = async (args: {
 // Sync metadata persistence
 // ---------------------------------------------------------------------------
 
+/**
+ * Persist a sync-metadata change, reporting whether it actually landed.
+ *
+ * Adapter failures are logged rather than thrown: every caller is already
+ * either reporting an error or finishing a completed Merchant Center
+ * operation, and losing that outcome to a bookkeeping failure would be worse
+ * than recording it. The return value is what stops the caller from then
+ * claiming the state was saved.
+ */
 const updateSyncMeta = async (
   payload: Payload,
   collectionSlug: string,
   productId: string,
   meta: Record<string, unknown>,
   snapshot?: null | Record<string, unknown>,
-): Promise<void> => {
+): Promise<boolean> => {
   const updateData: Record<string, unknown> = {}
 
   for (const [key, value] of Object.entries(meta)) {
@@ -451,7 +581,7 @@ const updateSyncMeta = async (
   const log = createPluginLogger(payload.logger, { operation: 'updateSyncMeta', productId })
 
   try {
-    await writeMCState(payload, collectionSlug, productId, unflatten(updateData))
+    return await writeMCState(payload, collectionSlug, productId, unflatten(updateData))
   } catch (error) {
     log.error('Failed to update sync metadata — product state may be stale in admin UI', {
       collection: collectionSlug,
@@ -459,6 +589,8 @@ const updateSyncMeta = async (
       meta,
       productId,
     })
+
+    return false
   }
 }
 
