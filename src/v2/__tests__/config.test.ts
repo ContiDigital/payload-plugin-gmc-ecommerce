@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { GmcAsyncAdapter, PayloadGmcEcommerceV2Options } from '../types.js'
 
+import { hasDefaultPluginAccess } from '../../server/utilities/access.js'
 import { normalizeGmcV2Options } from '../config.js'
 
 const dispatch = vi.fn(() => Promise.resolve({ operationId: 'op-1', state: 'queued' as const }))
@@ -57,12 +58,16 @@ describe('normalizeGmcV2Options', () => {
   })
 
   it('ignores rc.35 capability flags', () => {
-    expect(() =>
-      normalizeGmcV2Options({
-        ...baseOptions,
-        async: { ...minimalAdapter, capabilities: { durable: true, globalSourceVersion: true } },
-      }),
-    ).not.toThrow()
+    const capabilities = { durable: true, globalSourceVersion: true }
+    const options = normalizeGmcV2Options({
+      ...baseOptions,
+      async: { ...minimalAdapter, capabilities },
+    })
+    expect(options.async.name).toBe('test-adapter')
+    expect(options.async.dispatch).toBe(dispatch)
+    expect(options.async.getOperation).toBe(getOperation)
+    expect(options.async.health).toBe(health)
+    expect(options.async.capabilities).toBe(capabilities)
   })
 
   it('defaults feeds to an empty array', () => {
@@ -92,7 +97,7 @@ describe('normalizeGmcV2Options', () => {
   it('defaults requireTransaction to false and access to the default plugin access', () => {
     const options = normalizeGmcV2Options({ ...baseOptions, access: undefined })
     expect(options.requireTransaction).toBe(false)
-    expect(typeof options.access).toBe('function')
+    expect(options.access).toBe(hasDefaultPluginAccess)
   })
 
   it('requires immutable artifact read-back before promotion', () => {

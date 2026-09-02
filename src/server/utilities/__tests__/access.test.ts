@@ -16,20 +16,16 @@ describe('hasDefaultPluginAccess', () => {
     expect(call(undefined)).toBe(false)
   })
 
-  it('allows a user with no role or roles field', () => {
-    expect(call({ id: '1' })).toBe(true)
+  it('denies a user with no role fields', () => {
+    expect(call({ id: '1' })).toBe(false)
   })
 
-  it('allows role === admin', () => {
-    expect(call({ id: '1', role: 'admin' })).toBe(true)
-  })
-
-  it('denies a non-admin role', () => {
-    expect(call({ id: '1', role: 'editor' })).toBe(false)
+  it('allows isAdmin === true', () => {
+    expect(call({ id: '1', isAdmin: true })).toBe(true)
   })
 
   it('allows roles including admin', () => {
-    expect(call({ id: '1', roles: ['editor', 'admin'] })).toBe(true)
+    expect(call({ id: '1', roles: ['admin'] })).toBe(true)
   })
 
   it('denies roles not including admin', () => {

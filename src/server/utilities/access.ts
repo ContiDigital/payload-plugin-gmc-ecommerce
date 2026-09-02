@@ -10,20 +10,17 @@ export class AccessDeniedError extends Error {
 }
 
 /**
- * Default plugin access: any authenticated user whose record has no
- * `role`/`roles` field, or whose `role` is `'admin'`, or whose `roles`
- * array includes `'admin'`.
+ * Default plugin access, ported field-for-field from the 1.x helper: an
+ * authenticated user whose record has `isAdmin === true`, or whose `roles`
+ * array includes `'admin'`. A user with neither field is denied.
  */
 export const hasDefaultPluginAccess: AccessFn = ({ user }) => {
   if (!user || typeof user !== 'object') {
     return false
   }
   const record = user as Record<string, unknown>
-  if (!('role' in record) && !('roles' in record)) {
-    return true
-  }
-  if (record.role === 'admin') {
-    return true
-  }
-  return Array.isArray(record.roles) && record.roles.includes('admin')
+  return (
+    record.isAdmin === true ||
+    (Array.isArray(record.roles) && record.roles.includes('admin'))
+  )
 }
