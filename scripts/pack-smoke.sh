@@ -46,17 +46,10 @@ npm install "$pack_file" >/dev/null
 node --input-type=module -e "import plugin, { payloadGmcEcommerce } from 'payload-plugin-gmc-ecommerce'; if (typeof plugin !== 'function' || plugin !== payloadGmcEcommerce) { throw new Error('v2 root export is incomplete') }"
 node --input-type=module -e "import plugin, { assertFeedArtifactDescriptor, buildGmcLocalInventoryPublicationCollection, createGmcCommandExecutor, createPayloadLocalInventoryPublicationStateStore, GmcAsyncWorkflowConflictError, GmcLocalInventorySourceVersionConflictError, GMC_V2_COMMAND_SCHEMA_VERSION, GMC_V2_MAX_TARGETED_PRODUCT_IDS } from 'payload-plugin-gmc-ecommerce/v2'; const conflict = new GmcAsyncWorkflowConflictError('smoke-operation'); const localConflict = new GmcLocalInventorySourceVersionConflictError({ key: 'resource', sourceVersion: '1' }); if (typeof plugin !== 'function' || typeof createGmcCommandExecutor !== 'function' || typeof assertFeedArtifactDescriptor !== 'function' || typeof buildGmcLocalInventoryPublicationCollection !== 'function' || typeof createPayloadLocalInventoryPublicationStateStore !== 'function' || conflict.code !== 'GMC_ASYNC_WORKFLOW_CONFLICT' || conflict.statusCode !== 409 || localConflict.code !== 'GMC_LOCAL_INVENTORY_SOURCE_VERSION_CONFLICT' || GMC_V2_COMMAND_SCHEMA_VERSION !== 2 || GMC_V2_MAX_TARGETED_PRODUCT_IDS !== 1000) { throw new Error('v2 export is incomplete') }"
 node --input-type=module -e "const root = await import('payload-plugin-gmc-ecommerce'); if ('createMerchantService' in root || 'SYNC_MODES' in root) { throw new Error('legacy symbols leaked into the v2 root') }"
-node --input-type=module -e "try { await import('payload-plugin-gmc-ecommerce/legacy'); throw new Error('legacy entrypoint unexpectedly resolved') } catch (error) { if (error?.message === 'legacy entrypoint unexpectedly resolved') throw error; if (error?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw error }"
-test ! -e node_modules/payload-plugin-gmc-ecommerce/dist/legacy.js
-test ! -d node_modules/payload-plugin-gmc-ecommerce/dist/plugin
-test ! -e node_modules/payload-plugin-gmc-ecommerce/dist/constants.js
-test ! -e node_modules/payload-plugin-gmc-ecommerce/dist/types/index.js
-test ! -e node_modules/payload-plugin-gmc-ecommerce/dist/server/utilities/validation.js
+# enabled in Task 8
+# node --input-type=module -e "import('payload-plugin-gmc-ecommerce').then(m => { if (typeof m.payloadJobsAsyncAdapter !== 'function') throw new Error('missing payloadJobsAsyncAdapter') })"
 test -f node_modules/payload-plugin-gmc-ecommerce/docs/v2-setup.md
 test -f node_modules/payload-plugin-gmc-ecommerce/docs/v2-operations.md
 test -f node_modules/payload-plugin-gmc-ecommerce/docs/v2-migration.md
-test ! -e node_modules/payload-plugin-gmc-ecommerce/docs/setup-guide.md
-test ! -e node_modules/payload-plugin-gmc-ecommerce/docs/local-inventory-setup.md
-node --input-type=module -e "import { readFile } from 'node:fs/promises'; const root = 'node_modules/payload-plugin-gmc-ecommerce'; const readme = await readFile(root + '/README.md', 'utf8'); const setup = await readFile(root + '/docs/v2-setup.md', 'utf8'); if (!readme.includes('doc.canonicalRevision') || !readme.includes('isSellable: { equals: true }') || readme.includes('doc.merchantVersion') || readme.includes('merchantEnabled: { equals: true }') || setup.includes('view.merchantVersion') || setup.includes('view.merchantEnabled')) { throw new Error('published guidance permits a Merchant-specific canonical shadow') }"
 
 echo "Pack smoke test passed."

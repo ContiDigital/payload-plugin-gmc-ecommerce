@@ -63,7 +63,6 @@ export const GMC_TSV_COLUMNS = [
   'product_length',
   'product_width',
   'product_height',
-  'tax',
   'free_shipping_threshold',
   'energy_efficiency_class',
   'min_energy_efficiency_class',
@@ -183,7 +182,6 @@ export const GMC_TSV_PRODUCT_ATTRIBUTE_FIELDS = [
   'sizeTypes',
   'structuredDescription',
   'structuredTitle',
-  'taxes',
   'title',
   'transitTimeLabel',
   'videoLinks',
@@ -617,16 +615,6 @@ const productRow = (product: GmcCanonicalProduct): Record<string, string> => {
     size_type: repeatedMappedValue(attrs.sizeTypes, sizeTypeValue),
     structured_description: structuredValue(attrs.structuredDescription),
     structured_title: structuredValue(attrs.structuredTitle),
-    tax: (attrs.taxes ?? [])
-      .map((tax) =>
-        groupValue([
-          tax.country,
-          tax.region,
-          tax.rate,
-          tax.taxShip === undefined ? undefined : tax.taxShip ? 'yes' : 'no',
-        ]),
-      )
-      .join(','),
     title: scalarValue(attrs.title ?? ''),
     transit_time_label: scalarValue(attrs.transitTimeLabel ?? ''),
     video_link: repeatedUrlValue(attrs.videoLinks),

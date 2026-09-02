@@ -15,7 +15,6 @@ export type {
   MCShipping,
   MCShippingDimension,
   MCStructuredContent,
-  MCTax,
   MCUrlArrayField,
   RateLimitConfig,
 } from '../types/index.js'

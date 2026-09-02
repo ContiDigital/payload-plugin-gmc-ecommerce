@@ -22,15 +22,6 @@
       "payload-plugin-gmc-ecommerce": [
         "../src/index.ts"
       ],
-      "payload-plugin-gmc-ecommerce/legacy/client": [
-        "../src/exports/client.ts"
-      ],
-      "payload-plugin-gmc-ecommerce/legacy": [
-        "../src/legacy.ts"
-      ],
-      "payload-plugin-gmc-ecommerce/legacy/rsc": [
-        "../src/exports/rsc.ts"
-      ],
       "payload-plugin-gmc-ecommerce/v2": [
         "../src/exports/v2.ts"
       ]

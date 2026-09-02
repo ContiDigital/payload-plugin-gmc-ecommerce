@@ -1,10 +1,6 @@
 import type { Payload } from 'payload'
 
-import type {
-  CredentialResolution,
-  GetCredentialsFn,
-  NormalizedPluginOptions,
-} from '../../../types/index.js'
+import type { CredentialResolution, GetCredentialsFn } from '../../../types/index.js'
 
 import { GOOGLE_AUTH_SCOPES, MERCHANT_API_BASE_URL } from '../../../v2/runtimeConstants.js'
 
@@ -396,9 +392,11 @@ const signRS256 = async (input: string, privateKeyPem: string): Promise<string> 
 // ---------------------------------------------------------------------------
 
 export type GoogleApiClientOptions = {
+  dataSourceName: string
   getCredentials: GetCredentialsFn
-  rateLimit: Pick<NormalizedPluginOptions['rateLimit'], 'requestTimeoutMs'>
-} & Pick<NormalizedPluginOptions, 'dataSourceName' | 'merchantId'>
+  merchantId: string
+  rateLimit: { requestTimeoutMs: number }
+}
 
 export const createGoogleApiClient = (options: GoogleApiClientOptions) => {
   // Per-instance token cache — not shared across client instances

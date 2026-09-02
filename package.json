@@ -12,7 +12,6 @@
     "url": "https://github.com/ContiDigital/payload-plugin-gmc-ecommerce/issues"
   },
   "type": "module",
-  "packageManager": "pnpm@10.16.1",
   "keywords": [
     "payload",
     "payloadcms",
@@ -38,17 +37,8 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist/index.*",
-    "dist/exports/v2.*",
-    "dist/server/services/sub-services/googleApiClient.*",
-    "dist/server/services/sub-services/rateLimiterService.*",
-    "dist/server/services/sub-services/retryService.*",
-    "dist/server/utilities/access.*",
-    "dist/server/utilities/http.*",
-    "dist/server/utilities/httpError.*",
-    "dist/types/*.d.ts",
-    "dist/v2",
-    "docs/v2-*.md",
+    "dist",
+    "docs/*.md",
     "LICENSE",
     "README.md",
     "CHANGELOG.md"
@@ -58,7 +48,7 @@
     "build": "pnpm clean && pnpm copyfiles && pnpm build:types && pnpm build:swc",
     "build:swc": "swc ./src -d ./dist --config-file .swcrc --strip-leading-paths --ignore \"**/*.test.ts\" --ignore \"**/__tests__/**\"",
     "build:types": "tsc -p tsconfig.build.json",
-    "clean": "rimraf {dist,*.tsbuildinfo}",
+    "clean": "rimraf dist *.tsbuildinfo",
     "copyfiles": "copyfiles -u 1 \"src/**/*.{html,css,scss,ttf,woff,woff2,eot,svg,jpg,png,json}\" dist/",
     "dev": "next dev dev --turbo",
     "dev:generate-importmap": "pnpm dev:payload generate:importmap",

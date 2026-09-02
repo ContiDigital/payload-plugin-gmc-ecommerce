@@ -1,4 +1,4 @@
-/** HTTP-safe validation failure shared by the legacy and v2 request parsers. */
+/** HTTP-safe validation failure thrown by the v2 request parsers. */
 export class ValidationError extends Error {
   public readonly statusCode = 400
 

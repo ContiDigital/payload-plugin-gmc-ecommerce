@@ -76,30 +76,14 @@ export const seed = async (payload: Payload) => {
     ]
 
     for (const product of products) {
-      const priceMicros = String(product.price * 1_000_000)
-
       await payload.create({
         collection: 'products',
         data: {
           ...product,
+          _status: 'published',
           availability: 'in_stock',
-          mc: {
-            enabled: true,
-            identity: {
-              offerId: product.sku,
-            },
-            attrs: {
-              availability: 'IN_STOCK',
-              condition: 'NEW',
-              imageLink: `https://www.finesgallery.com/images/products/${product.sku.toLowerCase()}.jpg`,
-              link: `https://www.finesgallery.com/product/${product.sku.toLowerCase()}`,
-              price: {
-                amountMicros: priceMicros,
-                currencyCode: 'USD',
-              },
-              title: product.title,
-            },
-          },
+          description: product.title,
+          imageUrl: `https://www.finesgallery.com/images/products/${product.sku.toLowerCase()}.jpg`,
         },
       })
     }

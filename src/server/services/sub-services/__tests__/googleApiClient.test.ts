@@ -1,37 +1,15 @@
 import { generateKeyPairSync } from 'crypto'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
-import type { NormalizedPluginOptions } from '../../../../types/index.js'
-import type { GoogleApiError, GoogleTransportError } from '../googleApiClient.js'
+import type { GoogleApiClientOptions, GoogleApiError, GoogleTransportError } from '../googleApiClient.js'
 
 import { createGoogleApiClient } from '../googleApiClient.js'
 
 const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 })
 const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()
 
-const buildOptions = (): NormalizedPluginOptions => ({
-  access: () => Promise.resolve(true),
-  admin: { mode: 'route', navLabel: 'GMC', route: '/merchant-center' },
-  api: { basePath: '/gmc' },
-  collections: {
-    products: {
-      slug: 'products' as never,
-      autoInjectTab: true,
-      fetchDepth: 1,
-      fieldMappings: [],
-      identityField: 'sku',
-      tabPosition: 'append',
-    },
-  },
-  dataSourceId: 'ds-123',
+const buildOptions = (): GoogleApiClientOptions => ({
   dataSourceName: 'accounts/123/dataSources/ds-123',
-  defaults: {
-    condition: 'NEW',
-    contentLanguage: 'en',
-    currency: 'USD',
-    feedLabel: 'US',
-  },
-  disabled: false,
   getCredentials: () =>
     Promise.resolve({
       type: 'json' as const,
@@ -40,36 +18,9 @@ const buildOptions = (): NormalizedPluginOptions => ({
         private_key: privateKeyPem,
       },
     }),
-  localInventory: { enabled: false, storeCode: '' },
   merchantId: '123',
   rateLimit: {
-    baseRetryDelayMs: 100,
-    enabled: true,
-    jitterFactor: 0,
-    maxConcurrency: 2,
-    maxQueueSize: 10,
-    maxRequestsPerMinute: 60,
-    maxRetries: 1,
-    maxRetryDelayMs: 1000,
     requestTimeoutMs: 5000,
-  },
-  siteUrl: 'https://example.com',
-  sync: {
-    conflictStrategy: 'mc-wins',
-    initialSync: {
-      batchSize: 50,
-      dryRun: false,
-      enabled: true,
-      onlyIfRemoteMissing: true,
-    },
-    mode: 'manual',
-    permanentSync: true,
-    schedule: {
-      apiKey: '',
-      cron: '0 4 * * *',
-      strategy: 'external',
-    },
-    scheduleCron: '0 4 * * *',
   },
 })
 

@@ -3,10 +3,11 @@ import { sqliteAdapter } from '@payloadcms/db-sqlite'
 import { lexicalEditor } from '@payloadcms/richtext-lexical'
 import path from 'path'
 import { buildConfig } from 'payload'
-import { payloadGmcEcommerce } from 'payload-plugin-gmc-ecommerce/legacy'
+import { payloadGmcEcommerceV2 } from 'payload-plugin-gmc-ecommerce/v2'
 import sharp from 'sharp'
 import { fileURLToPath } from 'url'
 
+import { testAsyncAdapter } from './helpers/testAsyncAdapter.js'
 import { testEmailAdapter } from './helpers/testEmailAdapter.js'
 import { seed } from './seed.js'
 
@@ -44,7 +45,7 @@ export default buildConfig({
       slug: 'products',
       fields: [
         { name: 'title', type: 'text', required: true },
-        { name: 'sku', type: 'text', required: true },
+        { name: 'sku', type: 'text', required: true, unique: true },
         { name: 'price', type: 'number' },
         { name: 'description', type: 'textarea' },
         { name: 'imageUrl', type: 'text' },
@@ -58,8 +59,12 @@ export default buildConfig({
           ],
         },
       ],
+      versions: { drafts: true },
     },
     {
+      // Not a Merchant product source. Wired only as a `catalogDependencies`
+      // example: a change here can invalidate a product's projection without
+      // changing the product's own row.
       slug: 'categories',
       fields: [
         { name: 'name', type: 'text', required: true },
@@ -78,6 +83,9 @@ export default buildConfig({
     client: {
       url: buildDatabaseUrl(),
     },
+    // v2's automatic hooks require a real atomic canonical-write + outbox
+    // boundary. Payload's SQLite adapter defaults transactions off.
+    transactionOptions: {},
   }),
   editor: lexicalEditor(),
   email: testEmailAdapter,
@@ -85,31 +93,27 @@ export default buildConfig({
     await seed(payload)
   },
   plugins: [
-    payloadGmcEcommerce({
+    payloadGmcEcommerceV2({
       access: () => true,
-      collections: {
-        categories: {
-          googleCategoryIdField: 'googleCategoryId',
-          nameField: 'name',
-          slug: 'categories',
+      async: testAsyncAdapter,
+      catalogDependencies: [
+        {
+          collection: 'categories',
+          select: ({ doc }) => ({ name: doc.name, googleCategoryId: doc.googleCategoryId }),
         },
-        products: {
-          identityField: 'sku',
-          slug: 'products',
-          fieldMappings: [
-            { source: 'title', target: 'productAttributes.title', syncMode: 'permanent' },
-            { source: 'description', target: 'productAttributes.description', syncMode: 'initialOnly' },
-            { source: 'price', target: 'productAttributes.price.amountMicros', syncMode: 'permanent', transformPreset: 'toMicrosString' },
-            { source: 'imageUrl', target: 'productAttributes.imageLink', syncMode: 'initialOnly' },
-          ],
+      ],
+      dataSourceId: process.env.GOOGLE_MERCHANT_DATA_SOURCE_ID || '10621021803',
+      disabled: !process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+      feeds: [
+        {
+          id: 'google-products',
+          access: 'public',
+          delivery: 'dynamic',
+          format: 'tsv',
+          path: '/feeds/google-products.tsv',
+          selector: { contentLanguage: 'en', feedLabel: 'PRODUCTS' },
         },
-      },
-      dataSourceId: process.env.GOOGLE_MERCHANT_DATA_SOURCE_ID || 'test-datasource',
-      defaults: {
-        contentLanguage: 'en',
-        currency: 'USD',
-        feedLabel: 'PRODUCTS',
-      },
+      ],
       getCredentials: async () => ({
         credentials: {
           client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || 'test@test.iam.gserviceaccount.com',
@@ -117,11 +121,35 @@ export default buildConfig({
         },
         type: 'json',
       }),
-      merchantId: process.env.GOOGLE_MERCHANT_ID || 'test-merchant-id',
-      sync: {
-        mode: 'manual',
-        permanentSync: true,
+      merchantId: process.env.GOOGLE_MERCHANT_ID || '4791568',
+      productIngestion: { mode: 'api-primary' },
+      products: {
+        collection: 'products',
+        project: ({ doc }) => ({
+          products: [
+            {
+              contentLanguage: 'en',
+              feedLabel: 'PRODUCTS',
+              offerId: String(doc.sku),
+              productAttributes: {
+                availability: doc.availability === 'in_stock' ? 'IN_STOCK' : 'OUT_OF_STOCK',
+                description: String(doc.description ?? ''),
+                imageLink: String(doc.imageUrl ?? ''),
+                link: `https://example.test/products/${String(doc.sku)}`,
+                price: {
+                  amountMicros: String(Math.round(Number(doc.price ?? 0) * 1_000_000)),
+                  currencyCode: 'USD',
+                },
+                title: String(doc.title),
+              },
+            },
+          ],
+        }),
+        resolveIdentities: ({ doc }) => [
+          { contentLanguage: 'en', feedLabel: 'PRODUCTS', offerId: String(doc.sku) },
+        ],
       },
+      workerAccess: () => false,
     }),
   ],
   secret: process.env.PAYLOAD_SECRET || 'gmc-plugin-dev-secret-key-12345',

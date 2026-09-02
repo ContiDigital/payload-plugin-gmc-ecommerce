@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from 'vitest'
 
 import { errorResponse, parseRequestBody } from '../http.js'
-import { ValidationError } from '../validation.js'
+import { ValidationError } from '../httpError.js'
 
 describe('parseRequestBody', () => {
   test('returns req.data when Payload already parsed a body object', async () => {
