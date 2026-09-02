@@ -86,11 +86,6 @@ export {
 export { payloadGmcEcommerceV2 } from '../v2/plugin.js'
 export { default } from '../v2/plugin.js'
 export { buildGmcPublicationCollection } from '../v2/state/collection.js'
-export { buildGmcLocalInventoryPublicationCollection } from '../v2/state/localInventoryCollection.js'
-export {
-  createPayloadLocalInventoryPublicationStateStore,
-  GmcLocalInventorySourceVersionConflictError,
-} from '../v2/state/localInventoryPayloadStateStore.js'
 export {
   createPayloadPublicationStateStore,
   GmcIdentityOwnershipError,

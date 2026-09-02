@@ -15,7 +15,6 @@ import {
 } from '../dataSource.js'
 import { classifyGmcCommandError } from '../errors.js'
 import { GmcFeedLimitError } from '../feed/limits.js'
-import { GmcLocalInventorySourceVersionConflictError } from '../state/localInventoryPayloadStateStore.js'
 import { GmcIdentityOwnershipError } from '../state/payloadStateStore.js'
 
 describe('GMC durable error classification', () => {
@@ -61,17 +60,6 @@ describe('GMC durable error classification', () => {
         }),
       ),
     ).toMatchObject({ code: 'GMC_IDENTITY_OWNERSHIP_CONFLICT', retryable: false })
-    expect(
-      classifyGmcCommandError(
-        new GmcLocalInventorySourceVersionConflictError({
-          key: 'local-key',
-          sourceVersion: '42',
-        }),
-      ),
-    ).toMatchObject({
-      code: 'GMC_LOCAL_INVENTORY_SOURCE_VERSION_CONFLICT',
-      retryable: false,
-    })
   })
 
   it('retries only transient Google responses and unknown infrastructure errors', () => {

@@ -11,7 +11,6 @@ import type {
   GmcCommandExecutionResult,
   GmcDispatchReceipt,
   GmcDocumentID,
-  GmcLocalInventoryPublicationStateStore,
   GmcMerchantTransport,
   GmcProductDeleteCommand,
   GmcProductPublishCommand,
@@ -57,12 +56,10 @@ import {
   canonicalizeLocalInventoryInput,
 } from './localInventory.js'
 import { isGmcNonNegativeInt64String } from './merchantWire.js'
-import { createPayloadLocalInventoryPublicationStateStore } from './state/localInventoryPayloadStateStore.js'
 import { createPayloadPublicationStateStore } from './state/payloadStateStore.js'
 import { createGoogleMerchantTransport } from './transport/googleTransport.js'
 
 export type GmcCommandExecutorDependencies = {
-  localInventoryStateStore?: GmcLocalInventoryPublicationStateStore
   stateStore?: GmcPublicationStateStore
   transport?: GmcMerchantTransport
 }
@@ -169,7 +166,7 @@ const compareSourceVersions = (left: string, right: string): number => {
 }
 
 const isSameLocalInventoryResource = (
-  state: { identity: MCProductIdentity; storeCode: string },
+  state: { identity: MCProductIdentity; storeCode?: string },
   identity: MCProductIdentity,
   storeCode: string,
 ): boolean =>
@@ -250,14 +247,6 @@ export const createGmcCommandExecutor = (
       dataSourceName: options.dataSourceName,
       merchantId: options.merchantId,
     })
-  const localInventoryStateStore = options.localInventory
-    ? (dependencies.localInventoryStateStore ??
-      createPayloadLocalInventoryPublicationStateStore({
-        collectionSlug: options.localInventory.collectionSlug,
-        dataSourceName: options.dataSourceName,
-        merchantId: options.merchantId,
-      }))
-    : undefined
   const transport = dependencies.transport ?? createGoogleMerchantTransport(options)
   const listActiveProductStates = async (args: { payload: Payload; productId: GmcDocumentID }) => {
     const states = await stateStore.listByProduct(args)
@@ -1294,9 +1283,6 @@ export const createGmcCommandExecutor = (
     if (!options.localInventory) {
       throw new TypeError('Local inventory is no longer configured')
     }
-    if (!localInventoryStateStore) {
-      throw new TypeError('Local inventory has no durable publication state store')
-    }
     const activeStore = options.localInventory.storeCodes.includes(context.command.storeCode)
     const retiredStore = (options.localInventory.retiredStoreCodes ?? []).includes(
       context.command.storeCode,
@@ -1346,19 +1332,21 @@ export const createGmcCommandExecutor = (
     const claim = {
       desiredAt: context.command.requestedAt,
       desiredDigest,
-      desiredVersion: context.sourceVersion,
       identity,
       operationId: context.operationId,
       payload: context.payload,
       productId: context.command.productId,
       storeCode: context.command.storeCode,
     }
-    const claimed = await localInventoryStateStore.claim(claim)
+    const claimed = await stateStore.claimLocalInventory(claim)
     if (!isSameLocalInventoryResource(claimed, identity, context.command.storeCode)) {
       throw new TypeError('Local-inventory publication store returned the wrong resource')
     }
-    const claimedComparison = compareSourceVersions(claimed.desiredVersion, context.sourceVersion)
-    if (claimedComparison > 0) {
+    // The store applies the same claim rules as the base offer row: the
+    // returned operationId only matches this command's when the claim won
+    // (a newer or already-completed claim from elsewhere is reported back
+    // unchanged, with a foreign operationId).
+    if (claimed.operationId !== context.operationId) {
       return {
         commandType: context.command.type,
         operationId: context.operationId,
@@ -1366,38 +1354,29 @@ export const createGmcCommandExecutor = (
         productCount: 1,
       }
     }
-    if (
-      claimedComparison < 0 ||
-      claimed.desiredDigest !== desiredDigest ||
-      claimed.desiredAt !== claim.desiredAt ||
-      claimed.operationId !== context.operationId ||
-      String(claimed.productId) !== String(context.command.productId)
-    ) {
-      throw new TypeError('Local-inventory publication store returned an invalid causal claim')
+    const alreadyPublished =
+      claimed.status === 'published' && claimed.publishedDigest === desiredDigest
+    if (alreadyPublished) {
+      return {
+        commandType: context.command.type,
+        operationId: context.operationId,
+        outcome: 'skipped',
+        productCount: 1,
+      }
     }
 
     const markPublished = async (): Promise<void> => {
-      const published = await localInventoryStateStore.markPublished({
+      const published = await stateStore.markLocalInventoryPublished({
         ...claim,
         publishedAt: new Date().toISOString(),
       })
       if (!isSameLocalInventoryResource(published, identity, context.command.storeCode)) {
         throw new TypeError('Local-inventory publication store published the wrong resource')
       }
-      const comparison = compareSourceVersions(published.desiredVersion, context.sourceVersion)
-      if (comparison > 0) {
-        throw new Error(
-          'A newer local-inventory claim appeared during an ordered Merchant side effect',
-        )
-      }
       if (
-        comparison < 0 ||
-        published.desiredAt !== claim.desiredAt ||
-        published.desiredDigest !== desiredDigest ||
         published.operationId !== context.operationId ||
-        String(published.productId) !== String(context.command.productId) ||
+        published.desiredDigest !== desiredDigest ||
         published.publishedDigest !== desiredDigest ||
-        published.publishedVersion !== context.sourceVersion ||
         published.status !== 'published'
       ) {
         throw new TypeError('Local-inventory publication store did not retain the applied state')
@@ -1439,7 +1418,7 @@ export const createGmcCommandExecutor = (
           productCount: 1,
         }
       }
-      const retained = await localInventoryStateStore.get({
+      const retained = await stateStore.getLocalInventory({
         identity,
         payload: context.payload,
         storeCode: context.command.storeCode,
@@ -1450,26 +1429,14 @@ export const createGmcCommandExecutor = (
       if (!isSameLocalInventoryResource(retained, identity, context.command.storeCode)) {
         throw new TypeError('Local-inventory publication store returned the wrong resource')
       }
-      const retainedComparison = compareSourceVersions(
-        retained.desiredVersion,
-        context.sourceVersion,
-      )
-      if (retainedComparison > 0) {
+      if (retained.operationId !== context.operationId || retained.desiredDigest !== desiredDigest) {
+        // A newer per-store claim raced ahead of this command; stand down.
         return {
           commandType: context.command.type,
           operationId: context.operationId,
           outcome: 'skipped',
           productCount: 1,
         }
-      }
-      if (
-        retainedComparison < 0 ||
-        retained.desiredDigest !== desiredDigest ||
-        retained.desiredAt !== claim.desiredAt ||
-        retained.operationId !== context.operationId ||
-        String(retained.productId) !== String(context.command.productId)
-      ) {
-        throw new TypeError('Local-inventory publication claim changed unexpectedly')
       }
 
       if (deleting) {
@@ -1498,7 +1465,7 @@ export const createGmcCommandExecutor = (
       await markPublished()
     } catch (error) {
       try {
-        await localInventoryStateStore.markFailed({
+        await stateStore.markLocalInventoryFailed({
           error: getErrorState(error),
           identity,
           operationId: context.operationId,

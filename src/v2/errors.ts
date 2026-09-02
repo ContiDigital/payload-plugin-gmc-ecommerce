@@ -7,7 +7,6 @@ import {
   GmcAsyncWorkflowConflictError,
 } from './async.js'
 import { isRetryableMerchantApiError } from './runtimeConstants.js'
-import { GmcLocalInventorySourceVersionConflictError } from './state/localInventoryPayloadStateStore.js'
 import { GmcIdentityOwnershipError } from './state/payloadStateStore.js'
 
 export type GmcCommandErrorClassification = {
@@ -41,8 +40,7 @@ export const classifyGmcCommandError = (error: unknown): GmcCommandErrorClassifi
     error instanceof SyntaxError ||
     error instanceof GmcAsyncIdempotencyConflictError ||
     error instanceof GmcAsyncWorkflowConflictError ||
-    error instanceof GmcIdentityOwnershipError ||
-    error instanceof GmcLocalInventorySourceVersionConflictError
+    error instanceof GmcIdentityOwnershipError
 
   return {
     code:

@@ -9,8 +9,6 @@ import type {
 import { hasDefaultPluginAccess } from '../server/utilities/access.js'
 import { GMC_V2_DEFAULT_FEED_LIMITS } from './feed/limits.js'
 
-const DEFAULT_LOCAL_INVENTORY_COLLECTION_SLUG = 'gmc-local-inventory-publications-v2'
-
 const DEFAULT_RATE_LIMIT = {
   baseRetryDelayMs: 1_000,
   enabled: true,
@@ -701,7 +699,6 @@ export const normalizeGmcV2Options = (
     localInventory: options.localInventory
       ? {
           ...options.localInventory,
-          collectionSlug: DEFAULT_LOCAL_INVENTORY_COLLECTION_SLUG,
           retiredStoreCodes: retiredStoreCodes ?? [],
           storeCodes: storeCodes ?? [],
         }

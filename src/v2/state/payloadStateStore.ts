@@ -105,14 +105,19 @@ export const createPayloadPublicationStateStore = (args: {
   merchantId: string
 }): GmcPublicationStateStore => {
   const toState = (doc: StateDocument): GmcPublicationState => asState(doc, args.dataSourceName)
-  const getKey = (identity: GmcPublicationState['identity']): string => {
+  // Local-inventory rows share this collection with the base offer row for
+  // the same identity. They are addressed by an extra `|store:<code>` key
+  // segment so the two lifecycles never collide.
+  const getKey = (identity: GmcPublicationState['identity'], storeCode?: string): string => {
     const dataSourceName = identity.dataSourceOverride ?? args.dataSourceName
-    return `${args.merchantId}|${dataSourceName}|${getIdentityKey({ ...identity, dataSourceOverride: dataSourceName })}`
+    const base = `${args.merchantId}|${dataSourceName}|${getIdentityKey({ ...identity, dataSourceOverride: dataSourceName })}`
+    return storeCode === undefined ? base : `${base}|store:${storeCode}`
   }
 
   const findDocument = async (
     payload: Payload,
     identity: GmcPublicationState['identity'],
+    storeCode?: string,
   ): Promise<null | StateDocument> => {
     const result = await payload.find({
       collection: args.collectionSlug as never,
@@ -120,7 +125,7 @@ export const createPayloadPublicationStateStore = (args: {
       limit: 1,
       overrideAccess: true,
       pagination: false,
-      where: { key: { equals: getKey(identity) } },
+      where: { key: { equals: getKey(identity, storeCode) } },
     })
     return (result.docs[0] as unknown as StateDocument | undefined) ?? null
   }
@@ -138,13 +143,15 @@ export const createPayloadPublicationStateStore = (args: {
 
   const identityColumns = (
     identity: GmcPublicationState['identity'],
+    storeCode?: string,
   ): Record<string, unknown> => ({
     contentLanguage: identity.contentLanguage,
     dataSourceName: identity.dataSourceOverride ?? args.dataSourceName,
     feedLabel: identity.feedLabel,
-    key: getKey(identity),
+    key: getKey(identity, storeCode),
     merchantId: args.merchantId,
     offerId: identity.offerId,
+    ...(storeCode === undefined ? {} : { storeCode }),
   })
 
   const payloadUpdateIfCurrent = async (
@@ -160,17 +167,26 @@ export const createPayloadPublicationStateStore = (args: {
     })
   }
 
-  const contended = (identity: GmcPublicationState['identity']): Error =>
-    new Error(`Publication state remained contended for ${getKey(identity)}`)
+  const contended = (identity: GmcPublicationState['identity'], storeCode?: string): Error =>
+    new Error(`Publication state remained contended for ${getKey(identity, storeCode)}`)
 
-  const claimPublication = async (claim: GmcPublicationClaim): Promise<GmcPublicationState> => {
+  /**
+   * Shared claim rule block for both the base offer row (`storeCode`
+   * undefined) and a local-inventory store row (`storeCode` set): ownership
+   * by productId, `desiredAt` ordering, a same-digest-already-published
+   * short-circuit, otherwise `publish-pending`.
+   */
+  const claimRow = async (
+    claim: GmcPublicationClaim,
+    storeCode?: string,
+  ): Promise<GmcPublicationState> => {
     for (let attempt = 0; attempt < MAX_CONTENTION_ATTEMPTS; attempt++) {
-      const existing = await findDocument(claim.payload, claim.identity)
+      const existing = await findDocument(claim.payload, claim.identity, storeCode)
       if (!existing) {
         try {
           return toState(
             await payloadCreate(claim.payload, {
-              ...identityColumns(claim.identity),
+              ...identityColumns(claim.identity, storeCode),
               desiredAt: claim.desiredAt,
               desiredDigest: claim.desiredDigest,
               operationId: claim.operationId,
@@ -236,13 +252,83 @@ export const createPayloadPublicationStateStore = (args: {
       }
     }
 
-    throw contended(claim.identity)
+    throw contended(claim.identity, storeCode)
+  }
+
+  const claimPublication = (claim: GmcPublicationClaim): Promise<GmcPublicationState> =>
+    claimRow(claim)
+
+  /**
+   * Shared "publish, but only for the operation that still owns the row"
+   * rule for both the base offer row and a local-inventory store row.
+   */
+  const markPublishedRow = async (
+    claim: { publishedAt: string } & GmcPublicationClaim,
+    storeCode?: string,
+  ): Promise<GmcPublicationState> => {
+    for (let attempt = 0; attempt < MAX_CONTENTION_ATTEMPTS; attempt++) {
+      const existing = await findDocument(claim.payload, claim.identity, storeCode)
+      if (!existing) {
+        throw new Error(`Publication state disappeared for ${getKey(claim.identity, storeCode)}`)
+      }
+      if (
+        existing.operationId !== claim.operationId ||
+        existing.desiredDigest !== claim.desiredDigest
+      ) {
+        return toState(existing)
+      }
+      const updated = await payloadUpdateIfCurrent(claim.payload, existing, {
+        error: null,
+        publishedAt: claim.publishedAt,
+        publishedDigest: claim.desiredDigest,
+        status: 'published',
+      })
+      if (updated) {
+        return toState(updated)
+      }
+    }
+    throw contended(claim.identity, storeCode)
+  }
+
+  /**
+   * Shared "fail, but only for the operation that still owns the row" rule
+   * for both the base offer row and a local-inventory store row.
+   */
+  const markFailedRow = async (
+    args: {
+      error: GmcPublicationState['error']
+      identity: GmcPublicationState['identity']
+      operationId: string
+      payload: Payload
+    },
+    storeCode?: string,
+  ): Promise<void> => {
+    for (let attempt = 0; attempt < MAX_CONTENTION_ATTEMPTS; attempt++) {
+      const existing = await findDocument(args.payload, args.identity, storeCode)
+      if (!existing || existing.operationId !== args.operationId) {
+        return
+      }
+      if (
+        await payloadUpdateIfCurrent(args.payload, existing, {
+          error: args.error,
+          status: 'failed',
+        })
+      ) {
+        return
+      }
+    }
+    throw contended(args.identity, storeCode)
   }
 
   return {
+    claimLocalInventory: ({ storeCode, ...claim }) => claimRow(claim, storeCode),
     claimPublication,
     get: async ({ identity, payload }) => {
       const doc = await findDocument(payload, identity)
+      return doc ? toState(doc) : null
+    },
+    getLocalInventory: async ({ identity, payload, storeCode }) => {
+      const doc = await findDocument(payload, identity, storeCode)
       return doc ? toState(doc) : null
     },
     listByProduct: async ({ payload, productId }) => {
@@ -380,18 +466,9 @@ export const createPayloadPublicationStateStore = (args: {
       }
       throw contended(identity)
     },
-    markFailed: async ({ error, identity, operationId, payload }) => {
-      for (let attempt = 0; attempt < MAX_CONTENTION_ATTEMPTS; attempt++) {
-        const existing = await findDocument(payload, identity)
-        if (!existing || existing.operationId !== operationId) {
-          return
-        }
-        if (await payloadUpdateIfCurrent(payload, existing, { error, status: 'failed' })) {
-          return
-        }
-      }
-      throw contended(identity)
-    },
+    markFailed: (args) => markFailedRow(args),
+    markLocalInventoryFailed: ({ storeCode, ...args }) => markFailedRow(args, storeCode),
+    markLocalInventoryPublished: ({ storeCode, ...claim }) => markPublishedRow(claim, storeCode),
     markObserved: async ({
       identity,
       observedAt,
@@ -418,29 +495,6 @@ export const createPayloadPublicationStateStore = (args: {
       }
       throw contended(identity)
     },
-    markPublished: async (claim) => {
-      for (let attempt = 0; attempt < MAX_CONTENTION_ATTEMPTS; attempt++) {
-        const existing = await findDocument(claim.payload, claim.identity)
-        if (!existing) {
-          throw new Error(`Publication state disappeared for ${getKey(claim.identity)}`)
-        }
-        if (
-          existing.operationId !== claim.operationId ||
-          existing.desiredDigest !== claim.desiredDigest
-        ) {
-          return toState(existing)
-        }
-        const updated = await payloadUpdateIfCurrent(claim.payload, existing, {
-          error: null,
-          publishedAt: claim.publishedAt,
-          publishedDigest: claim.desiredDigest,
-          status: 'published',
-        })
-        if (updated) {
-          return toState(updated)
-        }
-      }
-      throw contended(claim.identity)
-    },
+    markPublished: (claim) => markPublishedRow(claim),
   }
 }

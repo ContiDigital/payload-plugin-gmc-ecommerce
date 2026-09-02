@@ -15,7 +15,6 @@ import {
   createGmcV2TransactionGlobalBeforeChangeHook,
 } from './hooks.js'
 import { buildGmcPublicationCollection } from './state/collection.js'
-import { buildGmcLocalInventoryPublicationCollection } from './state/localInventoryCollection.js'
 
 type PayloadPlugin = Exclude<Config['plugins'], undefined>[number]
 
@@ -128,24 +127,6 @@ export const payloadGmcEcommerceV2 = (
         access: options.access,
       }),
     )
-    if (options.localInventory) {
-      if (
-        collections.some(
-          (collection) => collection.slug === options.localInventory?.collectionSlug,
-        )
-      ) {
-        throw new TypeError(
-          `payload-plugin-gmc-ecommerce/v2: local-inventory publication collection slug ${options.localInventory.collectionSlug} already exists; choose a different local-inventory collection slug`,
-        )
-      }
-      collections.push(
-        buildGmcLocalInventoryPublicationCollection({
-          slug: options.localInventory.collectionSlug,
-          access: options.access,
-        }),
-      )
-    }
-
     if (!options.disabled) {
       const productCollection = existingCollections[productIndex]
       collections[productIndex] = {

@@ -174,7 +174,7 @@ describe('payloadGmcEcommerceV2', () => {
     expect(product?.hooks?.beforeDelete).toEqual([])
   })
 
-  it('installs isolated durable local-inventory causal state when configured', () => {
+  it('does not install a separate local-inventory collection when configured', () => {
     const input = { collections: [{ slug: 'products', fields: [] }] } as unknown as Config
     const configured = payloadGmcEcommerceV2(
       options({
@@ -189,10 +189,14 @@ describe('payloadGmcEcommerceV2', () => {
       configured.collections?.find(
         (collection) => collection.slug === 'gmc-local-inventory-publications-v2',
       ),
+    ).toBeUndefined()
+    // Local-inventory rows are folded into the main publication collection.
+    expect(
+      configured.collections?.find((collection) => collection.slug === 'gmc-publications-v2'),
     ).toMatchObject({ admin: { hidden: true }, versions: false })
   })
 
-  it('keeps local-inventory state schema stable while its store set is inactive', () => {
+  it('keeps the plugin schema stable while the local-inventory store set is inactive', () => {
     const input = { collections: [{ slug: 'products', fields: [] }] } as unknown as Config
     const configured = payloadGmcEcommerceV2(
       options({
@@ -206,9 +210,7 @@ describe('payloadGmcEcommerceV2', () => {
     )(input) as Config
 
     expect(
-      configured.collections?.find(
-        (collection) => collection.slug === 'gmc-local-inventory-publications-v2',
-      ),
+      configured.collections?.find((collection) => collection.slug === 'gmc-publications-v2'),
     ).toMatchObject({ admin: { hidden: true }, versions: false })
     expect(configured.endpoints).toEqual([])
   })
@@ -222,22 +224,6 @@ describe('payloadGmcEcommerceV2', () => {
         ],
       } as unknown as Config),
     ).toThrow(/publication collection slug/i)
-
-    expect(() =>
-      payloadGmcEcommerceV2(
-        options({
-          localInventory: {
-            project: () => [],
-            storeCodes: ['store-1'],
-          },
-        }),
-      )({
-        collections: [
-          { slug: 'products', fields: [] },
-          { slug: 'gmc-local-inventory-publications-v2', fields: [] },
-        ],
-      } as unknown as Config),
-    ).toThrow(/local-inventory publication collection slug/i)
 
     expect(() =>
       payloadGmcEcommerceV2(options())({

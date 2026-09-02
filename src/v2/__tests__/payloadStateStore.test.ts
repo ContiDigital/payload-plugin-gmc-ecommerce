@@ -631,6 +631,121 @@ describe('Payload publication state store', () => {
   })
 })
 
+describe('local-inventory rows folded into the main store', () => {
+  it('claims independent rows per store and keeps them out of listByProduct', async () => {
+    const test = payloadDouble()
+    const store = newStore()
+    await store.claimPublication(claim(test.payload))
+
+    const storeA = await store.claimLocalInventory({
+      ...claim(test.payload, { desiredDigest: 'inventory-a' }),
+      storeCode: 'store-a',
+    })
+    const storeB = await store.claimLocalInventory({
+      ...claim(test.payload, { desiredDigest: 'inventory-b', operationId: 'operation-b' }),
+      storeCode: 'store-b',
+    })
+
+    expect(storeA).toMatchObject({
+      desiredDigest: 'inventory-a',
+      status: 'publish-pending',
+      storeCode: 'store-a',
+    })
+    expect(storeB).toMatchObject({
+      desiredDigest: 'inventory-b',
+      status: 'publish-pending',
+      storeCode: 'store-b',
+    })
+    // One product row plus two independent store rows.
+    expect(test.docs).toHaveLength(3)
+
+    const active = await store.listByProduct({ payload: test.payload, productId: 'product-1' })
+    expect(active).toHaveLength(1)
+    expect(active[0]?.storeCode).toBeUndefined()
+
+    await expect(
+      store.getLocalInventory({ identity, payload: test.payload, storeCode: 'store-a' }),
+    ).resolves.toMatchObject({ desiredDigest: 'inventory-a', storeCode: 'store-a' })
+    await expect(
+      store.getLocalInventory({ identity, payload: test.payload, storeCode: 'store-b' }),
+    ).resolves.toMatchObject({ desiredDigest: 'inventory-b', storeCode: 'store-b' })
+  })
+
+  it('ignores a local-inventory claim that carries an older desiredAt than the stored one', async () => {
+    const test = payloadDouble()
+    const store = newStore()
+    await store.claimLocalInventory({
+      ...claim(test.payload, { desiredAt: '2026-08-29T12:05:00.000Z' }),
+      storeCode: 'store-1',
+    })
+
+    await expect(
+      store.claimLocalInventory({
+        ...claim(test.payload, {
+          desiredAt: '2026-08-29T12:00:00.000Z',
+          desiredDigest: 'stale-digest',
+          operationId: 'stale-operation',
+        }),
+        storeCode: 'store-1',
+      }),
+    ).resolves.toMatchObject({
+      desiredAt: '2026-08-29T12:05:00.000Z',
+      desiredDigest: 'digest-1',
+      operationId: 'operation-1',
+      storeCode: 'store-1',
+    })
+  })
+
+  it('treats exact redelivery of an already-published local-inventory claim as a no-op', async () => {
+    const test = payloadDouble()
+    const store = newStore()
+    await store.claimLocalInventory({ ...claim(test.payload), storeCode: 'store-1' })
+    await store.markLocalInventoryPublished({
+      ...claim(test.payload),
+      publishedAt: '2026-08-29T12:00:05.000Z',
+      storeCode: 'store-1',
+    })
+
+    const writesBefore = test.update.mock.calls.length
+    await expect(
+      store.claimLocalInventory({ ...claim(test.payload), storeCode: 'store-1' }),
+    ).resolves.toMatchObject({ publishedDigest: 'digest-1', status: 'published' })
+    expect(test.update).toHaveBeenCalledTimes(writesBefore)
+  })
+
+  it('only publishes or fails the operation that currently owns the local-inventory row', async () => {
+    const test = payloadDouble()
+    const store = newStore()
+    await store.claimLocalInventory({ ...claim(test.payload), storeCode: 'store-1' })
+
+    await store.markLocalInventoryFailed({
+      error: { message: 'transient', retryable: true },
+      identity,
+      operationId: 'someone-else',
+      payload: test.payload,
+      storeCode: 'store-1',
+    })
+    await expect(
+      store.getLocalInventory({ identity, payload: test.payload, storeCode: 'store-1' }),
+    ).resolves.toMatchObject({ status: 'publish-pending' })
+
+    await store.markLocalInventoryFailed({
+      error: { message: 'rejected', retryable: false },
+      identity,
+      operationId: 'operation-1',
+      payload: test.payload,
+      storeCode: 'store-1',
+    })
+    await expect(
+      store.getLocalInventory({ identity, payload: test.payload, storeCode: 'store-1' }),
+    ).resolves.toMatchObject({ error: { message: 'rejected', retryable: false }, status: 'failed' })
+
+    await expect(
+      store.getLocalInventory({ identity, payload: test.payload, storeCode: 'store-2' }),
+    ).resolves.toBeNull()
+  })
+})
+
 describe('atomicUpdatePublicationState', () => {
   const existing = { id: 7, key: 'k', revision: 3, status: 'publish-pending' }
 

@@ -246,7 +246,6 @@ describe('normalizeGmcV2Options', () => {
       storeCodes: [' store-1 ', 'x'.repeat(64)],
     }
     expect(normalizeGmcV2Options(options).localInventory).toMatchObject({
-      collectionSlug: 'gmc-local-inventory-publications-v2',
       storeCodes: ['store-1', 'x'.repeat(64)],
     })
 

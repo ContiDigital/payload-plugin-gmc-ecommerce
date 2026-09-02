@@ -650,7 +650,6 @@ export type NormalizedGmcV2Options = {
   feeds: GmcFeedConfig[]
   instanceId: string
   localInventory?: {
-    collectionSlug: string
     retiredStoreCodes: string[]
     storeCodes: string[]
   } & Omit<GmcV2LocalInventoryConfig, 'retiredStoreCodes' | 'storeCodes'>
@@ -737,10 +736,24 @@ export type GmcPublicationClaim = {
 }
 
 export type GmcPublicationStateStore = {
+  /**
+   * Same claim rules as `claimPublication`, scoped to one identity/store row:
+   * ownership by productId, `desiredAt` ordering, a same-digest-already-published
+   * short-circuit, otherwise `publish-pending`. The row is keyed separately
+   * from the base offer and `listByProduct` never returns it.
+   */
+  claimLocalInventory: (
+    claim: { storeCode: string } & GmcPublicationClaim,
+  ) => Promise<GmcPublicationState>
   claimPublication: (claim: GmcPublicationClaim) => Promise<GmcPublicationState>
   get: (args: {
     identity: MCProductIdentity
     payload: Payload
+  }) => Promise<GmcPublicationState | null>
+  getLocalInventory: (args: {
+    identity: MCProductIdentity
+    payload: Payload
+    storeCode: string
   }) => Promise<GmcPublicationState | null>
   /** Return at most 1,000 non-deleted identities currently owned by this product. */
   listByProduct: (args: {
@@ -767,6 +780,16 @@ export type GmcPublicationStateStore = {
     operationId: string
     payload: Payload
   }) => Promise<void>
+  markLocalInventoryFailed: (args: {
+    error: GmcPublicationState['error']
+    identity: MCProductIdentity
+    operationId: string
+    payload: Payload
+    storeCode: string
+  }) => Promise<void>
+  markLocalInventoryPublished: (
+    args: { publishedAt: string; storeCode: string } & GmcPublicationClaim,
+  ) => Promise<GmcPublicationState>
   markObserved: (args: {
     identity: MCProductIdentity
     observedAt: string
@@ -778,59 +801,6 @@ export type GmcPublicationStateStore = {
   markPublished: (
     args: { publishedAt: string } & GmcPublicationClaim,
   ) => Promise<GmcPublicationState>
-}
-
-/**
- * Durable desired/applied state for one LocalInventory resource. Google does
- * not expose a versionNumber or conditional mutation for this whole-resource
- * API, so this state is the causal fence for descendants dispatched out of
- * order by otherwise independent root workflows.
- */
-export type GmcLocalInventoryPublicationState = {
-  desiredAt: string
-  desiredDigest: string
-  desiredVersion: string
-  error?: { code?: string; message: string; retryable?: boolean }
-  identity: MCProductIdentity
-  operationId: string
-  productId: GmcDocumentID
-  publishedAt?: string
-  publishedDigest?: string
-  publishedVersion?: string
-  status: Extract<GmcPublicationStatus, 'failed' | 'publish-pending' | 'published'>
-  storeCode: string
-  updatedAt: string
-}
-
-export type GmcLocalInventoryPublicationClaim = {
-  desiredAt: string
-  desiredDigest: string
-  desiredVersion: string
-  identity: MCProductIdentity
-  operationId: string
-  payload: Payload
-  productId: GmcDocumentID
-  storeCode: string
-}
-
-export type GmcLocalInventoryPublicationStateStore = {
-  /** Atomically retain the greatest source version and reject equal-version divergence. */
-  claim: (claim: GmcLocalInventoryPublicationClaim) => Promise<GmcLocalInventoryPublicationState>
-  get: (args: {
-    identity: MCProductIdentity
-    payload: Payload
-    storeCode: string
-  }) => Promise<GmcLocalInventoryPublicationState | null>
-  markFailed: (args: {
-    error: GmcLocalInventoryPublicationState['error']
-    identity: MCProductIdentity
-    operationId: string
-    payload: Payload
-    storeCode: string
-  }) => Promise<void>
-  markPublished: (
-    claim: { publishedAt: string } & GmcLocalInventoryPublicationClaim,
-  ) => Promise<GmcLocalInventoryPublicationState>
 }
 
 export type GmcMerchantTransport = {

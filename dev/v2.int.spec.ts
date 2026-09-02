@@ -9,7 +9,6 @@ import { fileURLToPath } from 'node:url'
 import { buildConfig, getPayload } from 'payload'
 import {
   createGmcCommandExecutor,
-  createPayloadLocalInventoryPublicationStateStore,
   createPayloadPublicationStateStore,
   type GmcAsyncAdapter,
   type GmcAsyncDispatchArgs,
@@ -199,7 +198,9 @@ afterAll(async () => {
 describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
   it('installs isolated non-versioned publication state without mutating Product fields', () => {
     expect(payload.collections['gmc-publications-v2']).toBeDefined()
-    expect(payload.collections['gmc-local-inventory-publications-v2']).toBeDefined()
+    // Local-inventory rows are folded into the main publication collection;
+    // no separate collection is installed for them.
+    expect(payload.collections['gmc-local-inventory-publications-v2']).toBeUndefined()
     const products = payload.config.collections.find((collection) => collection.slug === 'products')
     expect(products?.fields.map((field) => ('name' in field ? field.name : undefined))).toEqual([
       'title',
@@ -216,10 +217,6 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
       (collection) => collection.slug === 'gmc-publications-v2',
     )
     expect(state?.versions).toBeFalsy()
-    const localState = payload.config.collections.find(
-      (collection) => collection.slug === 'gmc-local-inventory-publications-v2',
-    )
-    expect(localState?.versions).toBeFalsy()
   })
 
   it('rejects non-transactional writes before the canonical row can commit', async () => {
@@ -403,8 +400,8 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
   })
 
   it('durably fences stale and divergent local-inventory snapshots', async () => {
-    const store = createPayloadLocalInventoryPublicationStateStore({
-      collectionSlug: 'gmc-local-inventory-publications-v2',
+    const store = createPayloadPublicationStateStore({
+      collectionSlug: 'gmc-publications-v2',
       dataSourceName: 'accounts/123456/dataSources/987654321',
       merchantId: '123456',
     })
@@ -412,44 +409,48 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
     const claim = {
       desiredAt: '2026-08-29T12:00:00.000Z',
       desiredDigest: 'a'.repeat(64),
-      desiredVersion: '100',
       identity,
       operationId: 'local-operation-100',
       payload,
-      productId: 'product-1',
+      productId: 'local-product-1',
       storeCode: 'store-1',
     }
 
-    await expect(store.claim(claim)).resolves.toMatchObject({
-      desiredVersion: '100',
+    await expect(store.claimLocalInventory(claim)).resolves.toMatchObject({
+      desiredDigest: 'a'.repeat(64),
       status: 'publish-pending',
+      storeCode: 'store-1',
     })
-    await store.markPublished({ ...claim, publishedAt: '2026-08-29T12:01:00.000Z' })
+    await store.markLocalInventoryPublished({
+      ...claim,
+      publishedAt: '2026-08-29T12:01:00.000Z',
+    })
     await expect(
-      store.claim({
+      store.claimLocalInventory({
         ...claim,
         desiredAt: '2026-08-29T12:02:00.000Z',
         desiredDigest: 'b'.repeat(64),
-        desiredVersion: '101',
         operationId: 'local-operation-101',
       }),
-    ).resolves.toMatchObject({ desiredVersion: '101', status: 'publish-pending' })
+    ).resolves.toMatchObject({ desiredDigest: 'b'.repeat(64), status: 'publish-pending' })
     await expect(
-      store.claim({
+      store.claimLocalInventory({
         ...claim,
         desiredDigest: 'stale',
-        desiredVersion: '99',
         operationId: 'local-operation-99',
       }),
-    ).resolves.toMatchObject({ desiredDigest: 'b'.repeat(64), desiredVersion: '101' })
+    ).resolves.toMatchObject({
+      desiredAt: '2026-08-29T12:02:00.000Z',
+      desiredDigest: 'b'.repeat(64),
+      operationId: 'local-operation-101',
+    })
+
     await expect(
-      store.claim({
-        ...claim,
-        desiredDigest: 'divergent',
-        desiredVersion: '101',
-        operationId: 'local-operation-divergent',
-      }),
-    ).rejects.toMatchObject({ code: 'GMC_LOCAL_INVENTORY_SOURCE_VERSION_CONFLICT' })
+      store.getLocalInventory({ identity, payload, storeCode: 'store-2' }),
+    ).resolves.toBeNull()
+    await expect(
+      store.listByProduct({ payload, productId: 'local-product-1' }),
+    ).resolves.toEqual([])
   })
 
   it('never projects pending draft content when a durable command executes', async () => {

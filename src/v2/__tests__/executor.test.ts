@@ -8,8 +8,6 @@ import type {
   GmcCommand,
   GmcCommandExecutionContext,
   GmcFeedConfig,
-  GmcLocalInventoryPublicationState,
-  GmcLocalInventoryPublicationStateStore,
   GmcMerchantTransport,
   GmcPublicationState,
   GmcPublicationStateStore,
@@ -50,118 +48,117 @@ const state = (overrides: Partial<GmcPublicationState> = {}): GmcPublicationStat
   ...overrides,
 })
 
-const localState = (
-  overrides: Partial<GmcLocalInventoryPublicationState> = {},
-): GmcLocalInventoryPublicationState => ({
+const localState = (overrides: Partial<GmcPublicationState> = {}): GmcPublicationState => ({
   desiredAt: '2026-08-29T12:00:00.000Z',
   desiredDigest: 'a'.repeat(64),
-  desiredVersion: '100',
   identity: newIdentity,
   operationId: 'inventory-operation',
   productId: 'product-1',
+  revision: 0,
   status: 'publish-pending',
   storeCode: 'store-1',
   updatedAt: '2026-08-29T12:00:00.000Z',
   ...overrides,
 })
 
-const stateStore = (): GmcPublicationStateStore => ({
-  claimPublication: vi.fn(() =>
-    Promise.resolve(
-      state({
-        desiredDigest: 'different-until-claimed',
-        identity: newIdentity,
-        operationId: 'operation-1',
+const stateStore = (): GmcPublicationStateStore => {
+  // Local-inventory rows live in the same store as the base offer row, keyed
+  // by identity + storeCode. This fixture tracks a single current row, which
+  // is all the executor tests below claim.
+  let currentLocal: GmcPublicationState | null = null
+  return {
+    claimLocalInventory: vi.fn((value) => {
+      if (
+        currentLocal &&
+        currentLocal.desiredAt !== undefined &&
+        currentLocal.desiredAt > value.desiredAt
+      ) {
+        return Promise.resolve(currentLocal)
+      }
+      currentLocal = {
+        desiredAt: value.desiredAt,
+        desiredDigest: value.desiredDigest,
+        identity: value.identity,
+        operationId: value.operationId,
+        productId: value.productId,
+        revision: (currentLocal?.revision ?? -1) + 1,
         status: 'publish-pending',
-      }),
+        storeCode: value.storeCode,
+        updatedAt: value.desiredAt,
+      }
+      return Promise.resolve(currentLocal)
+    }),
+    claimPublication: vi.fn(() =>
+      Promise.resolve(
+        state({
+          desiredDigest: 'different-until-claimed',
+          identity: newIdentity,
+          operationId: 'operation-1',
+          status: 'publish-pending',
+        }),
+      ),
     ),
-  ),
-  get: vi.fn(() => Promise.resolve(null)),
-  listByProduct: vi.fn(() => Promise.resolve([])),
-  markDeleted: vi.fn(({ identity, operationId, productId }) =>
-    Promise.resolve(
-      state({
-        identity,
-        operationId,
-        productId,
-        status: 'deleted',
-      }),
+    get: vi.fn(() => Promise.resolve(null)),
+    getLocalInventory: vi.fn(() => Promise.resolve(currentLocal)),
+    listByProduct: vi.fn(() => Promise.resolve([])),
+    markDeleted: vi.fn(({ identity, operationId, productId }) =>
+      Promise.resolve(
+        state({
+          identity,
+          operationId,
+          productId,
+          status: 'deleted',
+        }),
+      ),
     ),
-  ),
-  markDeletePending: vi.fn(({ identity, operationId, productId }) =>
-    Promise.resolve(
-      state({
-        identity,
-        operationId,
-        productId,
-        status: 'delete-pending',
-      }),
+    markDeletePending: vi.fn(({ identity, operationId, productId }) =>
+      Promise.resolve(
+        state({
+          identity,
+          operationId,
+          productId,
+          status: 'delete-pending',
+        }),
+      ),
     ),
-  ),
-  markFailed: vi.fn(() => Promise.resolve()),
-  markObserved: vi.fn(() => Promise.resolve()),
-  markPublished: vi.fn((claim) =>
-    Promise.resolve(
-      state({
-        desiredDigest: claim.desiredDigest,
-        identity: claim.identity,
-        operationId: claim.operationId,
-        productId: claim.productId,
-        publishedAt: claim.publishedAt,
-        publishedDigest: claim.desiredDigest,
-        status: 'published',
-      }),
-    ),
-  ),
-})
-
-const localInventoryStateStore = (): GmcLocalInventoryPublicationStateStore => {
-  let current: GmcLocalInventoryPublicationState | null = null
-  const claim: GmcLocalInventoryPublicationStateStore['claim'] = vi.fn((value) => {
-    if (current && BigInt(current.desiredVersion) > BigInt(value.desiredVersion)) {
-      return Promise.resolve(current)
-    }
-    current = {
-      desiredAt: value.desiredAt,
-      desiredDigest: value.desiredDigest,
-      desiredVersion: value.desiredVersion,
-      identity: value.identity,
-      operationId: value.operationId,
-      productId: value.productId,
-      status: 'publish-pending',
-      storeCode: value.storeCode,
-      updatedAt: value.desiredAt,
-    }
-    return Promise.resolve(current)
-  })
-  const store: GmcLocalInventoryPublicationStateStore = {
-    claim,
-    get: vi.fn(() => Promise.resolve(current)),
-    markFailed: vi.fn(({ error, operationId }) => {
-      const retained = current
+    markFailed: vi.fn(() => Promise.resolve()),
+    markLocalInventoryFailed: vi.fn(({ error, operationId }) => {
+      const retained = currentLocal
       if (retained && retained.operationId === operationId) {
-        current = { ...retained, error, status: 'failed' }
+        currentLocal = { ...retained, error, status: 'failed' }
       }
       return Promise.resolve()
     }),
-    markPublished: vi.fn((value) => {
-      const retained = current
+    markLocalInventoryPublished: vi.fn((value) => {
+      const retained = currentLocal
       if (retained && retained.operationId === value.operationId) {
-        current = {
+        currentLocal = {
           ...retained,
           publishedAt: value.publishedAt,
           publishedDigest: value.desiredDigest,
-          publishedVersion: value.desiredVersion,
           status: 'published',
         }
       }
-      if (!current) {
+      if (!currentLocal) {
         throw new Error('missing local-inventory test state')
       }
-      return Promise.resolve(current)
+      return Promise.resolve(currentLocal)
     }),
+    markObserved: vi.fn(() => Promise.resolve()),
+    markPublished: vi.fn((claim) =>
+      Promise.resolve(
+        state({
+          desiredDigest: claim.desiredDigest,
+          identity: claim.identity,
+          operationId: claim.operationId,
+          productId: claim.productId,
+          publishedAt: claim.publishedAt,
+          publishedDigest: claim.desiredDigest,
+          status: 'published',
+        }),
+      ),
+    ),
   }
-  return store
 }
 
 const transport = (): GmcMerchantTransport => ({
@@ -270,10 +267,8 @@ const build = (args?: {
     findByID: args?.findByID ?? vi.fn(() => Promise.resolve({ id: 'product-1' })),
   } as unknown as Payload
   const store = stateStore()
-  const localStore = localInventoryStateStore()
   const merchantTransport = transport()
   const rawExecute = createGmcCommandExecutor(normalizeGmcV2Options(pluginOptions), {
-    localInventoryStateStore: localStore,
     stateStore: store,
     transport: merchantTransport,
   })
@@ -284,7 +279,6 @@ const build = (args?: {
     asyncAdapter,
     execute,
     localInventoryProject,
-    localInventoryStateStore: localStore,
     payload,
     productProject,
     rawExecute,
@@ -1546,10 +1540,9 @@ describe('GMC v2 command executor', () => {
 
   it('skips an older independent local workflow after a newer per-store claim', async () => {
     const test = build({ localInventory: true })
-    vi.mocked(test.localInventoryStateStore.claim).mockResolvedValueOnce(
+    vi.mocked(test.stateStore.claimLocalInventory).mockResolvedValueOnce(
       localState({
         desiredDigest: 'b'.repeat(64),
-        desiredVersion: '101',
         operationId: 'newer-local-operation',
       }),
     )
@@ -1582,7 +1575,7 @@ describe('GMC v2 command executor', () => {
 
   it('fails closed when a custom local-inventory store returns another resource', async () => {
     const test = build({ localInventory: true })
-    vi.mocked(test.localInventoryStateStore.claim).mockResolvedValueOnce(
+    vi.mocked(test.stateStore.claimLocalInventory).mockResolvedValueOnce(
       localState({ storeCode: 'different-store' }),
     )
     const command: Extract<GmcCommand, { type: 'localInventory.apply' }> = {
@@ -1610,10 +1603,9 @@ describe('GMC v2 command executor', () => {
       dataSourceName: 'accounts/123456/dataSources/987654321',
       identity: newIdentity,
     })
-    vi.mocked(test.localInventoryStateStore.get).mockResolvedValueOnce(
+    vi.mocked(test.stateStore.getLocalInventory).mockResolvedValueOnce(
       localState({
         desiredDigest: 'b'.repeat(64),
-        desiredVersion: '101',
         operationId: 'newer-local-operation',
       }),
     )
@@ -1636,7 +1628,7 @@ describe('GMC v2 command executor', () => {
 
     expect(test.transport.getProcessedProduct).toHaveBeenCalledOnce()
     expect(test.transport.insertLocalInventory).not.toHaveBeenCalled()
-    expect(test.localInventoryStateStore.markPublished).not.toHaveBeenCalled()
+    expect(test.stateStore.markLocalInventoryPublished).not.toHaveBeenCalled()
   })
 
   it('rechecks the local inventory fence after ownership I/O before replacing the resource', async () => {
@@ -1767,7 +1759,7 @@ describe('GMC v2 command executor', () => {
 
     expect(test.transport.insertLocalInventory).not.toHaveBeenCalled()
     expect(test.transport.deleteLocalInventory).not.toHaveBeenCalled()
-    expect(test.localInventoryStateStore.markFailed).toHaveBeenCalledWith(
+    expect(test.stateStore.markLocalInventoryFailed).toHaveBeenCalledWith(
       expect.objectContaining({ operationId: 'inventory-processing-lag', storeCode: 'store-1' }),
     )
   })
