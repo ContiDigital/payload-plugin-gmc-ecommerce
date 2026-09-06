@@ -65,7 +65,6 @@
     "test": "pnpm test:int",
     "test:coverage": "vitest --run --coverage",
     "test:v2:db-matrix": "bash ./scripts/test-v2-db-matrix.sh",
-    "test:e2e": "playwright test",
     "test:int": "vitest --run",
     "test:live": "pnpm build && vitest --run --config vitest.live.config.js",
     "typecheck:dev": "tsc -p dev/tsconfig.json --noEmit"
@@ -79,7 +78,6 @@
     "@payloadcms/next": "3.88.0",
     "@payloadcms/richtext-lexical": "3.88.0",
     "@payloadcms/ui": "3.88.0",
-    "@playwright/test": "1.62.1",
     "@swc-node/register": "1.12.1",
     "@swc/cli": "0.8.1",
     "@swc/core": "^1.16.1",
