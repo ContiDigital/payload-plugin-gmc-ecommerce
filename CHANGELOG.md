@@ -1,412 +1,130 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [2.0.0-rc.35] - 2026-08-30
-
-### Stable release-gate fidelity
-
-- Make `test:live` build first and import the plugin exclusively through its public package root, so the isolated Google smoke verifies the packaged transport surface rather than unpublished internal source paths.
-- Define the live gate's exact evidence: API-primary source validation, ProductInput insert, processed-product observation, complete update, delete convergence, and already-absent idempotent delete against a uniquely namespaced test identity with cleanup.
-- Stop treating that external transport lifecycle as proof of host deployment behavior. Executor, batch/feed, reconciliation, state-store, local-inventory, and durable-adapter semantics remain mandatory deterministic/real-database gates, while each consumer separately owns migration and deployment authorization.
-
-## [2.0.0-rc.34] - 2026-08-30
-
-### Release and consumer boundary
-
-- Separate plugin release readiness from any consuming application's deployment authorization: the repository owner alone verifies and publishes stable `2.0.0`, after which each host installs the exact registry version, regenerates its lockfile, and passes its own migration and deployment gates.
-- Prohibit vendoring release tarballs or committing pre-release `file:` dependencies in consumer repositories. Immutable tarballs remain valid only as external, local compatibility fixtures before the registry release exists.
-- Correct the Fine's reference runbook to require the current schema-2 package rather than the superseded RC32 artifact while retaining dark ingress until its owner-controlled migration and staging gates pass.
-
-## [2.0.0-rc.33] - 2026-08-30
-
-### Current Merchant v1 vocabulary
-
-- Accept the current Merchant API v1 `LIMITED_AVAILABILITY` product availability instead of rejecting a valid API projection, preserve it for API writes, and translate it to Google's documented `in_stock` product-file value rather than inventing `limited_availability`.
-- Reject `PREORDER` and `BACKORDER` projections without their required `availabilityDate` before they can produce a guaranteed Merchant item issue.
-- Correct the built-in TSV destination translation to Google's documented text-feed vocabulary: API `YOUTUBE_SHOPPING` now emits `Youtube_merchandise`, `YOUTUBE_AFFILIATE` emits `Youtube_affiliate`, and `VEHICLE_ADS` emits the documented `vehicle_ads` spelling.
-- Continue to fail closed for API destinations with no documented TSV representation, including `YOUTUBE_SHOPPING_CHECKOUT` and `FREE_VEHICLE_LISTINGS`, instead of guessing a plausible but unverified text value. API publication remains available, and hosts can supply a custom feed adapter when Google or another provider defines a lossless format.
-
-## [2.0.0-rc.32] - 2026-08-30
-
-### Schema-stable local inventory
-
-- Permit an explicitly configured `localInventory` capability to have empty active and retired store lists. This is an inert state that dispatches no store work while retaining the hidden causal publication collection, generated Payload types, and migration schema across developer, CI, and production environments.
-- Updated the Fine's reference integration to configure local inventory structurally even when its store-code secret is absent. Production store activation remains deployment-configured, but Payload schema generation can no longer silently omit `gmc-local-inventory-publications-v2`.
-- Added configuration and disabled-plugin regression coverage for the empty schema-stable state. Store retirement semantics remain unchanged: active stores must still move through `retiredStoreCodes` and complete deletion reconciliation before both lists become empty.
-
-## [2.0.0-rc.31] - 2026-08-30
-
-### Causal LocalInventory safety
-
-- Added a hidden, non-versioned, CAS-backed local-inventory publication collection and public custom-store contract. It retains the greatest root-causal source version and exact desired digest per Merchant identity/store, rejects equal-version divergence, and prevents a delayed child from an older independent workflow from replacing newer store inventory.
-- Added the canonical `productId` to every durable `localInventory.apply` command, fenced local mutations against current base-product ownership/state before and after Google control-plane reads, and revalidated the per-store claim immediately before whole-resource insert/delete.
-- Advanced the durable command wire contract to schema 2. RC30 schema-1 rows must be drained or quarantined before upgrade; Fine's remains dark and has no live v2 rows.
-- Added SQLite/PostgreSQL/MongoDB integration coverage for the local state collection, including stale-claim retention and equal-version divergent-content rejection. Host deployments now require an owner-generated migration for both hidden state collections.
-
-### Replay, isolation, and configuration hardening
-
-- Made `readCurrentDescriptor` mandatory for artifact stores. Feed-build replay now skips an obsolete source version from the pointer alone and verifies the exact immutable artifact before accepting an equal-version prior promotion, closing the promotion-before-ledger-completion crash window.
-- Hash caller idempotency keys with instance and operation type before storing them, keeping raw credentials or sensitive caller tokens out of the durable ledger while preserving semantic isolation and bounded Fine's keys.
-- Reject route-language collisions across static, dynamic, optional, and wildcard Payload routes; reject malformed nested custom-store/rate-limit configuration; scope async health/status, subjects, artifacts, and public health identity to `instanceId`; and fail status refresh on cross-source ownership instead of reporting a false remote absence.
-
-### Release-chain security
-
-- Dropped end-of-life Node 18/20 support and raised the runtime/CI floor to Node 22.12 LTS; Fine's already requires Node 24.
-- Upgraded the security-sensitive test, compiler, Payload-compatible Next.js 16, image, browser, DOM, React, and package tooling so the release candidate does not rely on known-critical Vitest UI or SWC downloader versions. Added narrow patched-version overrides for vulnerable transitive build/test packages whose parents have not yet refreshed their ranges; the full release suite and adapter matrix verify those resolved versions. Both the complete and production-only pnpm audits now report zero known vulnerabilities; production audit remains a separate release hard gate because the npm artifact intentionally bundles no host framework dependencies.
-
-## [2.0.0-rc.30] - 2026-08-30
-
-### Artifact read isolation
-
-- Independently verify that every artifact-backed feed read returns a descriptor in the exact requested `instanceId/feedId/sourceVersion-checksum.extension` namespace before serving bytes.
-- Added cross-instance, cross-feed, and descriptor/key-divergence regression cases, and strengthened executor coverage to assert the complete instance-prefixed descendant subject.
-
-## [2.0.0-rc.29] - 2026-08-30
-
-### Multi-instance control-plane and artifact isolation
-
-- Made `instanceId` mandatory on async operation lookup and health calls so shared durable adapters cannot expose or aggregate another plugin instance's ledger rows.
-- Made `instanceId` mandatory on every artifact-store operation and included `instanceId/feedId` in generated immutable descriptor keys, preventing shared object stores and current pointers from colliding across plugin instances.
-- Updated the Fine's PostgreSQL/S3 reference mapping with exact raw-subject scoping, instance-namespaced immutable objects and pointers, and real-PostgreSQL cross-instance lookup/descendant-isolation proofs.
-- Reject request bodies on mutations whose complete intent is represented by the route, rather than silently accepting options that the batch operation will not execute.
-- Reserved `.` and `..` as invalid instance IDs now that the identifier is a durable storage namespace.
-
-## [2.0.0-rc.28] - 2026-08-30
-
-### Exact HTTP intent boundaries
-
-- Reject unknown fields in single-product publish/status bodies and in the optional durable-worker HTTP envelope instead of silently accepting intent the plugin will not execute.
-- Reject leading/trailing whitespace in operation and root-operation IDs rather than normalizing distinct external identifiers onto one ledger identity.
-- Changed the release pipeline to package and smoke one exact tarball after verification, transfer it with a SHA-256 manifest, and publish those same bytes without rebuilding in the npm job.
-
-## [2.0.0-rc.27] - 2026-08-30
-
-### Deployment runbook accuracy
-
-- Corrected the migration runbook to distinguish Fine's implemented immutable GMC enqueue from its intentionally retained general superseding helper. Operators are no longer told that the current v2 adapter uses the non-conforming path.
-- Added exact-package smoke coverage preventing public examples from reintroducing Merchant-specific eligibility or revision shadows.
-
-## [2.0.0-rc.26] - 2026-08-30
-
-### Canonical host projection contract
-
-- Removed public examples that implied independently editable Merchant-specific eligibility or revision fields. V2 guidance now uses channel-neutral canonical catalog signals and explicitly prohibits recreating `merchantEnabled` or `merchantVersion` shadows in host schemas.
-- Promoted the adapter-enforced full-reconciliation exclusion rule into the top-level requirements, including exact-key replay, different-key conflict, nonterminal descendant, and complete raw-subject semantics.
-
-## [2.0.0-rc.25] - 2026-08-30
-
-### Multi-instance reconciliation isolation
-
-- Scoped atomic full-reconciliation exclusivity to the complete raw catalog subject. A shared durable adapter can now reconcile independent Merchant/plugin instances concurrently while still rejecting overlapping roots within each instance.
-- Documented the indexed Fine's PostgreSQL implementation and expanded exact-package smoke coverage to verify the public workflow-conflict export and stable error contract.
-
-## [2.0.0-rc.24] - 2026-08-30
-
-### Atomic reconciliation exclusivity
-
-- Made atomic, adapter-enforced exclusivity a required v2 capability for full `catalog.reconcile` roots. Authenticated API calls, schedules, and concurrent processes can no longer create overlapping reconciliation workflows under different idempotency keys.
-- Added the exported `GmcAsyncWorkflowConflictError` contract and stable HTTP `409` behavior. Exact immutable-key replay still returns the retained active operation; different keys are rejected rather than incorrectly coalesced, and lineage-bearing continuations remain valid.
-- Updated the Fine's ECS reference mapping to perform same-key resolution and the active-workflow query under its global PostgreSQL GMC insertion lock, with scheduler preflight retained only as friendly early feedback.
-
-## [2.0.0-rc.23] - 2026-08-30
-
-### Fine's deployment isolation contract
-
-- Corrected the Fine's ECS reference deployment after a final task-role review: the Merchant worker receives only the Postgres/Scheduler links, Merchant/Payload configuration, Merchant queue URL, and `GetObject`/`PutObject` access below `gmc-feeds/v2/*`; unrelated application secrets, links, queue URLs, bucket listing/deletion, and canonical snapshot access are excluded.
-- Corrected the serial Pinterest worker contract to use read-only canonical inventory-snapshot access instead of the Merchant artifact prefix policy.
-- Documented the exact daily artifact and weekly full-reconciliation schedule, the retained-workflow non-overlap guard, production `quotas.list` requirement, and production-scale capacity gate.
-
-## [2.0.0-rc.22] - 2026-08-30
-
-### Root-causal ordering and targeted dependency publication
-
-- Corrected workflow freshness semantics: every immediate root now supplies one globally ordered source version which every continuation and child must inherit exactly. Later child-ledger allocation can no longer make an older catalog sweep outrank a newer live Product event.
-- Defined safe temporal activation: a future schedule is an immutable registration, then receives one freshly allocated and durably retained global source version when its boundary becomes active. Retries and every scheduled descendant reuse that value, closing the opposite failure mode where an old registration ID could suppress a legitimate time-derived update.
-- Added bounded targeted dependency roots. Collection and Global dependencies can return the complete current/previous affected Product ID set, no work, or a full-sweep fallback. Target lists are validated, canonicalized, capped at 1,000 IDs, included in immutable intent, intersected with Product eligibility, and paged by durable worker coordinators rather than fanned out in a Payload transaction.
-- Updated the Fine's ECS reference mapping with targeted category/media/promotion/Deal invalidation, activation-sequence retention, strict descendant validation, least-privilege Merchant artifact access, calendar-valid artifact timestamps, capacity-driven reconciliation guidance, and the requirement to derive actual request limits from Merchant `quotas.list` before rollout.
-
-## [2.0.0-rc.21] - 2026-08-30
-
-### Wire correctness, durable observability, and immutable packaging
-
-- Replaced generic lowercasing of Google text-feed enums with explicit specification mappings. Pickup SLA values now serialize as `2-day` through `6-day` and `multi-week`, enum sentinels remain blank, and unknown future values fail closed instead of emitting plausible but invalid TSV.
-- Wrapped OAuth, Merchant request, and response-stream transport failures in stable `GMC_GOOGLE_TRANSPORT` errors so network `TypeError`s remain retryable while malformed credentials, projections, invariants, and other deterministic `TypeError`s terminate without burning a durable retry budget.
-- Made every durable command and nested identity envelope exact. Unknown fields now reject at producer and consumer boundaries instead of being silently ignored under a valid idempotency digest.
-- Added bounded workflow observability: adapters expose the requested coordinator's state separately from aggregate state and can return fixed-size completed-page reconciliation totals for orphan, delete, remote, and page counts. The Fine's reference adapter computes them in one PostgreSQL aggregate, with real-database proof that malformed partial page output contributes nothing.
-- Extended Fine's Merchant ledger and FIFO redrive budget from five to one shared fifteen-attempt constant, preserving per-offer blocking order while allowing asynchronous ProductInput processing to converge before dependent local inventory is dead-lettered.
-- Hardened RFC 3339 boundaries across async health/operation timelines, feed generation and artifact metadata, dependency schedules, and the exported host timestamp validator. Calendar-invalid dates no longer normalize silently, and operation chronology compares actual instants rather than offset-bearing strings.
-- Made package smoke testing non-destructive and immutable-artifact aware: it can install a caller-supplied tarball, never deletes repository-wide `*.tgz` files, and asserts that obsolete v1 setup guides are absent from the v2 package while all v2 runbooks ship.
-
-## [2.0.0-rc.20] - 2026-08-30
-
-### Merchant API error contract and host deployment hardening
-
-- Parse the current AIP-193 `google.rpc.ErrorInfo` response contract and preserve Google's stable `details.metadata.REASON`, bounded developer message, and field location on `GoogleApiError`. Durable host failures now carry an actionable `GOOGLE_<REASON>` code instead of status-only diagnostics.
-- Drive retry decisions with stable Merchant reasons where available: transient internal, rate, and concurrent-modification failures back off even when the HTTP status alone is ambiguous, while daily/account quota exhaustion does not amplify through local and queue retries. HTTP status remains the compatibility fallback for sub-APIs that have not rolled out ErrorInfo.
-- Hardened the Fine's reference deployment after an end-to-end SST review: all registered queue links are now registry-derived (including `WatermarkQueue`), the Scheduler role is limited to the seven main queue ARNs, ECS `iam:PassRole` is limited to the Scheduler and MediaConvert roles, and the canonical artifact envelope is 50,000 products / 128 MiB so it exceeds the existing ~28,000-row catalog with bounded headroom.
-- Expanded the owner-generated migration gate to enumerate the complete publication-state field, index, uniqueness, deletion-fence, timestamp, and versions contract.
-
-## [2.0.0-rc.19] - 2026-08-30
-
-### Transactional host verification
-
-- Updated the Fine's ECS deployment mapping after enabling real Payload PostgreSQL transactions in the host. The installed plugin and actual durable adapter now have commit/rollback proofs for Product hooks, collection dependencies, and Global dependencies on one atomic outbox boundary.
-- Kept the deployment explicitly dark and non-production-ready until the owner-generated migration, production API-primary source/credential validation, shadow comparison, canary, failure-recovery exercises, and production-scale load evidence are complete.
-
-## [2.0.0-rc.18] - 2026-08-30
-
-### Processed-product ownership for local inventory
-
-- Fence every local-inventory insert and delete with a processed-product ownership read. If another data source owns the identity, terminal `GMC_PRODUCT_DATA_SOURCE_CONFLICT` now prevents mutation of that source's inventory.
-- Treat the asynchronous interval between ProductInput acceptance and processed-product visibility as retryable `GMC_PROCESSED_PRODUCT_NOT_READY` for active inventory inserts. A missing processed product already satisfies deletion/retirement intent and completes without a remote delete.
-- Document the extra processed-product read in account-wide quota and source-migration planning.
-
-## [2.0.0-rc.17] - 2026-08-30
-
-### Final-store retirement
-
-- Permit `localInventory.storeCodes` to be empty while one or more codes remain in `retiredStoreCodes`, allowing the last active Business Profile location to run the same deletion-only reconciliation and drain protocol as every other retired store.
-- Continue to reject an empty local-inventory feature, overlapping active/retired ownership, duplicate codes, unsafe codes, and more than 1,000 combined codes.
-
-## [2.0.0-rc.16] - 2026-08-30
-
-### Merchant ownership and wire safety
-
-- Made multi-source routing fail closed: with more than one API-primary source, every source must expose a complete immutable language/label scope and every scope must be pairwise disjoint before any product-plane call.
-- Added a processed-product ownership read immediately before every ProductInput insert. A different owning source now raises terminal `GMC_PRODUCT_DATA_SOURCE_CONFLICT` and performs no insert, preventing Google's insert method from silently moving the identity.
-- Rejects duplicate processed identities across different projector routes and serializes routed variants on one route-independent offer subject.
-- Centralized non-negative signed-int64 validation with a 19-digit lexical bound before `BigInt` conversion, including source versions, product integer attributes, prices, local inventory, artifacts, transport responses, and HTTP inputs.
-
-### Local inventory lifecycle
-
-- Added `localInventory.retiredStoreCodes`. Retired stores bypass projection and emit deletion-only work for every canonical offer until a complete reconciliation proves cleanup. Queued pre-retirement inserts become deletes at execution, while removed/unknown stores fail without remote mutation. Active and retired codes are normalized, disjoint, and bounded to 1,000 total.
-- Corrected the operator contract to document offer-wide FIFO serialization across ProductInput and every local-inventory store write.
-
-### Fine's durability and scale proof
-
-- Replaced Fine's unbounded workflow-row materialization with one constant-size PostgreSQL aggregate for state precedence, descendant counts, workflow timestamps, and a representative failure.
-- Added real PostgreSQL proof that the installed plugin plus Fine's actual immutable adapter commit the canonical Product and pending outbox row atomically, and roll both back when a later hook fails.
-- Added private `no-store` and `nosniff` headers to every v2 JSON control-plane response while retaining explicit public/private feed caching.
-
-## [2.0.0-rc.15] - 2026-08-30
-
-### Fine's dark rollout gate
-
-- Documented Fine's strict `GOOGLE_MERCHANT_V2_ENABLED` cutover flag. Merchant IDs alone no longer activate v2 in the reference deployment; the flag remains false until migration, real Payload transaction, API-primary source, worker-health, and canary gates all pass.
-- Added an exact installed-package PostgreSQL 3.84.1 regression proof in Fine's host suite for the disabled-transaction `Promise<null>` behavior fixed in RC14.
-
-## [2.0.0-rc.14] - 2026-08-30
-
-### Transaction proof hardening
-
-- Fixed automatic-hook transaction detection to await and validate Payload's resolved transaction handle. An adapter with transactions disabled leaves a truthy `Promise<null>` on `req.transactionID`; RC13 mistook that wrapper for a live transaction and could allow a canonical commit without an atomic outbox insert.
-- Added a real PostgreSQL regression configuration with `transactionOptions: false` proving `GMC_TRANSACTION_REQUIRED` is raised before the canonical row commits and before the async adapter is called.
-- Made the portable integration matrix transaction-honest: SQLite explicitly enables its opt-in transactions, MongoDB runs as a replica set with collections initialized before transactional writes, and PostgreSQL covers both enabled commit behavior and disabled fail-closed behavior.
-
-### Verification
-
-- Retained the deterministic 552-test release suite and added the real disabled-transaction PostgreSQL proof to the SQLite/PostgreSQL/MongoDB adapter matrix.
-
-## [2.0.0-rc.13] - 2026-08-30
-
-### Fine's deployment hardening
-
-- Corrected the Fine's deployment checklist to use its configured `/merchant-center/v2/data-sources/validate` route rather than the plugin's default `/gmc/v2` base path.
-- Tightened the reference host's Merchant control-plane access to `admin` and `owner`; ordinary sales edits already converge through transactional plugin hooks and no longer grant account-wide publish, reconcile, feed-build, or operational-state access.
-
-## [2.0.0-rc.12] - 2026-08-30
-
-### Merchant source ownership
-
-- Made `productIngestion: { mode: 'api-primary' }` an explicit required v2 contract. Structured canonical ProductInput is the authority; TSV/XML/custom feeds remain canonical export/read models and must not be registered as a competing Merchant primary file source for the same offers.
-- Added Data Sources v1 control-plane transport and strict response parsing. Every configured source must resolve by exact account/name/ID as `input: API` with a primary-product source; file, supplemental, mismatched, malformed, and oversized resources fail closed.
-- Verify the routed source immediately before every physical ProductInput, processed-product, reconciliation, and local-inventory operation. Source language/feed-label restrictions must accept the canonical identity. Verified reads are coalesced and cached for five minutes but still consume the same distributed rate limit and retry policy as every Merchant request.
-- Added the authenticated `POST /gmc/v2/data-sources/validate` durable preflight. It performs no product-plane writes, verifies every configured API-primary source and canonical feed scope through the production worker, and returns auditable workflow status.
-
-### Durable failure semantics
-
-- Exported `classifyGmcCommandError()` so host workers can distinguish terminal validation/configuration/Google 4xx failures from transient infrastructure and Google 408/429/5xx failures without parsing error messages.
-- Updated the Fine's ECS reference worker to persist terminal plugin failures as dead and ACK once, while preserving retry/NACK behavior for transient failures.
-
-### Verification
-
-- Expanded the deterministic suite to 552 tests across 54 files with direct source-response, source-scope, no-write preflight, rate-limit, transport-route, endpoint, cache, and durable error-classification coverage.
-
-## [2.0.0-rc.11] - 2026-08-30
-
-### Transactional hook enforcement
-
-- Automatic Product, catalog-dependency collection, and catalog-dependency Global hooks now require an ambient Payload database transaction. A missing `req.transactionID` fails before projection or durable dispatch with the exported `GmcTransactionalHookRequiredError` and stable `GMC_TRANSACTION_REQUIRED` code.
-- Closed the silent canonical-commit/outbox crash gap in hosts that declare a transaction-aware adapter while disabling Payload transactions or passing `disableTransaction: true`. On-demand, scheduled, coordinator, and continuation dispatches remain valid through an adapter-owned transaction because they are not coupled to a simultaneous canonical mutation.
-- Documented database transactions as a deployment prerequisite and promoted Fine's current `transactionOptions: false` setting to an explicit production blocker requiring owner review and commit/rollback proof.
-
-### Verification
-
-- Expanded the deterministic suite to 536 tests across 52 files with direct fail-closed coverage across Product change/delete and collection/Global dependency hooks. Real Payload integration proves a non-transactional create cannot commit, a non-transactional delete cannot remove its row, and enabled transactions still carry automatic operations through the supported adapter path.
-
-## [2.0.0-rc.10] - 2026-08-30
-
-### Merchant wire-contract correctness
-
-- Added one exact protobuf Timestamp parser shared by canonical ProductInput and LocalInventory validation. Calendar dates, offsets, the legal year range, one-to-nine fractional digits, and interval ordering are now checked at nanosecond precision across both resources.
-- Made every known Product `Price` fail closed at the plugin boundary: only `amountMicros` and `currencyCode` are accepted, micros must be a non-negative signed-int64 string, and currencies must be uppercase ISO 4217 identifiers. This now covers regular, sale, automatic-pricing minimum, maximum-retail, and cost-of-goods prices.
-- Enforced canonical product sale-price currency and ordering before either feed serialization or Merchant transport. Legacy Payload interval wrappers remain normalized, while unknown interval fields and ambiguous legacy/API field mixtures are rejected.
-- Cross-validates each local store price and loyalty benefit against its canonical online offer before durable child dispatch. Store prices must retain the canonical currency; loyalty member prices use the store price when present and otherwise cannot exceed the canonical product price.
-
-### Verification
-
-- Expanded the deterministic suite to 534 tests across 52 files, including direct rejection coverage for malformed/extended Product Prices, cost-of-goods validation, sale-price currency/order, malformed timestamps and intervals, nanosecond ordering, canonical/local currency drift, and loyalty prices above the online offer.
-
-## [2.0.0-rc.9] - 2026-08-30
-
-### Merchant Inventories v1 completeness
-
-- Added API-native local-inventory loyalty programs: member price/effective interval, cashback, points, shipping benefit, and program/tier labels. Labels and benefits remain canonical product/store derivations; they are never independently editable Merchant shadow fields.
-- Updated the LocalInventory writable allowlist for Google's 2026 `localShippingLabel`, recursive `customAttributes`, and `loyaltyPrograms` additions. Output-only and unknown root, attribute, loyalty, interval, and Price fields now fail closed before durable transport.
-- Tightened runtime wire validation: required availability, 64-character Business Profile store codes, 100-character local shipping labels, exact string int64/Price shapes, local price/currency consistency, case-insensitive loyalty identity uniqueness, and 256 KiB serialized input bounds.
-- Replaced permissive JavaScript date parsing with protobuf-compatible RFC 3339 validation across legal calendar dates, UTC offsets, open/equal intervals, the Timestamp year range, and one-to-nine fractional digits. Nanosecond ordering is preserved rather than truncated to milliseconds.
-
-### Verification
-
-- Added direct tests for the complete current loyalty resource, malformed untyped Price objects, unknown/output fields, case-insensitive duplicates, price/currency invariants, exact store/label/input bounds, and nanosecond interval behavior.
-
-## [2.0.0-rc.8] - 2026-08-30
-
-### Canonical projection and feeds
-
-- Added API-native recursive `CustomAttribute.groupValues` support to both ProductInput and local inventory. One shared fail-closed boundary strips only Payload row IDs, requires exactly one non-empty value/group at every node, rejects unknown fields and normalized sibling-name collisions, and enforces 2,500-node, 102,400-character, 10,240-character-per-node, and 20-level limits. The built-in TSV format rejects grouped attributes rather than flattening them incorrectly.
-- Hardened TSV output against schema drift and wire mismatches. ProductInput root fields and ProductAttributes now require explicit text-feed mappings, generic names normalize to Google-compatible snake case, ambiguous strong/generic column collisions reject, destination/energy/size enums use defined feed spellings, unsupported enum values fail closed, and every row retains the header's full trailing width.
-- Excluded explicit draft-shaped rows from canonical collection/feed passes, even when an adapter returns them for `draft: false`. Conditional feed responses now retain content type, cache policy, ETag, and `nosniff` headers on `304 Not Modified`.
-- Made exact authoritative input-size boundaries deterministic and preserved plugin-owned int64 `versionNumber` control by rejecting projector-supplied ProductInput root fields outside the explicit writable set.
-
-### Durable orchestration and state
-
-- Added `catalogGlobalDependencies`, giving Payload Globals the same selector-aware, scheduled, durable catalog invalidation workflow as collection dependencies. Collection event idempotency now includes complete current/previous selected documents so cyclic A → B → A → B transitions cannot reuse stale operations while exact retries still deduplicate.
-- Added `products.maxCatalogPages` (default 10,000; maximum 1,000,000) as a hard safety ceiling for dynamic/artifact feed collection, catalog publication, desired reconciliation, and local-inventory reconciliation. Every continuation carries a validated page index and fails before emitting a truncated authoritative scan.
-- Bounded publication-state scans to 1,000 active identities per product and excluded retained deleted fences from default fan-out. Custom state stores are held to the same contract before transport work begins.
-- Stopped spawning local-inventory children for an empty online projection; authoritative ProductInput absence now removes attached local inventory without creating a guaranteed poison command. Direct product deletion also retains the authoritative command source version in the offer deletion fence.
-- Made scheduled catalog command times deterministic and retained exact future boundaries through command validation and replay.
-
-### Fine's ECS reference deployment
-
-- Added strict Deal-of-the-Month Global invalidation and propagated relation/read-model failures rather than converting them into absent canonical content.
-- Changed outbox ordering from an account-wide advisory lock to a per-subject lock, preserving FIFO for one Merchant subject while allowing unrelated subjects to publish concurrently. Real PostgreSQL tests prove 100-command same-subject order and cross-subject progress.
-- Enforced `scheduled_for <= now()` in the database claim, rounded SQS/EventBridge delivery up so a command cannot run early, and validates an existing same-name EventBridge schedule byte-for-byte on create conflicts.
-- Derived Merchant claim leases from the configured handler timeout with a five-second guard and capped the lease at 31 minutes, so a 30-minute isolated handler cannot be redelivered while still running.
-- Split readiness from incident history: only dead operations in the current 24-hour health window degrade readiness, while lifetime dead counts remain visible for audit. Production configuration now fails fast on missing Merchant credentials, artifact bucket/public HTTPS URL, or scheduler role.
-
-### Verification
-
-- Expanded deterministic v2 coverage to 522 tests across 52 files, retained the real SQLite/PostgreSQL/MongoDB integration matrix, and added scheduler-conflict, global-dependency, scan-ceiling, active-state-bound, recursive-custom-attribute, row-width, and PostgreSQL concurrency proofs.
-
-## [2.0.0-rc.7] - 2026-08-30
-
-### Safety
-
-- Made remote orphan deletion fail closed. Reconciliation now detects and reports `orphanCount` in every deployment, dispatches no orphan deletes by default, and requires the explicit `exclusive-data-sources` ownership mode before returning a nonzero `orphanDeleteCount`.
-- Hardened published-document resolution across real Payload draft lifecycles. An explicit non-published `_status` is authoritative absence even when an adapter returns a document for `draft: false`; create hooks no longer derive synthetic previous identities. Real SQLite coverage now proves draft-only create, pending draft over a live product, unpublish, and deletion behavior.
-- Bounded processed-status work by fanning multi-offer refreshes into one durable, offer-ordered child per identity instead of serially polling up to 1,000 remote offers in one handler.
-- Tightened distributed limiter reservations to one minute plus clock skew and rejects multi-window reset times. Artifact read-back now rejects untrimmed content types as well as controls, oversize metadata, byte mismatch, and checksum mismatch.
-
-### Fine's ECS reference deployment
-
-- Replaced Fine's best-effort per-product enrichment loader on the authoritative Merchant path. Category, color, and promotion state is now loaded through bounded published keyset pages, read failures and malformed/duplicate canonical rows fail the operation, shared reads coalesce by immutable `projectionTime`, and rejected cache promises are evicted for durable retry.
-- Fixed a canonical inventory defect where a promotion with explicit `promoProducts` and no category could be treated as global in full-catalog projection. Fine's now filters the complete active-promotion table through one shared applicability predicate before Merchant custom labels/shipping are derived.
-- Added `media` to plugin-owned catalog dependencies so URL/MIME changes cannot leave embedded image/video output stale.
-- Made destructive Fine's reconciliation require `GOOGLE_MERCHANT_DATA_SOURCE_EXCLUSIVE=true`; missing/false remains detect-only and malformed values fail startup. Fine's also caps remote reconciliation at 100 pages (100,000 offers).
-- Set explicit Fine's transport bounds (four attempts total, 20-second request timeout, 30-second maximum backoff) and a 30-minute isolated Merchant handler with a three-hour SQS visibility lease, 60-second handled-failure retry, and timeout fail-stop behavior.
-- Strengthened immutable replay validation to compare scheduled delivery and denormalized parent/root lineage as well as command digest and raw subject; the ordered publisher validates those denormalized fields before SQS publication.
-
-### Documentation
-
-- Documented detect-only versus exclusive-source reconciliation, true pause semantics (`disabled` does not cancel durable rows), primary-source ownership, moving keyset feed views versus strict snapshots, relation-read fail-closed requirements, pointer-aware artifact retention, worker timeout sizing, and the updated four-service/six-queue Fine's topology.
-
-## [2.0.0-rc.6] - 2026-08-29
-
-### Documentation
-
-- Updated the verified Fine's ECS mapping with the subject-ordered PostgreSQL outbox publisher and completed 100-way real-Postgres adapter proof. The remaining production gate is testing the owner-generated migration itself, not the enqueue/publication algorithm built from a pushed scratch schema.
-
-## [2.0.0-rc.5] - 2026-08-29
-
-### Fixed
-
-- Added a plugin-owned semantic command digest for durable adapter conflicts. It covers every execution-relevant field while excluding diagnostic `requestedAt`, so replaying one HTTP `Idempotency-Key` or dependency hook reuses the original immutable operation instead of falsely conflicting because the retry occurred at a later wall-clock instant.
-
-## [2.0.0-rc.4] - 2026-08-29
-
-### Fixed
-
-- Bounded aggregate canonical ProductInput JSON before feed formatting, preventing a catalog of individually valid but very large projections from exhausting worker/request memory before the serialized-size guard ran.
-- Enabled configurations now fail fast unless Merchant account and data-source IDs are canonical positive int64 resource identifiers; deliberately disabled configurations may retain inert local placeholders.
-- Hook idempotency now hashes the actual saved/deleted document and resolved cleanup identities, so distinct writes sharing one database timestamp cannot collapse into a stale durable operation.
-- Added an optional durable executor `sourceVersion` override and execution-pinned `projectionTime`, allowing a global async-ledger sequence to order time-driven and same-timestamp derivations across every worker.
-- Mutation/worker endpoints now enforce the 1 MiB limit while reading unknown-length request streams, before JSON parsing, and the optional worker bridge accepts the same durable source-version override as direct execution.
-- An idempotent delete against an already-deleted offer now atomically raises a newer deletion fence before skipping transport, preventing a delayed intermediate-version publish from resurrecting it.
-- Reconciliation continuations retain the root durable sequence and use it as the desired-state barrier, eliminating cross-worker clock skew from orphan decisions when a ledger sequence is available.
-- Untrusted error objects can no longer inject invalid/non-error HTTP status codes; malformed status values are logged and redacted as 500 responses.
-- Distributed limiter denials now reject implausibly distant reset times and use a bounded skew backoff, preventing Node's long-timer clamp from becoming a hot loop.
+All notable changes to this project are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [2.0.0] - Unreleased
+
+2.0 replaces the 1.x sync engine with a one-way publisher. Payload product data
+is the only authority: a host projector turns each published product into a
+complete Merchant API `ProductInput`, and every Merchant Center write runs as a
+durable command in a worker. Nothing is written back onto products.
+
+### Breaking changes
+
+- **The package root exports 2.0.** The 1.x engine, admin dashboard, `./client`
+  and `./rsc` entry points, field-mapping and sync-log collections, pull sync,
+  conflict resolution, dirty tracking, and the `mc` product field group are
+  gone. 1.x continues on the `release/1.x` branch (1.3.0 is the last 1.x line);
+  keep a 1.x install pinned until you have migrated. See
+  [docs/v2-migration.md](docs/v2-migration.md).
+- **New options.** `payloadGmcEcommerce({ merchantId, dataSourceId,
+  getCredentials, async, products: { collection, project, resolveIdentities } })`
+  is the required core. `access` defaults to admin-only. `feeds`,
+  `catalogDependencies`, `catalogGlobalDependencies`, `localInventory`,
+  `reconciliation`, `rateLimit`, `requireTransaction`, `instanceId`, `api`,
+  `additionalDataSourceIds`, and `publicationState.collectionSlug` are optional.
+  `workerAccess` is required only with `api.exposeWorkerEndpoint`.
+- **Async adapter contract.** An adapter is `{ name, dispatch, getOperation,
+  health }` plus optional `install` and `capabilities: { scheduledDelivery?,
+  orderedBySubject? }`. Ordering per subject is a documented expectation, not a
+  gate. The worker calls `createGmcCommandExecutor(options)({ command,
+  operationId, rootOperationId, payload })`.
+- **Projection.** `products.project` returns `{ products, sourceVersion?,
+  warnings? }`. `sourceVersion` is optional and, when present, is sent to Google
+  as `versionNumber`. `products: []` means the document must not exist in
+  Merchant Center.
+- **Publication state.** One hidden, non-versioned collection
+  (`gmc-publications-v2` by default) holds product and local-inventory rows.
+  Rows carry `desiredAt`, `desiredDigest`, `publishedAt`, `publishedDigest`,
+  `status`, `revision`, and `storeCode`; indexes are `key` (unique),
+  `productId`, `status`, `storeCode`. Hosts upgrading from a 2.0 release
+  candidate must migrate: `deleteVersion`, `desiredVersion`, and
+  `publishedVersion` are dropped, `storeCode` is added, and the separate
+  `gmc-local-inventory-publications-v2` collection is removed.
+- **Commands (wire schema 2).** `offer.publish` carries `digest` and optional
+  `versionNumber`; `localInventory.apply` carries `digest`; `offer.delete` uses
+  `onlyIfDesiredBefore`. Release-candidate fields (`sourceVersion` on
+  offer commands, `deleteVersion`, `deleteIfDesiredVersionBefore`,
+  `startedVersion`, `verifyRemote`, `deleteIfDesiredBefore`) are accepted and
+  ignored for one release so queued rows drain cleanly.
+- **Feed artifacts.** Descriptors carry `generatedAt` instead of
+  `sourceVersion`. A release-candidate pointer without `generatedAt` is logged
+  and rebuilt over on the next build.
+- **TSV output.** The shipping column uses Google's named-sub-attribute header
+  (`shipping(country:region:postal_code:location_id:location_group_name:service:price:min_handling_time:max_handling_time:min_transit_time:max_transit_time)`)
+  and always emits all eleven positions; scalar cells are no longer quoted;
+  the pickup SLA column is `pickup_SLA`; attributes with no documented TSV
+  column are omitted with a warning instead of failing the build.
+- **Types.** `MCProductAttributes.taxes` and `MCTax` are removed (Merchant
+  API v1 has no such field).
+- **Runtime.** Node `^22.12.0 || >=24.0.0`; Payload `>=3.37.0 <4.0.0`.
 
 ### Added
 
-- Plugin-owned `catalogDependencies` hooks for canonical relation collections, with projection-input selection, change suppression, deletes, and optional exact future boundaries through durable `scheduledDelivery`.
-- Async dispatch now carries an optional durable `scheduledFor` not-before value; conforming adapters include the schedule in immutable-key conflicts and never expose it before commit/time.
-
-### Operations
-
-- Documented peak-memory headroom and pointer-aware immutable artifact retention. Blind age expiration is explicitly unsafe because it can delete the current last-known-good feed.
-- Fine's measured health now treats a ready GMC backlog older than 15 minutes as degraded and reports explicit reason codes alongside ledger/SQS/DLQ measurements.
-
-## [2.0.0-rc.3] - 2026-08-29
+- `payloadJobsAsyncAdapter()` — a built-in durable adapter on Payload Jobs.
+  It registers one task and one queue, keeps its own `gmc-operations` ledger
+  (idempotent by key, aggregate workflow status, health), joins the request
+  transaction when a hook dispatches, and supports scheduled delivery through
+  `waitUntil`. A host runs it with `payload.jobs.run({ queue: 'gmc' })` or
+  `jobs.autoRun`.
+- `requireTransaction` option. Off by default: an automatic hook that runs
+  without an ambient transaction warns once per process and dispatches.
+  On, the hook fails closed with `GMC_TRANSACTION_REQUIRED`.
+- `GmcAsyncAdapter.install` so an adapter can add its own collections and
+  Payload Jobs tasks to the config.
+- Draft autosave suppression: a draft save over a document that was already a
+  draft dispatches nothing.
+- Reconciliation re-reads the product before treating a stale row as an
+  orphan, so a product whose publish has not yet run is never deleted.
+- Feed builds return and log `warnings` for unmapped attributes.
+- `hasDefaultPluginAccess` (admin-only) as the default `access`.
 
 ### Fixed
 
-- Added durable deletion-version fences so cross-subject reconciliation races cannot resurrect or delete an offer at an older/equal canonical source version.
+Defects found in the 2.0 release candidates, all covered by tests:
 
-## [2.0.0-rc.2] - 2026-08-29
+- `catalog.reconcile` re-fetched and re-inserted every unchanged product on
+  every run; it now skips products whose published digest matches.
+- Concurrent creation of the same publication row crashed instead of retrying
+  because the duplicate-key check never matched Payload's `ValidationError`.
+- Mandatory ambient transactions broke stock SQLite installs and any caller
+  using `disableTransaction`.
+- `product.delete` without a `productId` deleted nothing.
+- A hard-deleted product could be re-created in Merchant Center by a retrying
+  publish; deletions now carry the deletion instant.
+- Feed checksums depended on the process locale (`localeCompare`); rows are
+  sorted by code unit.
+- Shipping sub-attributes beyond country, region, service, and price were
+  silently dropped from TSV.
+- Valid `ProductInput`s were rejected: supplemental inputs without title or
+  price, product detail values over 150 characters, `legacyLocal`.
+- A local rate-limit queue overflow was retried like a Google 429; a
+  distributed rate-limit store error dead-lettered the command.
+- Google error responses up to 64 MiB were retained on error objects and
+  written to logs; responses are capped at 8 MiB and bodies are not retained.
+- The optional worker endpoint parsed and validated the body before checking
+  `workerAccess`.
+- The publication-state store wrote raw SQL through undocumented adapter
+  internals; it now uses `payload.db.drizzle` and `payload.db.updateOne`.
+- About fifteen indexes on the high-churn publication table, including one on
+  `revision`, are trimmed to the four that are queried.
 
-### Changed
+### Removed
 
-- Hardened the published package boundary so no legacy runtime constants, validation implementation, type runtime, engine, hooks, collections, or admin modules are physically shipped.
-- Added HTTP 408 to the v2 Merchant transport retry classification.
-
-## [2.0.0-rc.1] - 2026-08-29
-
-### Breaking
-
-- The package root is now v2: a strictly one-way desired-state publisher and canonical feed engine. The historical bidirectional 1.x API is not exported or shipped; rollback artifacts must remain pinned to 1.x during migration.
-- Removed v2 concepts of pull sync, conflict resolution, editable Merchant shadow fields, dirty flags, sync snapshots, and plugin-managed process-local background work.
-- A host-provided durable async adapter is mandatory. It must atomically retain one operation per idempotency key, join host transactions or an outbox, deliver at least once, serialize by subject, preserve parent/root lineage, expose aggregate workflow status, and report measured health.
-- Host projection now returns complete API-native ProductInput records plus a monotonic int64 `sourceVersion`; `products: []` is authoritative absence.
-- Artifact-backed feeds require exact immutable read-back verification before atomic pointer promotion.
-
-### Added
-
-- Schema-versioned bounded commands for product/offer publication and deletion, catalog publish/reconciliation, feed builds, status refresh, and local-inventory reconciliation/application.
-- Mandatory worker executor boundary with durable parent/root fan-out, deterministic idempotency keys, per-offer ordering subjects, retries, request timeouts, OAuth token coalescing, and optional distributed rate limiting.
-- Deterministic canonicalization and SHA-256 content digests shared by API publication and feeds, with strict core Merchant validation and a forward-compatible API ProductAttributes boundary.
-- Google Merchant API v1 ProductInput, processed-product, status, and local-inventory transport with idempotent not-found deletion behavior.
-- Dynamic and last-known-good artifact feed delivery, a fail-closed deterministic Google TSV serializer, selectors, size/product limits, ETags, and explicit feed access.
-- Hidden non-versioned publication-state collection with identity ownership, monotonic source-version protection, real adapter-level compare-and-set for SQLite/PostgreSQL/MongoDB, and custom-store support.
-- Two-phase reconciliation with a stable desired-state barrier, explicit configured-data-source ownership, remote-existence verification, and conditional orphan deletion.
-- Authenticated on-demand/batch/status/feed/inventory endpoints, durable operation lookup, measured health, and an optional independently authenticated worker bridge.
-- Real SQLite, PostgreSQL, and MongoDB integration matrix, forced state races, draft safety/lifecycle tests, packaging smoke tests, Payload minimum/current compatibility CI, and optional safe live Merchant smoke coverage.
-- Complete v2 architecture, setup, async adapter, Fine's ECS deployment, operations, and 1.x migration runbooks.
-
-### Security
-
-- Credentials resolve only in worker transport and are never serialized into durable commands.
-- Mutation endpoints require an authenticated user, explicit access policy, bounded body, and caller idempotency key. Feed access is explicit and protected feed responses are never publicly cacheable.
-- Commands, async adapter results, feed artifacts, identities, projections, and local-inventory input fail closed at runtime boundaries.
-- Reconciliation scans/deletes only explicitly configured primary data sources; later desired claims win deletion races.
-
-### Migration
-
-- V1 and v2 must never write the same primary data source concurrently. Follow `docs/v2-migration.md`; legacy product fields and collections are not deleted automatically.
+- The global monotonic source-version ordering contract and its adapter
+  capability flags (`globalSourceVersion`, `exclusiveCatalogReconciliation`,
+  `workflowStatus`, `transactionAware`, `durable`, `delivery`).
+- Custom publication-state stores (`publicationState.store`,
+  `localInventory.publicationState`).
+- `productIngestion` (single-valued) and the requirement to configure at least
+  one feed.
+- `GmcSourceVersionConflictError`, `GmcLocalInventorySourceVersionConflictError`,
+  `createPayloadLocalInventoryPublicationStateStore`,
+  `buildGmcLocalInventoryPublicationCollection`.
+- Per-insert processed-product ownership reads for single-data-source
+  installs (kept when more than one data source is configured).
 
 ## [1.3.0] - 2026-08-29
 
