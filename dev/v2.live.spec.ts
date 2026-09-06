@@ -19,6 +19,8 @@
 import type { Payload } from 'payload'
 
 import { randomUUID } from 'node:crypto'
+import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 
@@ -29,6 +31,24 @@ import {
   type GmcMerchantTransport,
   type MCProductIdentity,
 } from 'payload-plugin-gmc-ecommerce'
+
+const specDirname = path.dirname(fileURLToPath(import.meta.url))
+
+/**
+ * Guards the point of this suite: `pnpm test:live` builds first and
+ * `vitest.live.config.js` aliases the package name to `dist/`, so the live
+ * smoke exercises what npm publishes. If that alias ever regresses to `src/`,
+ * the statically imported binding is a different module instance than the one
+ * loaded straight from `dist/index.js` and this fails — before anything talks
+ * to Google, and without needing credentials.
+ */
+test('resolves the package to the built dist entrypoint, not src', async () => {
+  const distEntry = pathToFileURL(path.resolve(specDirname, '../dist/index.js')).href
+  const built = (await import(/* @vite-ignore */ distEntry)) as {
+    normalizeGmcV2Options: typeof normalizeGmcV2Options
+  }
+  expect(built.normalizeGmcV2Options).toBe(normalizeGmcV2Options)
+})
 
 const enabled = process.env.GOOGLE_MERCHANT_LIVE_TESTS_ENABLED === 'true'
 const liveTest = enabled ? describe : describe.skip
