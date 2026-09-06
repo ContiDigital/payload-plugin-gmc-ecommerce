@@ -52,21 +52,21 @@ docker run --detach --name "$mongo_container" \
 
 mongo_port="$(docker port "$mongo_container" 27017/tcp | sed 's/.*://')"
 for _attempt in $(seq 1 60); do
-  if docker exec "$mongo_container" mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' | rg -q '^1$'; then
+  if docker exec "$mongo_container" mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' | grep -q '^1$'; then
     break
   fi
   sleep 1
 done
-docker exec "$mongo_container" mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' | rg -q '^1$'
+docker exec "$mongo_container" mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' | grep -q '^1$'
 docker exec "$mongo_container" mongosh --quiet --eval \
   'rs.initiate({_id:"gmc-v2-rs",members:[{_id:0,host:"127.0.0.1:27017"}]})' >/dev/null
 for _attempt in $(seq 1 60); do
-  if docker exec "$mongo_container" mongosh --quiet --eval 'db.hello().isWritablePrimary' | rg -q '^true$'; then
+  if docker exec "$mongo_container" mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep -q '^true$'; then
     break
   fi
   sleep 1
 done
-docker exec "$mongo_container" mongosh --quiet --eval 'db.hello().isWritablePrimary' | rg -q '^true$'
+docker exec "$mongo_container" mongosh --quiet --eval 'db.hello().isWritablePrimary' | grep -q '^true$'
 
 GMC_V2_TEST_DATABASE=mongodb \
 GMC_V2_MONGODB_URL="mongodb://127.0.0.1:${mongo_port}/gmc_v2?replicaSet=gmc-v2-rs&directConnection=true" \
