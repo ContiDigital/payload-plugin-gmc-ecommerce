@@ -1439,6 +1439,55 @@ describe('GMC v2 command executor', () => {
     expect(warn).toHaveBeenCalledOnce()
   })
 
+  it('treats an undefined artifact pointer as absent, not as a legacy pointer', async () => {
+    // `readCurrentDescriptor` is contracted to answer `null`, but a host store
+    // that returns `undefined` for "nothing published yet" must build the first
+    // artifact quietly rather than warn about a pre-2.0 pointer it never had.
+    __resetLegacyArtifactPointerWarningsForTests()
+    let stored: unknown
+    const promote = vi.fn(() => Promise.resolve('promoted' as const))
+    const feed: GmcFeedConfig = {
+      id: 'artifact',
+      access: 'public',
+      artifactStore: {
+        promote,
+        put: vi.fn((value) => {
+          stored = { body: value.body, descriptor: value.descriptor }
+          return Promise.resolve()
+        }),
+        read: vi.fn(() => Promise.resolve(stored as never)),
+        readCurrent: vi.fn(() => Promise.resolve(null)),
+        readCurrentDescriptor: vi.fn(() => Promise.resolve(undefined as never)),
+      },
+      delivery: 'artifact',
+      path: '/feeds/artifact.tsv',
+      selector: { contentLanguage: 'en', feedLabel: 'US' },
+    }
+    const test = build({ feed })
+    const warn = vi.fn()
+    ;(test.payload as unknown as { logger: { warn: unknown } }).logger = { warn }
+
+    await expect(
+      test.execute({
+        command: {
+          type: 'feed.build',
+          feedId: 'artifact',
+          requestedAt: REQUESTED_AT,
+          schemaVersion: 2,
+        },
+        operationId: 'feed-undefined-pointer',
+        payload: test.payload,
+      }),
+    ).resolves.toMatchObject({ outcome: 'completed' })
+
+    expect(warn).not.toHaveBeenCalled()
+    expect(promote).toHaveBeenCalledWith(
+      expect.objectContaining({
+        artifact: expect.objectContaining({ generatedAt: REQUESTED_AT }),
+      }),
+    )
+  })
+
   it('repairs a remotely missing offer even when local publication state is current', async () => {
     const test = build()
     await test.execute({

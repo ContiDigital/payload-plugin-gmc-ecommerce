@@ -1180,7 +1180,9 @@ export const createGmcCommandExecutor = (
     // Rejecting it would make every subsequent build of that feed a poison
     // message, so warn once and rebuild over it; the promotion that follows
     // replaces the pointer with a current-shaped descriptor.
-    const legacyDescriptor = storedDescriptor !== null && storedDescriptor.generatedAt === undefined
+    // An artifact store that answers `undefined` for "nothing published yet"
+    // must be read as absent, not as a legacy pointer to rebuild over.
+    const legacyDescriptor = !storedDescriptor ? false : storedDescriptor.generatedAt === undefined
     if (legacyDescriptor) {
       warnOnceAboutLegacyArtifactPointer({
         feedId: feed.id,
@@ -1188,7 +1190,7 @@ export const createGmcCommandExecutor = (
         payload: context.payload,
       })
     }
-    const currentDescriptor = legacyDescriptor ? null : storedDescriptor
+    const currentDescriptor = !storedDescriptor || legacyDescriptor ? null : storedDescriptor
     if (currentDescriptor) {
       assertFeedArtifactDescriptor({
         descriptor: currentDescriptor,
