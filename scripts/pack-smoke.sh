@@ -47,8 +47,11 @@ node --input-type=module -e "import plugin, { payloadGmcEcommerce } from 'payloa
 node --input-type=module -e "import plugin, { assertFeedArtifactDescriptor, createGmcCommandExecutor, GmcAsyncWorkflowConflictError, GMC_V2_COMMAND_SCHEMA_VERSION, GMC_V2_MAX_TARGETED_PRODUCT_IDS } from 'payload-plugin-gmc-ecommerce/v2'; const conflict = new GmcAsyncWorkflowConflictError('smoke-operation'); if (typeof plugin !== 'function' || typeof createGmcCommandExecutor !== 'function' || typeof assertFeedArtifactDescriptor !== 'function' || conflict.code !== 'GMC_ASYNC_WORKFLOW_CONFLICT' || conflict.statusCode !== 409 || GMC_V2_COMMAND_SCHEMA_VERSION !== 2 || GMC_V2_MAX_TARGETED_PRODUCT_IDS !== 1000) { throw new Error('v2 export is incomplete') }"
 node --input-type=module -e "const root = await import('payload-plugin-gmc-ecommerce'); if ('createMerchantService' in root || 'SYNC_MODES' in root) { throw new Error('legacy symbols leaked into the v2 root') }"
 node --input-type=module -e "import { buildGmcOperationsCollection, payloadJobsAsyncAdapter } from 'payload-plugin-gmc-ecommerce'; const adapter = payloadJobsAsyncAdapter(); if (typeof payloadJobsAsyncAdapter !== 'function' || typeof buildGmcOperationsCollection !== 'function' || adapter.name !== 'payload-jobs' || adapter.capabilities.scheduledDelivery !== true || typeof adapter.install !== 'function') { throw new Error('payloadJobsAsyncAdapter export is incomplete') }"
+test -f node_modules/payload-plugin-gmc-ecommerce/docs/v2-architecture.md
 test -f node_modules/payload-plugin-gmc-ecommerce/docs/v2-setup.md
 test -f node_modules/payload-plugin-gmc-ecommerce/docs/v2-operations.md
 test -f node_modules/payload-plugin-gmc-ecommerce/docs/v2-migration.md
+# Internal notes must never ship.
+test ! -e node_modules/payload-plugin-gmc-ecommerce/docs/internal
 
 echo "Pack smoke test passed."

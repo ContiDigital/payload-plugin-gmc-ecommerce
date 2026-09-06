@@ -1,5 +1,63 @@
 # Fine's Gallery ECS AsyncOperations deployment mapping
 
+> **Internal.** Excluded from the published package by `files` in
+> `package.json`. Everything below the delta section describes the rc.35
+> contract, which 2.0.0 changed. Read the delta first.
+
+## 2.0.0 delta
+
+Seven pieces of work in `~/src/finesgallery-beta`, documented here rather than
+executed:
+
+1. **`package.json`** — replace the `file:` dependency on the plugin with
+   `payload-plugin-gmc-ecommerce@2.0.0` once it is published (or `link:` while
+   testing locally), then regenerate the lockfile.
+2. **`src/plugins/MerchantCenter/runtime.ts`** — remove `productIngestion`,
+   `workerAccess` (the worker endpoint is off), and
+   `localInventory.publicationState`. `capabilities` may stay as it is
+   (unknown keys are ignored) or be trimmed to `{ scheduledDelivery: true }`.
+   `project` may drop `sourceVersion`, or keep it — it is forwarded to Google
+   as `versionNumber` and nothing else uses it.
+3. **`src/lib/jobs/handlers/gmcCommand.ts`** — stop computing `sourceVersion`.
+   Call the executor with `{ command, operationId, rootOperationId, payload }`.
+4. **`src/lib/jobs/gmcOrdering.ts`**, the activation records in `payload_kv`,
+   the global GMC advisory lock in `enqueueImmutableAsyncOperation.ts`, and the
+   reconcile exclusivity query — delete all four. Keep per-key immutability,
+   the outbox, the FIFO publisher, and the aggregate `getOperation`.
+5. **`asyncAdapter.ts` / `health`** — filter on the indexed `raw_subject`
+   column instead of `input->>'subject'`.
+6. **Payload migration** — generate one for the new `gmc-publications-v2`
+   shape, the `async_operations` lineage columns, and the enum values, and drop
+   the `gmc-local-inventory-publications-v2` table creation.
+7. **PR split** — separate the working tree into transactions + `req`
+   plumbing, revalidate outbox, watermark queue, GMC v2, and infra.
+
+### Typecheck against the 2.0 tarball
+
+34 errors in 4 files. **No Fine's runtime source file other than
+`artifactStore.ts` and `asyncAdapter.ts` failed to compile** — everything else
+is test code.
+
+- [ ] `src/plugins/MerchantCenter/artifactStore.ts` and `artifactStore.test.ts`
+      — `GmcArtifactDescriptor.sourceVersion` is now `generatedAt`, an ISO
+      string. Promote when the incoming `generatedAt` is newer; an equal
+      instant with an identical descriptor returns `stale`; an older one
+      returns `stale`. This is the bulk of the errors (10 in the test, 9 in the
+      store).
+- [ ] `src/plugins/MerchantCenter/asyncAdapter.ts` and `asyncAdapter.test.ts` —
+      `GmcAsyncDispatchArgs` no longer carries `sourceVersion`. Stop persisting
+      and forwarding it.
+- [ ] `src/plugins/MerchantCenter/index.config.test.ts` — `options.feeds` and
+      `options.workerAccess` are optional now, so the test must narrow them
+      before indexing or calling.
+- [ ] `src/lib/jobs/handlers/gmcCommand.test.ts` — a `localInventory.apply`
+      command requires `digest`.
+- [ ] `src/lib/jobs/enqueueImmutableAsyncOperation.pgintegration.test.ts` —
+      `catalog.reconcile.startedVersion` is gone.
+
+---
+
+
 This review maps plugin v2 onto the actual `~/src/finesgallery-beta` async pipeline inspected through 2026-08-30. Merchant behavior remains entirely in the plugin. Fine's owns only the generic host responsibilities every Payload application must own: canonical product projection, credential resolution, durable adapter, task registration, and infrastructure.
 
 ## Implementation status on 2026-08-30

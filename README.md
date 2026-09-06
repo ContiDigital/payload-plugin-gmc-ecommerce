@@ -37,6 +37,8 @@ Upgrading from 1.x? Read [docs/v2-migration.md](docs/v2-migration.md) first.
 import { buildConfig } from 'payload'
 import { payloadGmcEcommerce, payloadJobsAsyncAdapter } from 'payload-plugin-gmc-ecommerce'
 
+import type { Product } from './payload-types'
+
 export default buildConfig({
   collections: [Products],
   jobs: {
@@ -65,25 +67,31 @@ export default buildConfig({
         ],
 
         // The complete ProductInput. Return products: [] to remove the offer.
-        project: ({ doc }) => ({
-          products: [
-            {
-              contentLanguage: 'en',
-              feedLabel: 'US',
-              offerId: String(doc.sku),
-              productAttributes: {
-                title: doc.title,
-                description: doc.description,
-                link: `https://example.com/products/${doc.slug}`,
-                imageLink: doc.image?.url,
-                availability: doc.inStock ? 'IN_STOCK' : 'OUT_OF_STOCK',
-                condition: 'NEW',
-                brand: 'Example',
-                price: { amountMicros: String(doc.price * 1_000_000), currencyCode: 'USD' },
+        project: ({ doc }) => {
+          const product = doc as Product
+          return {
+            products: [
+              {
+                contentLanguage: 'en',
+                feedLabel: 'US',
+                offerId: product.sku,
+                productAttributes: {
+                  title: product.title,
+                  description: product.description,
+                  link: `https://example.com/products/${product.slug}`,
+                  imageLink: product.image?.url,
+                  availability: product.inStock ? 'IN_STOCK' : 'OUT_OF_STOCK',
+                  condition: 'NEW',
+                  brand: 'Example',
+                  price: {
+                    amountMicros: String(Math.round(product.price * 1_000_000)),
+                    currencyCode: 'USD',
+                  },
+                },
               },
-            },
-          ],
-        }),
+            ],
+          }
+        },
       },
     }),
   ],
@@ -142,9 +150,10 @@ catalogDependencies: [
     // Only these fields matter; equal selections are ignored.
     select: ({ doc }) => ({ status: doc._status, starts: doc.starts, ends: doc.ends, price: doc.price }),
     // Optional: the exact products affected. Return null for a full sweep.
-    resolveProductIds: ({ doc }) => doc.products?.map((p) => p.id) ?? null,
+    resolveProductIds: ({ doc }) => (doc as Promotion).products?.map((p) => p.id) ?? null,
     // Optional: future instants when the same data projects differently.
-    scheduleAt: ({ doc }) => [doc.starts, doc.ends].filter(Boolean),
+    scheduleAt: ({ doc }) =>
+      [doc.starts, doc.ends].filter((value): value is string => typeof value === 'string'),
   },
 ],
 catalogGlobalDependencies: [
@@ -161,12 +170,14 @@ With `payloadJobsAsyncAdapter`, commands are Payload Jobs on the `gmc` queue.
 Run them with `jobs.autoRun` (shown above) or from your own scheduler:
 
 ```ts
-await payload.jobs.run({ queue: 'gmc', limit: 25 })
+await payload.jobs.run({ queue: 'gmc', limit: 25, sequential: true })
 ```
 
-Run one worker process against the queue, or accept that commands for the
-same offer may interleave; the plugin converges either way, and the next
-reconcile repairs anything that raced.
+Payload runs a queue's jobs concurrently by default, and two concurrent write
+transactions deadlock on SQLite — a SQLite host must pass `sequential: true`
+and let only one runner drain the queue. Elsewhere, run one worker process or
+accept that commands for the same offer may interleave; the plugin converges
+either way, and the next reconcile repairs anything that raced.
 
 To use your own queue (SQS, BullMQ, a database ledger), implement the adapter
 interface described in [docs/v2-async-adapter.md](docs/v2-async-adapter.md):
@@ -174,11 +185,21 @@ interface described in [docs/v2-async-adapter.md](docs/v2-async-adapter.md):
 ```ts
 type GmcAsyncAdapter = {
   name: string
-  dispatch(args): Promise<{ operationId: string; state: 'queued' | 'pending' }>
-  getOperation(args): Promise<GmcAsyncOperation | null>
-  health(args): Promise<GmcAsyncHealth>
-  install?(args): Config            // add collections or tasks to the Payload config
-  capabilities?: { scheduledDelivery?: boolean; orderedBySubject?: boolean }
+  dispatch: (args: GmcAsyncDispatchArgs) => Promise<GmcDispatchReceipt>
+  getOperation: (args: {
+    instanceId: string
+    operationId: string
+    payload: Payload
+    req?: PayloadRequest
+  }) => Promise<GmcAsyncOperation | null>
+  health: (args: {
+    instanceId: string
+    payload: Payload
+    req?: PayloadRequest
+  }) => Promise<GmcAsyncHealth>
+  /** Optional: add collections or tasks to the Payload config. */
+  install?: (args: { config: Config; options: NormalizedGmcV2Options }) => Config
+  capabilities?: { orderedBySubject?: boolean; scheduledDelivery?: boolean }
 }
 ```
 
@@ -263,7 +284,7 @@ localInventory: {
     {
       identity: { contentLanguage: 'en', feedLabel: 'US', offerId: String(doc.sku) },
       storeCode,
-      inventory: doc.stock > 0
+      inventory: Number(doc.stock) > 0
         ? { storeCode, localInventoryAttributes: { availability: 'IN_STOCK', quantity: String(doc.stock) } }
         : null, // null removes the store row
     },

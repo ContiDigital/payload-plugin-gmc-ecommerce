@@ -1,259 +1,192 @@
-# Migration from payload-plugin-gmc-ecommerce 1.x to 2.0
+# Migration
 
-V2 is a replacement ownership model, not an in-place toggle. V1 stores editable Merchant fields and sync metadata on Products, supports pull/conflict modes, and may use Payload Jobs or external sync endpoints. V2 derives complete output from canonical host data, writes only hidden operational state, and requires a durable host adapter for every background operation.
+Two different migrations share this page. Pick the one you are doing.
 
-Never operate v1 and v2 writers against the same primary data source at the same time.
+- [From 1.x](#from-1x) — a different product, not an upgrade.
+- [From a 2.0 release candidate](#from-a-20-release-candidate) — schema and
+  contract changes since the last rc.
 
-## Breaking changes
+## From 1.x
 
-- Node 18 and 20 are end-of-life and no longer supported. Run web and workers on Node `^22.12.0 || >=24.0.0` before installing v2.
-- The package root exports v2. The 1.x engine is not included in the v2 package; retain a separately pinned 1.x application artifact for the rollback window.
-- Pull sync, conflict resolution, Merchant-to-Payload writes, editable `mc` product fields, dirty tracking, mapping collections, sync logs, dashboard actions, and plugin-managed long-running execution are not part of v2.
-- `productIngestion: { mode: 'api-primary' }`, `async`, `products.project`, `products.resolveIdentities`, `access`, `workerAccess`, and at least one canonical export feed are required.
-- Every configured data source must be an API-backed primary product source. Plugin feeds are exports and must not be registered as competing Merchant primary file sources for the same identities.
-- Multiple configured sources require complete, pairwise-disjoint immutable language/label scopes. ProductInput insert can move an existing processed identity; v2 refuses that implicit transfer with `GMC_PRODUCT_DATA_SOURCE_CONFLICT`.
-- Artifact stores require `put`, exact immutable `read`, atomic `promote`, pointer-only `readCurrentDescriptor`, and matched body/descriptor `readCurrent`; every operation receives `instanceId` and must isolate both objects and current pointers by that namespace.
-- Async `getOperation` and ledger health receive `instanceId` and must exclude rows belonging to every other plugin instance.
-- Product projection returns `products: []` for authoritative absence, not `null` or a partial patch.
-- `sourceVersion` is a mandatory monotonic int64 string for a projection.
-- Every worker execution must override it with a durable global ledger sequence; its offset must exceed prior remote versions and survive restore.
-- On-demand and batch API calls return durable operation receipts, not completion.
-- Operation status is aggregate across the root and every descendant.
-- The built-in product and local-inventory publication-state stores support official SQLite, PostgreSQL, and MongoDB adapters; custom adapters need custom atomic stores for each configured state domain.
-- RC31 uses command schema 2. Drain or quarantine all RC30 schema-1 workflows before upgrade; once schema-2 commands exist, rollback requires the symmetric drain/quarantine.
+1.x was a two-way sync engine: it added a `mc` field group to your products,
+kept field mappings and sync logs in Payload, pushed and pulled, and resolved
+conflicts. 2.0 is a one-way publisher with a projector you write. There is no
+in-place upgrade, and no code path that reads 1.x state.
 
-## Phase 0: freeze ownership decisions
+1.x continues on the `release/1.x` branch, with 1.3.0 as its last release. Keep
+your existing install pinned to it until you have finished this migration.
 
-Document and approve:
+### What is gone
 
-- which host fields and relations are canonical for every submitted attribute;
-- how variants map to stable offer IDs;
-- feed labels, languages, destinations, data sources, and local stores;
-- eligibility and unpublish semantics;
-- which legacy Merchant-only values, if any, must be promoted into canonical host fields;
-- the monotonic version and dependency-invalidation design;
-- the durable ledger/queue ownership and operator SLA.
-- whether every configured primary data source is exclusive to this plugin;
-  default reconciliation to detect-only until that inventory is proven.
+| 1.x | 2.0 |
+| --- | --- |
+| The `mc` field group injected into products | Nothing is injected. Content comes from `products.project`. |
+| Field mappings (`gmc-field-mappings`), transform presets | Your projector, in TypeScript. |
+| Sync log collection, admin dashboard, `./client` and `./rsc` exports | The `gmc-publications-v2` state collection and the operations ledger; no UI. |
+| Pull sync, conflict resolution (`mc-wins`, `newest-wins`), dirty tracking | Payload is the only authority; nothing is read back onto products. |
+| Sync modes (`manual`, `onChange`, `scheduled`), batch push endpoints | Durable commands, run by a worker; see [Operations](v2-operations.md). |
+| Per-product analytics from the Reports API | `status.refresh`, which records Google's processed status on the state row. |
+| `MCProductAttributes.taxes`, `MCTax` | Removed; Merchant API v1 has no such field. |
 
-The migration must not preserve an unused editable Merchant shadow “just in case.” If a value matters, choose a canonical source field and migrate it there before v2. If it does not matter, explicitly retire it.
+The package root now exports 2.0 directly, so `import ... from
+'payload-plugin-gmc-ecommerce'` gets the new plugin. Legacy symbols such as
+`createMerchantService` no longer exist.
 
-A data-source move is a separately approved migration, not an ordinary v2 publish. Stop every old writer, snapshot identity/source ownership, validate the new API-primary source and its scope, perform the bounded transfer with an audited operator tool or remove the old ProductInput before v2 publication, verify the resulting processed source, then reconcile plugin state. Never expose a generic runtime flag which lets routine retries move products between sources.
+### The projector you have to write
 
-## Phase 1: inventory the v1 deployment
+This is the whole migration. In 1.x, field mappings turned product fields into
+Merchant attributes at push time. In 2.0 you write one function that returns
+the complete `ProductInput`, and it is the only source of product content.
 
-Capture a production inventory before changing code:
+Read your existing mappings and translate each one. A mapping with a
+`toMicros` transform becomes an explicit `Price`; `extractAbsoluteUrl` becomes
+whatever your media layer returns; `toArray` becomes an array literal. A
+resolved Google product category becomes a lookup in `project`.
 
-- all v1 config and sync modes;
-- every field mapping and transform;
-- `mc.enabled`, identity overrides, data-source overrides, attrs, custom attributes, snapshot, and sync metadata usage;
-- mapping, sync-log, and job collections;
-- Payload Jobs tasks/queues/schedules and external cron endpoints;
-- code calling v1 services or endpoints;
-- Merchant account/data-source ownership;
-- current remote offer count, identities, versions, issues, and source names;
-- current TSV/provider endpoints and their canonical source;
-- local-inventory behavior and stores.
+```ts
+import type { GmcProductProjection, GmcProjectionArgs } from 'payload-plugin-gmc-ecommerce'
 
-Search host code and database usage rather than assuming an admin feature was unused. Export a bounded audit snapshot with sensitive content protected.
+export const project = ({ doc }: GmcProjectionArgs): GmcProductProjection => {
+  const product = doc as {
+    category?: { googleCategoryId?: string }
+    description?: string
+    image?: { url?: string }
+    inStock?: boolean
+    price: number
+    sku: string
+    slug: string
+    title: string
+  }
+  return {
+    products: [
+      {
+        contentLanguage: 'en',
+        feedLabel: 'US',
+        offerId: product.sku,
+        productAttributes: {
+          availability: product.inStock ? 'IN_STOCK' : 'OUT_OF_STOCK',
+          condition: 'NEW',
+          description: product.description,
+          googleProductCategory: product.category?.googleCategoryId,
+          imageLink: product.image?.url,
+          link: `https://example.com/p/${product.slug}`,
+          price: {
+            amountMicros: String(Math.round(product.price * 1_000_000)),
+            currencyCode: 'USD',
+          },
+          title: product.title,
+        },
+      },
+    ],
+  }
+}
+```
 
-## Phase 2: build the canonical commerce projection
+Three things that catch people out:
 
-Implement one host projection used by both API publication and plugin-owned feeds. Where practical, build it on the channel-neutral inventory/read model already used for Pinterest or other exports, but do not assume another provider's schema is Google-complete.
+- `resolveIdentities` must return the same identities for the *previous*
+  version of a document and for a deleted one. In 1.x the identity lived on the
+  document in `mc.identity`; if you keep that field, read it there and fall back
+  to your own rule.
+- The projection must be complete. `productInputs.insert` is a full replace, so
+  an attribute you stop returning is an attribute Google stops having.
+- Everything a 1.x mapping stored in `mc.attrs` was a snapshot of what had been
+  sent. Nothing reads it now. Derive from your real data instead.
 
-For every representative product class prove:
+### The sequence
 
-- stable identity and correct variants;
-- correct URLs, images, prices, sales, availability, identifiers, taxonomy, and labels;
-- full disappearance when disabled/unpublished/ineligible;
-- deterministic output for a stable data snapshot;
-- one restore-safe global root-causal sequence, exact descendant inheritance,
-  and activation-time allocation for future schedules;
-- relation/read-model failures abort instead of emitting degraded output;
-- media URL/MIME changes and every other independently mutable relation enter
-  the plugin dependency workflow;
-- no read from `mc`, Google snapshots, publication state, or current remote content.
+1. Add 2.0 alongside nothing — a new install pointing at a **test** data source,
+   with `reconciliation.orphanDeletion` left at `disabled`.
+2. Write `project` and `resolveIdentities`. Run
+   `POST /gmc/v2/catalog/publish` and compare what lands in the test source
+   against your 1.x production feed, offer by offer.
+3. Point 2.0 at the production data source, with the 1.x install still running
+   but with its sync mode set to `manual` so it stops writing.
+4. Publish the catalog with 2.0. Because the API insert is an upsert on the
+   same identities, this converges onto the offers 1.x already created.
+5. Run `POST /gmc/v2/catalog/reconcile` and read `orphanCount`. It should be
+   the count of offers 1.x wrote that your 2.0 projection does not produce.
+   Resolve each one before considering enabling deletion.
+6. Remove the 1.x plugin. Its collections (`gmc-field-mappings`, the sync log)
+   and the `mc` field group are yours to drop with a migration once nothing
+   reads them. Drop the field group last: it is the only record of what 1.x
+   sent.
 
-Create golden fixtures comparing legacy effective Merchant output to v2 canonical output. Classify every difference as an intentional correction, migrated canonical value, or blocker.
+## From a 2.0 release candidate
 
-## Phase 2.5: release and consumer package boundary
+Queued commands, publication rows, and feed artifacts written by an rc all
+survive the upgrade. The schema does not.
 
-Treat plugin publication and host deployment as two independently authorized
-changes:
+### State collection
 
-1. Test one immutable release-candidate tarball from outside the consumer
-   repository. Record its package version and SHA-256 digest.
-2. Do not copy that tarball into the consumer repository, commit a `file:`
-   dependency, publish it, tag it, or deploy it as part of compatibility
-   testing.
-3. The plugin repository owner reviews the exact candidate, runs every stable
-   release gate—including exact-artifact install smoke and the isolated public
-   packaged-transport lifecycle against a designated Merchant test source—and
-   alone authorizes publication of `2.0.0` to the package registry. The live
-   smoke proves Google API-primary validation and one uniquely namespaced
-   insert/read/update/delete lifecycle; it does not replace the deterministic
-   executor/adapter/feed/state suites or any consumer deployment proof.
-4. Only after the registry confirms `2.0.0` exists should a host replace its
-   prior dependency with exact registry version `2.0.0`, regenerate the
-   lockfile, and verify the installed package metadata and integrity.
-5. Re-run the complete host test/build/migration suite against the registry
-   package. Passing those checks still does not authorize deployment; follow
-   the host's separate change-control process for the dark deployment and live
-   rollout phases below.
+`gmc-publications-v2` loses `deleteVersion`, `desiredVersion` and
+`publishedVersion`, and gains `storeCode`. Generate a migration for the new
+shape. The remaining columns keep their meaning; `desiredAt` and
+`desiredDigest` were already the ordering and skipping keys.
 
-This boundary prevents a local compatibility artifact from becoming an
-undeclared production supply-chain dependency and ensures that a reusable
-plugin release does not silently deploy any consumer.
+The separate `gmc-local-inventory-publications-v2` collection is gone. Local
+inventory rows now live in the main collection, keyed by the same identity plus
+a `|store:<code>` key segment and carrying `storeCode`. Drop the old table; do
+not attempt to copy rows into the new one. The next
+`localInventory.reconcile` re-establishes every store row from your projector,
+which is cheaper and more trustworthy than a data migration.
 
-## Phase 3: deploy infrastructure dark
+**One ledger fact worth knowing before you run a reconcile.** Under the release
+candidates, a deleted offer's row was left with `desiredAt: null` — deletion
+ordering was carried by `deleteVersion`, which no longer exists. Those rows
+therefore have no anti-resurrection stamp: a publish command queued before the
+delete would not be refused by the `desiredAt` comparison. 2.0 stamps the
+deletion instant into `desiredAt` on every delete it performs, so a row gets
+its stamp the first time it is re-published or re-deleted under 2.0. Until
+then, drain the queue (below) so no pre-upgrade publish command is left to
+race, and treat one `catalog.reconcile` as part of the upgrade.
 
-Deploy without enabling v2 hooks or endpoints:
+### Queued commands
 
-- async ledger schema and immutable GMC uniqueness invariant;
-- Payload database transactions enabled for Product, dependency-collection, and dependency-Global writes; automatic v2 hooks deliberately fail when `req.transactionID` is absent;
-- parent/root lineage and aggregate status query;
-- transactional outbox integration;
-- dedicated ordered worker queue and DLQ;
-- singleton plugin executor and distributed rate limit where needed;
-- publication-state collection migration matching the plugin-owned contract:
-  unique indexed `key`; indexed `productId`, `status`, and `storeCode`; plus
-  `merchantId`, `dataSourceName`, `contentLanguage`, `feedLabel`, `offerId`,
-  `operationId`, `revision`, `desiredAt`, `desiredDigest`, `publishedDigest`,
-  `publishedAt`, `observedAt`, `remoteMissing`, `remoteVersion`,
-  `remoteStatus`, and `error` with timestamps enabled and versions disabled;
-- local-inventory publication-state collection migration matching the plugin-owned contract:
-  unique indexed `key`; indexed `merchantId`, `dataSourceName`,
-  `contentLanguage`, `feedLabel`, `offerId`, `storeCode`, `productId`, `status`,
-  `operationId`, `revision`, `desiredAt`, and `desiredVersion`; plus
-  `desiredDigest`, `publishedDigest`, `publishedVersion`, `publishedAt`, and
-  `error`, with timestamps enabled and versions disabled;
-- artifact store and current-pointer mechanism;
-- health checks, metrics, dashboards, and alerts;
-- service-account secret and least-privilege IAM.
+Command wire schema is still `2`. Fields the release candidates wrote —
+`sourceVersion` and `desiredVersion` on offer commands, `deleteVersion`,
+`deleteIfDesiredVersionBefore` and `deleteIfDesiredBefore` on `offer.delete`,
+`startedVersion` on `catalog.reconcile` — are accepted and ignored for this
+release, so a queued row drains rather than becoming a poison message. They
+will be rejected in a later release: drain the queue during the upgrade and do
+not rely on the grace period.
 
-Set plugin `disabled: true` while migrations and worker registration land. This suppresses new plugin hooks/endpoints; it does not pause previously committed rows, so keep Merchant schedules off and the Merchant worker scaled to zero until the schema and handler are ready. Run the [async conformance suite](./v2-async-adapter.md) against the deployed infrastructure, including 100-way duplicate dispatch and transaction rollback.
+### Feed artifacts
 
-Fine's must complete every gate in [the ECS deployment mapping](./v2-fines-ecs.md). Its v2 adapter uses the dedicated immutable enqueue path described there; the general superseding helper retained for unrelated email/media/promotion work is not a conforming substitute.
+`GmcArtifactDescriptor.sourceVersion` is replaced by `generatedAt`, an ISO
+instant. Promotion compares `generatedAt`: a newer artifact wins, an older one
+returns `stale`, and an equal instant returns `stale` only when the descriptor
+is identical. An existing pointer with no `generatedAt` is logged once and
+rebuilt over on the next `feed.build`; nothing needs to be migrated by hand.
+An `artifactStore` implementation of your own needs `readCurrentDescriptor`,
+and its `promote` must implement the comparison above.
 
-## Phase 4: shadow validation with no production writes
+### Adapter contract
 
-Run the projector and feed builder against production-like snapshots without pointing worker commands at the production data source. Options include:
+The contract shrank. An adapter is `{ name, dispatch, getOperation, health }`
+plus optional `install` and `capabilities`.
 
-- pure fixture/golden execution;
-- artifact feed generation to a non-registered path;
-- a dedicated Merchant test/canary data source;
-- transport recording in a test harness.
+- `GmcAsyncDispatchArgs.sourceVersion` is gone. Stop persisting or forwarding
+  it.
+- The executor is called with `{ command, operationId, rootOperationId?,
+  payload }`. `sourceVersion` on the execution context is deprecated and
+  ignored; it is still accepted so an rc worker compiles.
+- The capability flags `globalSourceVersion`, `exclusiveCatalogReconciliation`,
+  `workflowStatus`, `transactionAware`, `durable` and `delivery` are gone. Only
+  `scheduledDelivery` and `orderedBySubject` are read, and only the first
+  changes behaviour. Extra keys are accepted and ignored, so you may leave them
+  in place while you clean up.
+- Whatever machinery you built for global monotonic source versions — a version
+  allocator, per-subject ordering records, an exclusivity lock around
+  reconciliation — is dead weight. Ordering is `desiredAt`; skipping is the
+  content digest; reconciliation needs no lock.
 
-Compare:
+### Options
 
-- total documents and total offers;
-- identity set and duplicate detection;
-- per-field canonical values and digest;
-- API input versus TSV row semantics;
-- feed bytes, row widths, encoding, and provider validation;
-- expected removals from ineligibility and identity changes;
-- worst-case projection/build time and memory.
-
-Do not use the production primary source for an uncontrolled shadow writer.
-
-## Phase 5: canary
-
-Use a dedicated data source or an explicitly bounded offer cohort whose ownership cannot overlap with v1. Canary all lifecycle paths:
-
-1. draft-only create;
-2. first publish;
-3. update and duplicate delivery;
-4. related price/promotion/stock invalidation;
-5. variant addition and removal;
-6. offer identity change;
-7. unpublish and eligibility removal;
-8. document delete;
-9. missing remote repair;
-10. orphan detection with deletion disabled;
-11. owned orphan deletion only after exclusive-source attestation;
-12. status refresh and item issues, including multi-offer fan-out;
-13. local inventory insert/delete if configured;
-14. artifact build/read-back/promotion/serving;
-15. worker crash/redelivery and DLQ recovery;
-16. aggregate workflow completion.
-17. reverse-causal delivery of independent local-inventory roots, proving the newer per-store claim wins without an older Google write;
-18. artifact promotion crash replay, proving exact immutable-object verification and no divergent rebuild;
-
-Record evidence and operator sign-off. A green coordinator row without green descendants is not evidence.
-
-## Phase 6: production cutover
-
-Prepare one reversible change window.
-
-1. Pause v1 schedules, external cron, job dispatch, admin actions, and dependency hooks.
-2. Drain or account for every v1 queued/in-flight operation.
-3. Disable v1 product hooks and worker routes.
-4. Verify no remaining process can write the production data source through v1.
-5. Deploy the v2 plugin configuration, async adapter, worker handler, queue routing, state migration, projection, and feed definitions.
-6. Enable v2 hooks and authenticated endpoints.
-7. Enqueue one bounded canary publication and verify aggregate success/processed output.
-8. Enqueue full `catalog.publish` and monitor descendants.
-9. Build/promote the production artifact export and validate its downstream-provider URL; confirm it is not registered as a competing Merchant primary source.
-10. Run `catalog.reconcile` in detect-only mode only after the complete desired sweep has succeeded; review orphan candidates.
-11. Enable `exclusive-data-sources` and rerun only after the ownership inventory and bounded canary delete are signed off.
-12. Monitor queue/outbox/DLQ, publication states, Merchant responses/issues, feed freshness, and remote counts throughout the window.
-
-The reconciliation order is intentional. Publishing desired state first minimizes any orphan-delete risk and establishes v2 ownership records.
-
-## Legacy schema cleanup
-
-Do not let the plugin automatically delete legacy fields or collections. Cleanup is a separate, backed-up host migration after the rollback window.
-
-Candidates include:
-
-- Product `mc` group and its nested array tables;
-- `mc.syncMeta.syncToken` and other v1 bookkeeping;
-- mapping and sync-log collections;
-- Payload Job tasks/queues/schedules used only by v1;
-- admin imports/components/routes;
-- old API keys, cron endpoints, worker routes, and IAM;
-- old feed endpoints and provider registrations.
-
-Before removal:
-
-1. prove application code no longer reads the schema;
-2. take a restorable backup/export;
-3. retain audit data according to business/legal policy;
-4. remove code before database columns where rolling deploys could still reference them;
-5. test the generated migration against a production-sized restore;
-6. explicitly approve destructive database changes.
-
-V2 does not require keeping `mc` fields hidden or read-only after cutover. They should eventually be removed so there is one visible authority.
-
-## Rollback before legacy cleanup
-
-Rollback is possible only after stopping v2 safely.
-
-1. Pause v2 schedules and hook deployment.
-2. Pause the Merchant queue and inventory every queued/running v2 operation.
-3. Allow claimed writes to finish or quarantine them; never start v1 while v2 live writes can resume.
-4. Preserve the v2 ledger, publication state, and source-version sequence.
-5. Disable v2 hooks/endpoints/workers.
-6. Re-enable the known-good v1 deployment and its schema together.
-7. Reconcile v1 desired state carefully, accounting for offers changed by the canary/cutover.
-
-Do not roll back the host's globally monotonic canonical revision values. If v1 cannot tolerate the new host schema, use a forward fix instead of operating two writers.
-
-After legacy schema cleanup, rollback requires restoring both application and database snapshots and is a materially more disruptive recovery. Treat cleanup as the end of the rollback window.
-
-## Post-cutover acceptance
-
-Keep v2 in heightened observation until all are true:
-
-- multiple scheduled publish and reconciliation cycles succeed end to end;
-- no v1 queue, route, hook, or service-account usage remains;
-- root workflow status and child counts agree with ledger queries;
-- publication-state pending/failed age is within SLA;
-- remote count and sampled fields match canonical projection;
-- every configured feed is current and provider fetches succeed;
-- status refresh shows understood/triaged item issues;
-- a controlled worker restart/redelivery converges;
-- the incident runbook and rollback have named owners;
-- production load stays inside queue, rate-limit, memory, and timeout bounds.
-
-Only then retire the pinned 1.x rollback artifact and schedule the explicit schema cleanup.
+- `publicationState.store` and `localInventory.publicationState` are gone.
+  Custom publication-state stores are no longer supported.
+- `productIngestion` is ignored.
+- `feeds` is optional; an install with no feeds is normal.
+- `workerAccess` is required only with `api.exposeWorkerEndpoint: true`.
+- `requireTransaction` is new and defaults to `false`. The release candidates
+  effectively behaved as if it were `true`.
