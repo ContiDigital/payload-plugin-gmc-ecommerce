@@ -104,6 +104,13 @@ const rawPluginOptions = (
   },
 })
 
+/**
+ * This suite builds its own Payload config, so the dev app's generated types —
+ * which describe a different collection that happens to share the `products`
+ * slug — do not apply to it. `adHoc` widens exactly at that boundary.
+ */
+const adHoc = <T>(value: T): never => value as never
+
 type Harness = {
   databaseFile?: string
   dispatch: GmcAsyncAdapter['dispatch']
@@ -189,11 +196,11 @@ describe(`GMC v2 dispatches without an ambient transaction by default on ${datab
 
     const created = await harness.payload.create({
       collection: 'products',
-      data: {
+      data: adHoc({
         sku: 'NO-TRANSACTION-DEFAULT-1',
         sourceVersion: 1,
         title: 'No ambient transaction, default options',
-      },
+      }),
     })
 
     expect(created.id).toBeDefined()
@@ -221,11 +228,11 @@ describe(`GMC v2 fails closed with requireTransaction: true and no ambient trans
     await expect(
       harness.payload.create({
         collection: 'products',
-        data: {
+        data: adHoc({
           sku: 'NO-TRANSACTION-STRICT-1',
           sourceVersion: 1,
           title: 'Must not commit',
-        },
+        }),
       }),
     ).rejects.toMatchObject({ code: 'GMC_TRANSACTION_REQUIRED' })
 

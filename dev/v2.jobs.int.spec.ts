@@ -80,6 +80,13 @@ const execute = vi.fn((context: GmcCommandExecutionContext) => {
   })
 })
 
+/**
+ * This suite builds its own Payload config, so the dev app's generated types —
+ * which describe different collections that happen to share these slugs — do
+ * not apply to it. `adHoc` widens exactly at that boundary, and nowhere else.
+ */
+const adHoc = <T>(value: T): never => value as never
+
 const ledgerRows = async (where: Record<string, unknown> = {}): Promise<LedgerRow[]> => {
   const result = await payload.find({
     collection: LEDGER as never,
@@ -88,7 +95,7 @@ const ledgerRows = async (where: Record<string, unknown> = {}): Promise<LedgerRo
     overrideAccess: true,
     pagination: false,
     sort: 'createdAt',
-    where,
+    where: adHoc(where),
   })
   return result.docs as unknown as LedgerRow[]
 }
@@ -119,7 +126,7 @@ beforeAll(async () => {
     async: adapter,
     catalogDependencies: [
       {
-        collection: 'promos',
+        collection: adHoc('promos'),
         scheduleAt: ({ doc }) => (doc.startsAt ? [new Date(String(doc.startsAt)).toISOString()] : []),
         select: ({ doc }) => ({ title: doc.title }),
       },
@@ -279,7 +286,10 @@ describe(`payloadJobsAsyncAdapter against the real Payload ${databaseKind} adapt
 
   it('defers a scheduled dependency command until its not-before instant', async () => {
     const startsAt = new Date(Date.now() + 86_400_000).toISOString()
-    await payload.create({ collection: 'promos', data: { title: 'Future promo', startsAt } })
+    await payload.create({
+      collection: adHoc('promos'),
+      data: adHoc({ startsAt, title: 'Future promo' }),
+    })
 
     const scheduled = (await ledgerRows({ scheduledFor: { exists: true } })).filter(
       (row) => row.scheduledFor !== null && row.scheduledFor !== undefined,

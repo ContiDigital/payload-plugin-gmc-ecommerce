@@ -141,7 +141,9 @@ beforeAll(() => {
     merchantId,
     productIngestion: { mode: 'api-primary' },
     products: {
-      collection: 'unused-live-smoke-products',
+      // The live smoke never reads Payload; this slug intentionally names no
+      // collection, and so is not a member of the dev app's generated union.
+      collection: 'unused-live-smoke-products' as never,
       project: () => ({ products: [], sourceVersion: '0' }),
       resolveIdentities: () => [],
     },

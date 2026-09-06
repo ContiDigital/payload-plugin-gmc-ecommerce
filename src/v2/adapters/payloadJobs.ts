@@ -293,13 +293,17 @@ export const payloadJobsAsyncAdapter = (
     scheduledFor?: null | string
   }): Promise<void> => {
     const waitUntil = args.scheduledFor ? new Date(args.scheduledFor) : undefined
-    const job = await args.payload.jobs.queue({
+    // The task slug is configured at install time, so it is never a member of a
+    // host's generated `TaskSlug` union; the whole argument is widened together
+    // because narrowing `task` alone forces `input` to `never`.
+    const queueArgs = {
       input: { operationId: args.operationId },
       queue,
       req: args.req,
-      task: taskSlug as never,
+      task: taskSlug,
       ...(waitUntil === undefined || Number.isNaN(waitUntil.getTime()) ? {} : { waitUntil }),
-    })
+    } as unknown as Parameters<Payload['jobs']['queue']>[0]
+    const job = await args.payload.jobs.queue(queueArgs)
     const jobId = (job as { id?: number | string } | undefined)?.id
     await updateRow({
       id: args.operationId,

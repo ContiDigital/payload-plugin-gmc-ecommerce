@@ -55,6 +55,13 @@ const databaseAdapter = () => {
   })
 }
 
+/**
+ * This suite builds its own Payload config, so the dev app's generated types —
+ * which describe different collections that happen to share these slugs — do
+ * not apply to it. `adHoc` widens exactly at that boundary, and nowhere else.
+ */
+const adHoc = <T>(value: T): never => value as never
+
 let payload: Payload
 let options: PayloadGmcEcommerceV2Options
 const dispatched: GmcAsyncDispatchArgs[] = []
@@ -200,7 +207,9 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
     expect(payload.collections['gmc-publications-v2']).toBeDefined()
     // Local-inventory rows are folded into the main publication collection;
     // no separate collection is installed for them.
-    expect(payload.collections['gmc-local-inventory-publications-v2']).toBeUndefined()
+    expect(
+      (payload.collections as Record<string, unknown>)['gmc-local-inventory-publications-v2'],
+    ).toBeUndefined()
     const products = payload.config.collections.find((collection) => collection.slug === 'products')
     expect(products?.fields.map((field) => ('name' in field ? field.name : undefined))).toEqual([
       'title',
@@ -223,7 +232,7 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
     await expect(
       payload.create({
         collection: 'products',
-        data: {
+        data: adHoc({
           _status: 'published',
           description: 'must not commit',
           imageUrl: 'https://example.test/non-transactional.jpg',
@@ -231,7 +240,7 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
           sku: 'NO-TRANSACTION-CREATE',
           sourceVersion: 1,
           title: 'Must not commit',
-        },
+        }),
         disableTransaction: true,
       }),
     ).rejects.toMatchObject({ code: 'GMC_TRANSACTION_REQUIRED' })
@@ -247,7 +256,7 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
 
     const deletable = await payload.create({
       collection: 'products',
-      data: {
+      data: adHoc({
         _status: 'published',
         description: 'must survive rejected delete',
         imageUrl: 'https://example.test/non-transactional-delete.jpg',
@@ -255,7 +264,7 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
         sku: 'NO-TRANSACTION-DELETE',
         sourceVersion: 2,
         title: 'Must survive rejected delete',
-      },
+      }),
     })
     await expect(
       payload.delete({
@@ -469,7 +478,7 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
     dispatched.length = 0
     const created = await payload.create({
       collection: 'products',
-      data: {
+      data: adHoc({
         _status: 'published',
         description: 'live description',
         imageUrl: 'https://example.test/live.jpg',
@@ -477,14 +486,14 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
         sku: 'DRAFT-SAFE-1',
         sourceVersion: 1,
         title: 'Live title',
-      },
+      }),
     })
     dispatched.length = 0
 
     await payload.update({
       id: created.id,
       collection: 'products',
-      data: { sourceVersion: 2, title: 'Unpublished draft title' },
+      data: adHoc({ sourceVersion: 2, title: 'Unpublished draft title' }),
       draft: true,
     })
     const coordinator = dispatched.at(-1)
@@ -512,7 +521,7 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
     dispatched.length = 0
     await payload.create({
       collection: 'products',
-      data: {
+      data: adHoc({
         _status: 'draft',
         description: 'draft-only description',
         imageUrl: 'https://example.test/draft-only.jpg',
@@ -520,7 +529,7 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
         sku: 'DRAFT-ONLY-1',
         sourceVersion: 1,
         title: 'Draft-only title',
-      },
+      }),
       draft: true,
     })
     const coordinator = dispatched.at(-1)
@@ -543,7 +552,7 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
     dispatched.length = 0
     const created = await payload.create({
       collection: 'products',
-      data: {
+      data: adHoc({
         _status: 'published',
         description: 'published description',
         imageUrl: 'https://example.test/unpublish.jpg',
@@ -551,7 +560,7 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
         sku: 'UNPUBLISH-1',
         sourceVersion: 1,
         title: 'Published title',
-      },
+      }),
     })
     dispatched.length = 0
 
@@ -589,7 +598,7 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
     for (let index = 0; index < 5; index++) {
       await payload.create({
         collection: 'products',
-        data: {
+        data: adHoc({
           _status: 'published',
           description: `description ${index}`,
           imageUrl: `https://example.test/${index}.jpg`,
@@ -597,7 +606,7 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
           sku: `PAGE-${index}`,
           sourceVersion: index + 10,
           title: `Product ${index}`,
-        },
+        }),
       })
     }
     const expected = await payload.find({
@@ -607,7 +616,6 @@ describe(`GMC v2 against the real Payload ${databaseKind} adapter`, () => {
       limit: 100,
       overrideAccess: true,
       pagination: false,
-      select: { id: true },
     })
     const expectedIds = new Set(expected.docs.map((doc) => String(doc.id)))
     const observedIds = new Set<string>()

@@ -61,13 +61,14 @@
     "pack:smoke": "bash ./scripts/pack-smoke.sh",
     "prepare": "pnpm build",
     "prepack": "pnpm build",
-    "release:check": "pnpm lint && pnpm exec tsc --noEmit && pnpm test:coverage && pnpm build && pnpm pack:smoke",
+    "release:check": "pnpm lint && pnpm exec tsc --noEmit && pnpm typecheck:dev && pnpm test:coverage && pnpm build && pnpm pack:smoke",
     "test": "pnpm test:int",
     "test:coverage": "vitest --run --coverage",
     "test:v2:db-matrix": "bash ./scripts/test-v2-db-matrix.sh",
     "test:e2e": "playwright test",
     "test:int": "vitest --run",
-    "test:live": "pnpm build && vitest --run --config vitest.live.config.js"
+    "test:live": "pnpm build && vitest --run --config vitest.live.config.js",
+    "typecheck:dev": "tsc -p dev/tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.6",

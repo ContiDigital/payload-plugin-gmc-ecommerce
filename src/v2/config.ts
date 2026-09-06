@@ -1,7 +1,10 @@
 import type { RateLimitConfig } from '../types/index.js'
 import type {
   GmcAsyncAdapter,
+  GmcCatalogDependencyConfig,
+  GmcCatalogGlobalDependencyConfig,
   GmcFeedConfig,
+  GmcProductSourceConfig,
   NormalizedGmcV2Options,
   PayloadGmcEcommerceV2Options,
 } from './types.js'
@@ -27,11 +30,17 @@ const hasControlCharacters = (value: string): boolean =>
     return code <= 31 || code === 127
   })
 
-const requireNonEmpty = (name: string, value: unknown): string => {
+/**
+ * Validates a required string option and returns it trimmed. The type
+ * parameter lets a caller keep a host's narrower slug type (`CollectionSlug`,
+ * `GlobalSlug`) on the normalized value: the runtime check is the same, and
+ * the widening happens once here rather than at every call site.
+ */
+const requireNonEmpty = <T extends string = string>(name: string, value: unknown): T => {
   if (typeof value !== 'string' || value.trim().length === 0) {
     throw new TypeError(`payload-plugin-gmc-ecommerce/v2: ${name} is required`)
   }
-  return value.trim()
+  return value.trim() as T
 }
 
 const payloadCollectionSlug = (name: string, value: unknown): string => {
@@ -505,7 +514,7 @@ export const normalizeGmcV2Options = (
         `payload-plugin-gmc-ecommerce/v2: catalogDependencies[${index}] must be an object`,
       )
     }
-    const dependencyCollection = requireNonEmpty(
+    const dependencyCollection = requireNonEmpty<GmcCatalogDependencyConfig['collection']>(
       `catalogDependencies[${index}].collection`,
       dependency.collection,
     )
@@ -552,7 +561,7 @@ export const normalizeGmcV2Options = (
           `payload-plugin-gmc-ecommerce/v2: catalogGlobalDependencies[${index}] must be an object`,
         )
       }
-      const dependencyGlobal = requireNonEmpty(
+      const dependencyGlobal = requireNonEmpty<GmcCatalogGlobalDependencyConfig['global']>(
         `catalogGlobalDependencies[${index}].global`,
         dependency.global,
       )
@@ -605,7 +614,10 @@ export const normalizeGmcV2Options = (
     )
   }
   const dataSourceId = merchantResourceId('dataSourceId', options.dataSourceId, disabled)
-  const collection = requireNonEmpty('products.collection', options.products.collection)
+  const collection = requireNonEmpty<GmcProductSourceConfig['collection']>(
+    'products.collection',
+    options.products.collection,
+  )
   const apiBasePath = normalizeRoute('api.basePath', options.api?.basePath ?? '/gmc/v2')
   if (apiBasePath.split('/').some((segment) => segment.startsWith(':') || segment.includes('*'))) {
     throw new TypeError('payload-plugin-gmc-ecommerce/v2: api.basePath must be static')

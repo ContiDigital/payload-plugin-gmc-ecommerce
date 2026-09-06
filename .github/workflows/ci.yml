@@ -51,6 +51,9 @@ jobs:
       - name: Type Check
         run: pnpm exec tsc --noEmit
 
+      - name: Type Check Dev App
+        run: pnpm typecheck:dev
+
       - name: Run Unit and Integration Tests
         run: pnpm test:int
 

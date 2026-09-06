@@ -18,7 +18,9 @@ export const hasDefaultPluginAccess: AccessFn = ({ user }) => {
   if (!user || typeof user !== 'object') {
     return false
   }
-  const record = user as Record<string, unknown>
+  // A host with generated Payload types narrows `user` to its own interface,
+  // which no longer overlaps an index signature structurally.
+  const record = user as unknown as Record<string, unknown>
   return (
     record.isAdmin === true ||
     (Array.isArray(record.roles) && record.roles.includes('admin'))
