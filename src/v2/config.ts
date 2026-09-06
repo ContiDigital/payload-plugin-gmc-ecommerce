@@ -693,8 +693,13 @@ export const normalizeGmcV2Options = (
       }
     })
 
+  // `productIngestion` is accepted for 1.x compatibility and ignored; keeping it
+  // on the spread would put a key on the runtime object that
+  // `NormalizedGmcV2Options` says is not there.
+  const { productIngestion: _ignoredProductIngestion, ...forwarded } = options
+
   return {
-    ...options,
+    ...forwarded,
     access: options.access ?? hasDefaultPluginAccess,
     api: {
       basePath: apiBasePath,

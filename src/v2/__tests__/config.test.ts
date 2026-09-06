@@ -70,6 +70,16 @@ describe('normalizeGmcV2Options', () => {
     expect(options.async.capabilities).toBe(capabilities)
   })
 
+  it('drops the deprecated productIngestion option from the normalized value', () => {
+    // It is accepted so a 1.x config still loads, and ignored; leaving it on
+    // the object would contradict NormalizedGmcV2Options at runtime.
+    const options = normalizeGmcV2Options({
+      ...baseOptions,
+      productIngestion: { mode: 'api-primary' },
+    })
+    expect('productIngestion' in options).toBe(false)
+  })
+
   it('defaults feeds to an empty array', () => {
     expect(normalizeGmcV2Options({ ...baseOptions, feeds: undefined }).feeds).toEqual([])
   })
