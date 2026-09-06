@@ -1245,11 +1245,18 @@ export const createGmcCommandExecutor = (
       instanceId: options.instanceId,
       products,
     })
+    for (const warning of published.warnings) {
+      context.payload.logger.warn(
+        { code: warning.code, feedId: feed.id, path: warning.path },
+        warning.message,
+      )
+    }
     return {
       commandType: context.command.type,
       operationId: context.operationId,
       outcome: published.promotion === 'promoted' ? 'completed' : 'skipped',
       productCount: products.length,
+      warnings: published.warnings,
     }
   }
 

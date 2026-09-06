@@ -507,8 +507,8 @@ const validateAttributes = (
 
   if (
     attrs.availability !== undefined &&
-    (!requireString(issues, attributePath('availability'), attrs.availability) ||
-      !AVAILABILITY_VALUES.includes(attrs.availability))
+    requireString(issues, attributePath('availability'), attrs.availability) &&
+    !AVAILABILITY_VALUES.includes(attrs.availability)
   ) {
     addIssue(
       issues,

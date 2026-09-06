@@ -436,6 +436,27 @@ describe('canonicalizeProductInput', () => {
     }
   })
 
+  it('reports exactly one issue for a non-string availability', () => {
+    const input = product()
+    input.productAttributes!.availability = 42 as never
+
+    try {
+      canonicalizeProductInput({ input })
+      expect.unreachable('a non-string availability must not canonicalize')
+    } catch (error) {
+      expect(error).toBeInstanceOf(GmcProjectionValidationError)
+      // requireString already reported the value; adding an enum issue on top
+      // would make one mistake look like two to the projecting host.
+      expect((error as GmcProjectionValidationError).issues).toEqual([
+        {
+          code: 'required',
+          message: 'must be a non-empty string',
+          path: 'input.productAttributes.availability',
+        },
+      ])
+    }
+  })
+
   it('publishes preorder and backorder offers without an availabilityDate', () => {
     // Google surfaces the missing date as an item-level issue. Rejecting the
     // projection here would strand an otherwise publishable offer.

@@ -949,6 +949,81 @@ describe('GMC v2 command executor', () => {
     })
   })
 
+  it('logs and returns the attributes a feed build could not represent', async () => {
+    let stored: unknown
+    const feed: GmcFeedConfig = {
+      id: 'artifact',
+      access: 'public',
+      artifactStore: {
+        promote: vi.fn(() => Promise.resolve('promoted' as const)),
+        put: vi.fn((value) => {
+          stored = { body: value.body, descriptor: value.descriptor }
+          return Promise.resolve()
+        }),
+        read: vi.fn(() => Promise.resolve(stored as never)),
+        readCurrent: vi.fn(() => Promise.resolve(null)),
+        readCurrentDescriptor: vi.fn(() => Promise.resolve(null)),
+      },
+      delivery: 'artifact',
+      path: '/feeds/artifact.tsv',
+      selector: { contentLanguage: 'en', feedLabel: 'US' },
+    }
+    let page = 0
+    const find = vi.fn(() =>
+      Promise.resolve({ docs: page++ === 0 ? [{ id: 'product-1' }] : [] }),
+    ) as unknown as Payload['find']
+    const test = build({ feed, find })
+    // Google ships attributes between releases of this package; the TSV format
+    // omits what it cannot spell rather than taking the whole catalog offline.
+    test.productProject.mockReturnValue({
+      products: [
+        {
+          ...newInput,
+          productAttributes: {
+            ...newInput.productAttributes,
+            warranty: { duration: '1', unit: 'YEAR' },
+          },
+        },
+      ],
+      sourceVersion: '100',
+    } as never)
+    const warn = vi.fn()
+    ;(test.payload as unknown as { logger: { warn: unknown } }).logger = { warn }
+    const command: Extract<GmcCommand, { type: 'feed.build' }> = {
+      type: 'feed.build',
+      feedId: 'artifact',
+      requestedAt: REQUESTED_AT,
+      schemaVersion: 2,
+    }
+
+    const result = await test.execute({
+      command,
+      operationId: 'feed-warnings',
+      payload: test.payload,
+    })
+
+    expect(result.outcome).toBe('completed')
+    expect(result.productCount).toBe(1)
+    expect(result.warnings).toEqual([
+      {
+        code: 'GMC_TSV_UNMAPPED_ATTRIBUTE',
+        message: expect.stringContaining('warranty'),
+        path: 'input.productAttributes.warranty',
+      },
+    ])
+    expect(warn).toHaveBeenCalledOnce()
+    expect(warn).toHaveBeenCalledWith(
+      {
+        code: 'GMC_TSV_UNMAPPED_ATTRIBUTE',
+        feedId: 'artifact',
+        path: 'input.productAttributes.warranty',
+      },
+      expect.stringContaining('warranty'),
+    )
+    const body = (stored as { body: Uint8Array }).body
+    expect(new TextDecoder().decode(body)).not.toContain('warranty')
+  })
+
   it('reuses an already-promoted artifact with the same generatedAt on durable replay', async () => {
     const body = new TextEncoder().encode('already promoted')
     const checksum = createHash('sha256').update(body).digest('hex')

@@ -879,4 +879,6 @@ export type GmcCommandExecutionResult = {
   outcome: 'completed' | 'skipped'
   productCount?: number
   remoteCount?: number
+  /** Attributes a feed format could not represent; also logged once per build. */
+  warnings?: GmcProjectionWarning[]
 }
