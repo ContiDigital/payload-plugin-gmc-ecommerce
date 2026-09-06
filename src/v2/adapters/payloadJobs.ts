@@ -62,6 +62,14 @@ const DEFAULT_TASK_SLUG = 'gmc-command'
 const RETRY_BACKOFF_MS = 30_000
 /** A queued row older than this with no future not-before time is backlog. */
 const STALE_QUEUE_MS = 15 * 60_000
+/**
+ * How long a committed row may hold a null `jobId` before a re-dispatch treats
+ * it as a stuck outbox rather than a dispatch which is still in flight. Without
+ * a host transaction the row commits before its `jobId` does, so a concurrent
+ * same-key dispatch can observe that exact gap; republishing inside it would
+ * put two jobs on one row.
+ */
+const OUTBOX_STUCK_MS = 60_000
 const DEAD_LETTER_WINDOW_MS = 24 * 60 * 60_000
 
 /**
@@ -301,15 +309,81 @@ export const payloadJobsAsyncAdapter = (
     })
   }
 
+  /**
+   * True when Payload will never run this job again. `findByID` with
+   * `disableErrors` returns null for a missing document on both 3.37.0 and
+   * 3.88.0 (`collections/operations/findByID.js`), and Payload only deletes a
+   * job it completed successfully, so a retained row carrying `hasError` is one
+   * whose retries are exhausted — Payload writes exactly `hasError: true,
+   * processing: false` at that point.
+   */
+  const isJobAbandoned = async (args: {
+    jobId: string
+    payload: Payload
+    req?: PayloadRequest
+  }): Promise<boolean> => {
+    try {
+      const job = await args.payload.findByID({
+        id: args.jobId,
+        collection: 'payload-jobs' as never,
+        depth: 0,
+        disableErrors: true,
+        overrideAccess: true,
+        req: args.req,
+      })
+      if (!job) {
+        return true
+      }
+      const candidate = job as unknown as { hasError?: unknown; processing?: unknown }
+      return candidate.hasError === true && candidate.processing !== true
+    } catch {
+      // An unreadable jobs collection is not evidence of abandonment. Failing
+      // closed here is what keeps a transient error from double-publishing.
+      return false
+    }
+  }
+
+  /**
+   * A re-dispatch of the same immutable key is the operator remediation for a
+   * queued row nothing will ever run: an outbox which never published, or a
+   * job Payload has given up on. Both are republished onto the original row, so
+   * the operation ID and its lineage never change.
+   */
+  const needsRepublish = async (args: {
+    payload: Payload
+    req?: PayloadRequest
+    row: GmcOperationsLedgerRow
+  }): Promise<boolean> => {
+    if (args.row.state !== 'queued') {
+      return false
+    }
+    if (args.row.jobId == null) {
+      const createdAt = toIsoString(args.row.createdAt)
+      return (
+        createdAt !== undefined && Date.now() - Date.parse(createdAt) >= OUTBOX_STUCK_MS
+      )
+    }
+    return await isJobAbandoned({ jobId: args.row.jobId, payload: args.payload, req: args.req })
+  }
+
   const dispatch = async (args: GmcAsyncDispatchArgs): Promise<GmcDispatchReceipt> => {
     const { command, idempotencyKey, payload, req, subject } = args
     const commandDigest = getGmcCommandIdempotencyDigest(command)
 
-    const adopt = (existing: GmcOperationsLedgerRow): GmcDispatchReceipt => {
+    const adopt = async (existing: GmcOperationsLedgerRow): Promise<GmcDispatchReceipt> => {
       if (existing.commandDigest !== commandDigest) {
         throw new GmcAsyncIdempotencyConflictError(idempotencyKey)
       }
-      return { operationId: String(existing.id), state: 'queued' }
+      const receipt: GmcDispatchReceipt = { operationId: String(existing.id), state: 'queued' }
+      if (await needsRepublish({ payload, req, row: existing })) {
+        await publishJob({
+          operationId: receipt.operationId,
+          payload,
+          req,
+          scheduledFor: toIsoString(existing.scheduledFor) ?? null,
+        })
+      }
+      return receipt
     }
 
     // Immutable-key replay is the common path, and reading first also keeps a
@@ -317,18 +391,7 @@ export const payloadJobsAsyncAdapter = (
     // unique index below — not this read — is what makes the check atomic.
     const retained = await findByKey({ key: idempotencyKey, payload, req })
     if (retained) {
-      const receipt = adopt(retained)
-      if (retained.jobId == null && retained.state === 'queued') {
-        // A committed row whose queue publication was lost is recoverable:
-        // exactly one message per row, adopted by ID.
-        await publishJob({
-          operationId: receipt.operationId,
-          payload,
-          req,
-          scheduledFor: toIsoString(retained.scheduledFor) ?? null,
-        })
-      }
-      return receipt
+      return await adopt(retained)
     }
 
     let operationId: string
@@ -361,7 +424,7 @@ export const payloadJobsAsyncAdapter = (
       if (!winner) {
         throw error
       }
-      return adopt(winner)
+      return await adopt(winner)
     }
 
     await publishJob({ operationId, payload, req, scheduledFor: args.scheduledFor ?? null })
@@ -564,25 +627,14 @@ export const payloadJobsAsyncAdapter = (
         req,
       })
 
+      let result: GmcCommandExecutionResult
       try {
-        const result: GmcCommandExecutionResult = await getExecutor(options)({
+        result = await getExecutor(options)({
           command: row.command as GmcCommand,
           operationId,
           payload,
           rootOperationId: row.rootOperationId ?? operationId,
         })
-        await updateRow({
-          id: operationId,
-          data: {
-            error: null,
-            finishedAt: new Date().toISOString(),
-            result: result as unknown as Record<string, unknown>,
-            state: 'succeeded',
-          },
-          payload,
-          req,
-        })
-        return { output: {} }
       } catch (error) {
         const classification = classifyGmcCommandError(error)
         // The durable retry budget is the ledger's, not the queue envelope's:
@@ -606,6 +658,27 @@ export const payloadJobsAsyncAdapter = (
         }
         throw error
       }
+
+      // Deliberately outside the classifier. The command already succeeded, so
+      // a failure here is the ledger being unwritable, not the command being
+      // wrong: classifying it would either bury a successful result under
+      // `failed` or rewrite the row `queued` with a stale error. Rethrowing
+      // instead makes Payload retry the job. The retry finds the row still
+      // `running`, so it re-runs the command rather than short-circuiting on
+      // the `succeeded` guard — safe because every executor path is idempotent,
+      // and the alternative is losing the operation's outcome entirely.
+      await updateRow({
+        id: operationId,
+        data: {
+          error: null,
+          finishedAt: new Date().toISOString(),
+          result: result as unknown as Record<string, unknown>,
+          state: 'succeeded',
+        },
+        payload,
+        req,
+      })
+      return { output: {} }
     }
 
     return {

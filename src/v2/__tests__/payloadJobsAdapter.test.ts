@@ -84,10 +84,13 @@ const matches = (document: Document, where: undefined | Where): boolean => {
   })
 }
 
-const createPayloadDouble = (seed: Document[] = []) => {
+const createPayloadDouble = (seed: Document[] = [], jobDocuments: Document[] = []) => {
   const documents: Document[] = seed.map((document) => ({ ...document }))
+  const jobs: Document[] = jobDocuments.map((document) => ({ ...document }))
   let sequence = documents.length
   const queued: unknown[] = []
+  const collectionDocuments = (collection: string): Document[] =>
+    collection === 'payload-jobs' ? jobs : documents
 
   const create = vi.fn(({ data }: { data: Record<string, unknown> }) => {
     if (documents.some((document) => document.key === data.key)) {
@@ -110,8 +113,10 @@ const createPayloadDouble = (seed: Document[] = []) => {
     }),
   )
 
-  const findByID = vi.fn(({ id }: { id: number | string }) => {
-    const document = documents.find((candidate) => candidate.id === String(id))
+  const findByID = vi.fn(({ id, collection }: { collection: string; id: number | string }) => {
+    const document = collectionDocuments(collection).find(
+      (candidate) => candidate.id === String(id),
+    )
     return Promise.resolve(document ? { ...document } : null)
   })
 
@@ -143,8 +148,11 @@ const createPayloadDouble = (seed: Document[] = []) => {
     update,
   } as unknown as Payload
 
-  return { count, create, documents, find, findByID, payload, queue, queued, update }
+  return { count, create, documents, find, findByID, jobs, payload, queue, queued, update }
 }
+
+const minutesAgo = (minutes: number): string =>
+  new Date(Date.now() - minutes * 60_000).toISOString()
 
 const dispatchArgs = (
   overrides: Partial<GmcAsyncDispatchArgs> & Pick<GmcAsyncDispatchArgs, 'payload'>,
@@ -301,10 +309,13 @@ describe('payloadJobsAsyncAdapter dispatch', () => {
   it('recovers the original operation when the unique index wins a concurrent insert', async () => {
     const { adapter } = installed()
     const command = publishCommand()
-    const double = createPayloadDouble()
+    // The winner already published its own job, so the loser must adopt the
+    // operation without putting a second message on it.
+    const double = createPayloadDouble([], [{ id: 'job-race', hasError: false }])
     const winner: Document = {
       id: 'op-race',
       commandDigest: getGmcCommandIdempotencyDigest(command),
+      createdAt: new Date().toISOString(),
       jobId: 'job-race',
       key: 'gmc-key-1',
       state: 'queued',
@@ -321,13 +332,14 @@ describe('payloadJobsAsyncAdapter dispatch', () => {
     expect(double.queue).not.toHaveBeenCalled()
   })
 
-  it('re-queues a committed ledger row whose queue publication was lost', async () => {
+  it('re-queues a stuck outbox row whose queue publication was lost', async () => {
     const { adapter } = installed()
     const command = publishCommand()
     const double = createPayloadDouble([
       {
         id: 'op-orphan',
         commandDigest: getGmcCommandIdempotencyDigest(command),
+        createdAt: minutesAgo(30),
         jobId: null,
         key: 'gmc-key-1',
         scheduledFor: null,
@@ -342,6 +354,127 @@ describe('payloadJobsAsyncAdapter dispatch', () => {
       expect.objectContaining({ input: { operationId: 'op-orphan' } }),
     )
     expect(double.documents[0]).toMatchObject({ jobId: 'job-1' })
+  })
+
+  it('never re-queues a row whose concurrent dispatch has not published yet', async () => {
+    const { adapter } = installed()
+    const command = publishCommand()
+    // Without a host transaction the winner's row commits before its `jobId`
+    // does. A same-key dispatch landing inside that window must adopt the
+    // operation, not publish a second job onto it.
+    const double = createPayloadDouble([
+      {
+        id: 'op-in-flight',
+        commandDigest: getGmcCommandIdempotencyDigest(command),
+        createdAt: new Date().toISOString(),
+        jobId: null,
+        key: 'gmc-key-1',
+        scheduledFor: null,
+        state: 'queued',
+      },
+    ])
+
+    await expect(
+      adapter.dispatch(dispatchArgs({ command, payload: double.payload })),
+    ).resolves.toEqual({ operationId: 'op-in-flight', state: 'queued' })
+    expect(double.queue).not.toHaveBeenCalled()
+  })
+
+  it('re-drives a queued row whose job Payload has already abandoned', async () => {
+    const { adapter } = installed()
+    const command = publishCommand()
+    const queuedRow: Document = {
+      id: 'op-abandoned',
+      commandDigest: getGmcCommandIdempotencyDigest(command),
+      createdAt: minutesAgo(90),
+      jobId: 'job-gone',
+      key: 'gmc-key-1',
+      scheduledFor: null,
+      state: 'queued',
+    }
+
+    // The job document is gone entirely.
+    const deleted = createPayloadDouble([{ ...queuedRow }], [])
+    await expect(
+      adapter.dispatch(dispatchArgs({ command, payload: deleted.payload })),
+    ).resolves.toEqual({ operationId: 'op-abandoned', state: 'queued' })
+    expect(deleted.queue).toHaveBeenCalledTimes(1)
+    expect(deleted.documents[0]).toMatchObject({ jobId: 'job-1' })
+
+    // Payload keeps a job it gave up on; `hasError` means it never runs again.
+    const exhausted = createPayloadDouble(
+      [{ ...queuedRow }],
+      [{ id: 'job-gone', hasError: true, processing: false }],
+    )
+    await expect(
+      adapter.dispatch(dispatchArgs({ command, payload: exhausted.payload })),
+    ).resolves.toEqual({ operationId: 'op-abandoned', state: 'queued' })
+    expect(exhausted.queue).toHaveBeenCalledTimes(1)
+  })
+
+  it('never re-drives a queued row whose job is still runnable', async () => {
+    const { adapter } = installed()
+    const command = publishCommand()
+    const double = createPayloadDouble(
+      [
+        {
+          id: 'op-live',
+          commandDigest: getGmcCommandIdempotencyDigest(command),
+          createdAt: minutesAgo(90),
+          jobId: 'job-live',
+          key: 'gmc-key-1',
+          scheduledFor: null,
+          state: 'queued',
+        },
+      ],
+      [{ id: 'job-live', hasError: false, processing: false }],
+    )
+
+    await expect(
+      adapter.dispatch(dispatchArgs({ command, payload: double.payload })),
+    ).resolves.toEqual({ operationId: 'op-live', state: 'queued' })
+    expect(double.queue).not.toHaveBeenCalled()
+  })
+
+  it('never re-drives a terminal row, however old its job reference is', async () => {
+    const { adapter } = installed()
+    const command = publishCommand()
+    const double = createPayloadDouble([
+      {
+        id: 'op-done',
+        commandDigest: getGmcCommandIdempotencyDigest(command),
+        createdAt: minutesAgo(90),
+        jobId: null,
+        key: 'gmc-key-1',
+        state: 'succeeded',
+      },
+    ])
+
+    await expect(
+      adapter.dispatch(dispatchArgs({ command, payload: double.payload })),
+    ).resolves.toEqual({ operationId: 'op-done', state: 'queued' })
+    expect(double.queue).not.toHaveBeenCalled()
+  })
+
+  it('never treats an unreadable jobs collection as an abandoned job', async () => {
+    const { adapter } = installed()
+    const command = publishCommand()
+    const double = createPayloadDouble([
+      {
+        id: 'op-unknown',
+        commandDigest: getGmcCommandIdempotencyDigest(command),
+        createdAt: minutesAgo(90),
+        jobId: 'job-unknown',
+        key: 'gmc-key-1',
+        state: 'queued',
+      },
+    ])
+    double.findByID.mockImplementation(() => Promise.reject(new Error('jobs read failed')))
+
+    await expect(
+      adapter.dispatch(dispatchArgs({ command, payload: double.payload })),
+    ).resolves.toEqual({ operationId: 'op-unknown', state: 'queued' })
+    expect(double.queue).not.toHaveBeenCalled()
   })
 
   it('rethrows a non-duplicate ledger failure', async () => {
@@ -439,6 +572,28 @@ describe('payloadJobsAsyncAdapter task handler', () => {
       output: {},
     })
     expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('rethrows a ledger write that fails after success so the job retries and the idempotent command re-runs', async () => {
+    const double = createPayloadDouble([queuedRow()])
+    const execute = vi.fn(() => Promise.resolve(executionResult))
+    const persist = double.update.getMockImplementation()!
+    let writes = 0
+    double.update.mockImplementation((args) => {
+      writes += 1
+      // 1 = the `running` claim, 2 = the success persist.
+      return writes === 2
+        ? Promise.reject(new Error('ledger write failed'))
+        : persist(args as never)
+    })
+
+    await expect(runHandler({ double, execute })).rejects.toThrow(/ledger write failed/)
+    expect(execute).toHaveBeenCalledTimes(1)
+    // The command result is not reclassified as a command failure, and the row
+    // is left mid-flight rather than being buried under `failed`.
+    expect(double.documents[0]).toMatchObject({ attempts: 1, state: 'running' })
+    expect(double.documents[0]?.error).toBeUndefined()
+    expect(double.documents[0]?.result).toBeUndefined()
   })
 
   it('never acknowledges an operation when the ledger itself is unreachable', async () => {

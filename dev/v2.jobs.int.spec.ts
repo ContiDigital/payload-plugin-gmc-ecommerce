@@ -241,7 +241,11 @@ describe(`payloadJobsAsyncAdapter against the real Payload ${databaseKind} adapt
 
   it('runs the queued job through the executor and retains the result', async () => {
     executed.length = 0
-    await payload.jobs.run({ queue: 'gmc' })
+    // `sequential` throughout this suite: Payload runs a queue concurrently by
+    // default, and two handlers each opening their own SQLite write
+    // transaction deadlock the file with SQLITE_BUSY. A SQLite host running
+    // this adapter needs the same setting.
+    await payload.jobs.run({ queue: 'gmc', sequential: true })
 
     expect(executed).toHaveLength(1)
     expect(executed[0]?.command.type).toBe('product.publish')
@@ -289,7 +293,7 @@ describe(`payloadJobsAsyncAdapter against the real Payload ${databaseKind} adapt
     expect(new Date(String(scheduledJob?.waitUntil)).getTime()).toBeGreaterThan(Date.now())
 
     executed.length = 0
-    await payload.jobs.run({ queue: 'gmc' })
+    await payload.jobs.run({ queue: 'gmc', sequential: true })
 
     // The immediate dependency invalidation runs; the scheduled root does not.
     expect(executed.some((context) => context.command.type === 'catalog.publish')).toBe(true)
@@ -325,8 +329,72 @@ describe(`payloadJobsAsyncAdapter against the real Payload ${databaseKind} adapt
     ).rejects.toBeInstanceOf(GmcAsyncIdempotencyConflictError)
   })
 
+  it('re-drives a queued row whose job document is gone when the same key is dispatched again', async () => {
+    const dispatchArgs = {
+      command: createProductPublishCommand({ cause: 'manual', productId: 'abandoned-1' }),
+      idempotencyKey: 'gmc-jobs-abandoned-1',
+      payload,
+      subject: `gmc:${INSTANCE_ID}:product:abandoned-1`,
+    }
+    const receipt = await adapter.dispatch(dispatchArgs)
+    const [before] = await ledgerRows({ id: { equals: receipt.operationId } })
+    const abandonedJobId = String(before?.jobId)
+    expect(abandonedJobId).toBeTruthy()
+
+    // Simulate the job Payload will never run again. Real job IDs are integers
+    // on SQLite/Postgres and ObjectIds on Mongo, so this also proves the
+    // ledger's stringified `jobId` round-trips back through `findByID`.
+    await payload.delete({
+      id: abandonedJobId,
+      collection: 'payload-jobs' as never,
+      overrideAccess: true,
+    })
+
+    // The adapter's abandonment check depends on this exact contract, so pin it
+    // per database: a missing document reads as null rather than throwing.
+    await expect(
+      payload.findByID({
+        id: abandonedJobId,
+        collection: 'payload-jobs' as never,
+        depth: 0,
+        disableErrors: true,
+        overrideAccess: true,
+      }),
+    ).resolves.toBeNull()
+
+    const replay = await adapter.dispatch(dispatchArgs)
+    expect(replay).toEqual(receipt)
+    const [after] = await ledgerRows({ id: { equals: receipt.operationId } })
+    expect(after?.jobId).toBeTruthy()
+    expect(await ledgerRows({ key: { equals: 'gmc-jobs-abandoned-1' } })).toHaveLength(1)
+
+    // SQLite reuses a deleted rowid, so recovery is proved by liveness rather
+    // than by a changed ID: the retained row points at a runnable job again,
+    // and that job carries this operation.
+    const revived = await payload.findByID({
+      id: String(after?.jobId),
+      collection: 'payload-jobs' as never,
+      depth: 0,
+      disableErrors: true,
+      overrideAccess: true,
+    })
+    expect(revived).not.toBeNull()
+    expect(revived).toMatchObject({
+      input: { operationId: receipt.operationId },
+      queue: 'gmc',
+      taskSlug: 'gmc-command',
+    })
+
+    // A third dispatch now finds a live job and must not publish another.
+    const before3 = (await jobRows()).length
+    await adapter.dispatch(dispatchArgs)
+    const [settled] = await ledgerRows({ id: { equals: receipt.operationId } })
+    expect(String(settled?.jobId)).toBe(String(after?.jobId))
+    expect((await jobRows()).length).toBe(before3)
+  })
+
   it('measures live ledger health per instance', async () => {
-    await payload.jobs.run({ queue: 'gmc' })
+    await payload.jobs.run({ queue: 'gmc', sequential: true })
     await expect(adapter.health({ instanceId: INSTANCE_ID, payload })).resolves.toMatchObject({
       details: { reasons: [], staleQueued: 0 },
       status: 'ok',
@@ -353,7 +421,7 @@ describe(`payloadJobsAsyncAdapter against the real Payload ${databaseKind} adapt
     })
     execute.mockImplementation(() => Promise.reject(new Error('merchant transport unavailable')))
 
-    await payload.jobs.run({ queue: 'gmc' })
+    await payload.jobs.run({ queue: 'gmc', sequential: true })
 
     const [row] = await ledgerRows({ id: { equals: receipt.operationId } })
     expect(row).toMatchObject({ attempts: 3, state: 'dead-lettered' })
