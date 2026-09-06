@@ -255,7 +255,10 @@ additionalDataSourceIds: [process.env.GMC_EU_DATA_SOURCE_ID!],
 With more than one source configured, every publish first reads the processed
 product to check which source owns it — `productInputs.insert` moves an
 existing offer to whichever source writes it, and that is not something to do
-by accident. A single-source install skips that read entirely.
+by accident. A single-source install skips that read for hook and API
+publishes. It is still made for reconciliation children, which carry
+`verifyRemote` and always read the processed product to prove the offer is
+really there before trusting the local digest shortcut.
 
 ## 8. Two installations in one process
 
@@ -282,7 +285,17 @@ PostgreSQL and MongoDB they are on by default. A save made with
 `disableTransaction` then fails with `GMC_TRANSACTION_REQUIRED` — which is the
 point of the setting.
 
-## 10. Before production
+## 10. The worker endpoint (optional)
+
+`api.exposeWorkerEndpoint: true` adds `POST /gmc/v2/worker/execute`, which runs
+one command inline and returns its result. It exists for hosts whose queue
+delivers work over HTTP rather than in-process. It is off by default, and
+`workerAccess` — a function of `{ payload, req }` — is required when it is on;
+the route authorizes before it reads the request body, so an unauthorized
+caller costs nothing. Everything else in this plugin keeps Google calls out of
+web requests, so leave this off unless your transport needs it.
+
+## 11. Before production
 
 - `POST /gmc/v2/data-sources/validate` and read the operation.
 - Publish one product, `POST /gmc/v2/products/status/refresh` for it, and read

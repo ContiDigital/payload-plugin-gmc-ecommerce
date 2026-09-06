@@ -181,13 +181,41 @@ What it does not do:
 - **Exactly-once delivery.** The guarantee is at-least-once. Inside a hook's
   transaction the ledger row and the job commit together; without a transaction,
   a concurrent dispatch of the same idempotency key can publish a second job for
-  the same row. (The adapter only re-queues a row whose `jobId` is still null
-  after 60 seconds, so this is narrow, not routine.) A duplicate execution
-  converges: the second run finds the digest already published and skips.
+  the same row. A duplicate execution converges: the second run finds the digest
+  already published and skips.
 - **Exclusivity.** Nothing stops two `catalog.reconcile` runs overlapping. They
   converge, but they cost twice as much; schedule them apart.
-- **Running itself.** Use `jobs.autoRun`, or call
-  `payload.jobs.run({ queue: 'gmc' })` from your own scheduler.
+- **Running itself.** See below.
+
+### Re-publishing a stranded row
+
+A dispatch that finds an existing row for its idempotency key normally just
+returns it. It re-publishes a job for that row only when the row is `queued`
+**and** one of two things is true: its `jobId` is still null and the row is at
+least 60 seconds old (the queue publication was lost after the row committed),
+or the `payload-jobs` document it points at is gone, or is retained with an
+error and is not being processed — Payload has exhausted that job's retries. An
+unreadable jobs collection is not treated as abandonment, so a transient
+database error cannot cause a double publish.
+
+The remediation for a stranded row is therefore to dispatch the same command
+again with the same idempotency key: re-save the product, or POST the publish
+endpoint with the same `Idempotency-Key`. The new job lands on the original
+row, so the operation id and its lineage do not change.
+
+### Running the queue
+
+Use `jobs.autoRun`, or call `payload.jobs.run` from your own scheduler:
+
+```ts
+await payload.jobs.run({ limit: 25, queue: 'gmc', sequential: true })
+```
+
+Payload runs a queue's jobs concurrently by default. **A SQLite host must pass
+`sequential: true`**, because two concurrent write transactions deadlock on
+SQLite; size `jobs.autoRun` so only one runner drains the `gmc` queue at a
+time. PostgreSQL and MongoDB hosts may run jobs concurrently. Ordering per
+offer is then best-effort, and reconciliation heals anything that raced.
 
 ## Conformance checklist
 

@@ -48,6 +48,7 @@ node --input-type=module -e "import plugin, { assertFeedArtifactDescriptor, crea
 node --input-type=module -e "const root = await import('payload-plugin-gmc-ecommerce'); if ('createMerchantService' in root || 'SYNC_MODES' in root) { throw new Error('legacy symbols leaked into the v2 root') }"
 node --input-type=module -e "import { buildGmcOperationsCollection, payloadJobsAsyncAdapter } from 'payload-plugin-gmc-ecommerce'; const adapter = payloadJobsAsyncAdapter(); if (typeof payloadJobsAsyncAdapter !== 'function' || typeof buildGmcOperationsCollection !== 'function' || adapter.name !== 'payload-jobs' || adapter.capabilities.scheduledDelivery !== true || typeof adapter.install !== 'function') { throw new Error('payloadJobsAsyncAdapter export is incomplete') }"
 test -f node_modules/payload-plugin-gmc-ecommerce/docs/v2-architecture.md
+test -f node_modules/payload-plugin-gmc-ecommerce/docs/v2-async-adapter.md
 test -f node_modules/payload-plugin-gmc-ecommerce/docs/v2-setup.md
 test -f node_modules/payload-plugin-gmc-ecommerce/docs/v2-operations.md
 test -f node_modules/payload-plugin-gmc-ecommerce/docs/v2-migration.md

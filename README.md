@@ -43,7 +43,8 @@ export default buildConfig({
   collections: [Products],
   jobs: {
     // Runs queued Merchant commands every minute. Not for serverless hosts;
-    // there, call payload.jobs.run({ queue: 'gmc' }) from a cron endpoint.
+    // there, call payload.jobs.run({ queue: 'gmc', sequential: true }) from a
+    // cron endpoint.
     autoRun: [{ cron: '* * * * *', queue: 'gmc', limit: 25 }],
   },
   plugins: [
@@ -144,6 +145,8 @@ the product document. Declare them and the plugin re-publishes affected
 products when they change:
 
 ```ts
+import type { Promotion } from './payload-types'
+
 catalogDependencies: [
   {
     collection: 'promotions',
@@ -311,6 +314,8 @@ localInventory: {
 | `requireTransaction`        | no       | Fail hooks that run without a transaction (default false) |
 | `instanceId`                | no       | Namespace for queues and state; needed for two installs   |
 | `api.basePath`              | no       | Default `/gmc/v2`                                         |
+| `api.exposeWorkerEndpoint`  | no       | Adds `POST /gmc/v2/worker/execute`, which runs one command inline. Off by default |
+| `workerAccess`              | no       | Required when `api.exposeWorkerEndpoint` is on; authorizes that route |
 | `additionalDataSourceIds`   | no       | Extra API sources selectable per offer                    |
 | `disabled`                  | no       | Install nothing (state collection still declared)         |
 

@@ -143,13 +143,19 @@ race, and treat one `catalog.reconcile` as part of the upgrade.
 
 ### Queued commands
 
-Command wire schema is still `2`. Fields the release candidates wrote —
-`sourceVersion` and `desiredVersion` on offer commands, `deleteVersion`,
-`deleteIfDesiredVersionBefore` and `deleteIfDesiredBefore` on `offer.delete`,
-`startedVersion` on `catalog.reconcile` — are accepted and ignored for this
-release, so a queued row drains rather than becoming a poison message. They
-will be rejected in a later release: drain the queue during the upgrade and do
-not rely on the grace period.
+Command wire schema is still `2`. The fields the release candidates wrote are
+accepted and ignored for this release, so a queued row drains rather than
+becoming a poison message:
+
+| Command | Accepted and ignored |
+| --- | --- |
+| `catalog.reconcile` | `startedVersion` |
+| `localInventory.apply` | `desiredVersion`, `sourceVersion` |
+| `offer.delete` | `deleteIfDesiredBefore`, `deleteIfDesiredVersionBefore`, `deleteVersion`, `desiredVersion`, `sourceVersion` |
+| `offer.publish` | `desiredVersion`, `sourceVersion` |
+
+They will be rejected in a later release: drain the queue during the upgrade
+and do not rely on the grace period.
 
 ### Feed artifacts
 

@@ -13,7 +13,8 @@ export default buildConfig({
   collections: [Products],
   jobs: {
     // Runs queued Merchant commands every minute. Not for serverless hosts;
-    // there, call payload.jobs.run({ queue: 'gmc' }) from a cron endpoint.
+    // there, call payload.jobs.run({ queue: 'gmc', sequential: true }) from a
+    // cron endpoint.
     autoRun: [{ cron: '* * * * *', limit: 25, queue: 'gmc' }],
   },
   plugins: [

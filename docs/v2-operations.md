@@ -114,8 +114,9 @@ loop usually means Google is throttling or the ledger database is slow.
 If the worker died before it could record an attempt — for example the ledger
 database was unreachable at the moment the job started — often enough for
 Payload to exhaust the job's retries, the `gmc-operations` row is left `queued`
-pointing at a job that is either gone or retained with an error. Health reports
-it as `queue_backlog_stale`.
+pointing at a job that is either gone or retained with an error. The same
+happens when a row committed but its queue publication was lost, leaving
+`jobId` null. Health reports both as `queue_backlog_stale`.
 
 Remediation: dispatch the same command again with the same idempotency key —
 re-save the product, or POST the publish endpoint with the same

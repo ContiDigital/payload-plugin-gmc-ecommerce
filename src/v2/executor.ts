@@ -613,9 +613,10 @@ export const createGmcCommandExecutor = (
   }
 
   /**
-   * `product.delete` is no longer emitted, but rc.35 rows and a host
-   * `afterDelete` hook still produce it. It executes with `product.publish`
-   * semantics, its identities standing in for the previously owned set. A
+   * Emitted by the product collection's `afterDelete` hook, and still present
+   * on rc.35 rows. It executes with `product.publish` semantics, its
+   * identities standing in for the previously owned set: with the document
+   * gone, the publish path finds nothing to project and deletes them all. A
    * command without a `productId` — the document is already gone and was never
    * attributed — unconditionally deletes every identity it lists.
    */

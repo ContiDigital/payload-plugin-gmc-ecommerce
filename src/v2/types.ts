@@ -180,7 +180,13 @@ export type GmcAsyncDispatchArgs = {
    * the command executable before it. It is never used for child commands.
    */
   scheduledFor?: string
-  /** Commands with the same subject must execute in dispatch order. */
+  /**
+   * Identifies the thing a command touches. In-order execution per subject is
+   * a best-effort expectation, not a requirement: the executor orders by
+   * `desiredAt` and skips by content digest, so out-of-order delivery
+   * converges. An adapter says which it provides through
+   * `capabilities.orderedBySubject`.
+   */
   subject: string
 }
 

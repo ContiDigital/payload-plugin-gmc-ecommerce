@@ -30,7 +30,10 @@ Payload save / delete
 
 Nothing calls Google inside a web request. A hook only writes a command; a
 worker does the work. That is what makes a crash, a deploy, or a Google outage
-recoverable rather than a lost update.
+recoverable rather than a lost update. The one exception is opt-in: with
+`api.exposeWorkerEndpoint`, `POST /gmc/v2/worker/execute` runs a command
+inline, for hosts whose queue delivers over HTTP. It is off by default and
+requires a `workerAccess` function when it is on.
 
 Product content flows one way. The plugin never adds editable Merchant fields
 to your collection and never writes Google's data back onto a product. The only
@@ -50,7 +53,7 @@ Google.
 | `offer.publish` | Writes one canonical `ProductInput` to one data source. Carries its own content `digest`. |
 | `offer.delete` | Deletes one offer from one data source, optionally fenced by `onlyIfDesiredBefore`. |
 | `catalog.publish` | Pages the eligible catalog and dispatches one `product.publish` per product. Optionally restricted to a `productIds` set. |
-| `catalog.reconcile` | Pages the catalog the same way, then lists what Google holds and reports (or deletes) offers your catalog no longer wants. |
+| `catalog.reconcile` | Pages the catalog the same way, then lists Google's processed products itself, records what it sees on each publication row, and reports (or deletes) offers your catalog no longer wants. |
 | `localInventory.reconcile` | Fans out per store, then per product, into `localInventory.apply`. |
 | `localInventory.apply` | Writes or removes one store's inventory for one offer. |
 | `feed.build` | Builds a canonical feed artifact and atomically promotes it. |
@@ -108,11 +111,12 @@ report `orderedBySubject: false`.
 What the rules do not cover, reconciliation heals. `catalog.reconcile` stamps
 one `startedAt` on its whole run. Its first phase re-publishes the catalog
 (each child verifying that Google really has the offer). Its second phase lists
-what Google holds and treats a remote offer as an orphan when there is no row
-for it, when the row is already `deleted`, or when the row's `desiredAt`
-predates `startedAt` **and** re-reading the owning product shows it is gone or
-no longer eligible. That second condition is what stops reconciliation from
-deleting a product whose publish simply has not run yet.
+the processed products Google holds, records the observation on each row it
+keeps, and treats a remote offer as an orphan when there is no row for it, when
+the row is already `deleted`, or when the row has no `desiredAt` at all or a
+`desiredAt` that predates `startedAt` **and** re-reading the owning product
+shows it is gone or no longer eligible. That last condition is what stops
+reconciliation from deleting a product whose publish simply has not run yet.
 
 Orphan handling is a report by default. `reconciliation.orphanDeletion:
 'exclusive-data-sources'` is the only setting that deletes, and it is only
