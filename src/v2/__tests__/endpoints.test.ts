@@ -63,6 +63,7 @@ const dynamicFeed: GmcFeedConfig = {
 
 const build = (
   args: {
+    asyncCapabilities?: Record<string, unknown>
     exposeWorkerEndpoint?: boolean
     feed?: GmcFeedConfig
     find?: Payload['find']
@@ -80,6 +81,7 @@ const build = (
     api: { exposeWorkerEndpoint: args.exposeWorkerEndpoint },
     async: {
       name: 'test-adapter',
+      capabilities: args.asyncCapabilities,
       dispatch,
       getOperation: vi.fn(() =>
         Promise.resolve({
@@ -748,7 +750,12 @@ describe('GMC v2 endpoints', () => {
     expect(healthResponse?.status).toBe(200)
     expect(healthResponse?.headers.get('cache-control')).toBe('private, no-store, max-age=0')
     await expect(healthResponse?.json()).resolves.toMatchObject({
-      asyncAdapter: { health: { status: 'ok' } },
+      asyncAdapter: {
+        // Undeclared capabilities take the documented defaults, not the
+        // adapter's silence.
+        capabilities: { orderedBySubject: true, scheduledDelivery: false },
+        health: { status: 'ok' },
+      },
       commandSchemaVersion: 2,
       instanceId: '123456',
       status: 'ok',
@@ -756,5 +763,30 @@ describe('GMC v2 endpoints', () => {
     expect(test.options.async.health).toHaveBeenCalledWith(
       expect.objectContaining({ instanceId: '123456' }),
     )
+  })
+
+  it('publishes only the two capabilities it acts on, never the adapter object', async () => {
+    const test = build({
+      asyncCapabilities: {
+        durable: true,
+        globalSourceVersion: true,
+        orderedBySubject: false,
+        scheduledDelivery: true,
+      },
+    })
+    const endpoint = test.endpoints.find((candidate) => candidate.path.endsWith('/health'))
+    const response = await endpoint?.handler(
+      request({ payload: test.payload, user: { id: 'user-1' } }),
+    )
+    const body = (await response?.json()) as {
+      asyncAdapter: { capabilities: Record<string, unknown>; name: string }
+    }
+
+    expect(body.asyncAdapter.name).toBe('test-adapter')
+    expect(body.asyncAdapter.capabilities).toEqual({
+      orderedBySubject: false,
+      scheduledDelivery: true,
+    })
+    expect(Object.keys(body.asyncAdapter)).toEqual(['name', 'capabilities', 'health'])
   })
 })

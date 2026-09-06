@@ -432,7 +432,15 @@ const createDispatchEndpoints = (options: NormalizedGmcV2Options): Endpoint[] =>
           {
             asyncAdapter: {
               name: options.async.name,
-              ...options.async.capabilities,
+              // Only the two capabilities this plugin acts on are published.
+              // Spreading the adapter's own object would put arbitrary, unvetted
+              // host keys — rc.35 leftovers included — into a documented
+              // response body. `orderedBySubject` is a documented expectation
+              // the plugin assumes when unstated.
+              capabilities: {
+                orderedBySubject: options.async.capabilities?.orderedBySubject !== false,
+                scheduledDelivery: options.async.capabilities?.scheduledDelivery === true,
+              },
               health: asyncHealth,
             },
             commandSchemaVersion: GMC_V2_COMMAND_SCHEMA_VERSION,
