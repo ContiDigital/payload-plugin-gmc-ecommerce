@@ -1,9 +1,15 @@
+export { AccessDeniedError, hasDefaultPluginAccess } from '../server/utilities/access.js'
 export type {
   AccessFn,
   CredentialResolution,
+  DistributedRateLimitReservation,
+  DistributedRateLimitScope,
   DistributedRateLimitStore,
   GetCredentialsFn,
+  GoogleServiceAccount,
   MCArrayField,
+  MCAvailability,
+  MCCondition,
   MCCustomAttribute,
   MCFreeShippingThreshold,
   MCInterval,
@@ -18,6 +24,7 @@ export type {
   MCUrlArrayField,
   RateLimitConfig,
 } from '../types/index.js'
+export { MC_AVAILABILITY, MC_CONDITION } from '../types/index.js'
 export { buildGmcOperationsCollection } from '../v2/adapters/operationsCollection.js'
 export type { PayloadJobsAsyncAdapterOptions } from '../v2/adapters/payloadJobs.js'
 export { payloadJobsAsyncAdapter } from '../v2/adapters/payloadJobs.js'
@@ -63,6 +70,7 @@ export {
 } from '../v2/dataSource.js'
 export { buildGmcV2Endpoints } from '../v2/endpoints.js'
 export { classifyGmcCommandError } from '../v2/errors.js'
+export type { GmcCommandExecutorDependencies } from '../v2/executor.js'
 export { createGmcCommandExecutor } from '../v2/executor.js'
 export {
   assertFeedArtifactDescriptor,
