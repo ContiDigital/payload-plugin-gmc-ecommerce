@@ -250,6 +250,16 @@ localInventory: {
 Both lists may be empty. That keeps the schema and types stable while the
 capability is inactive: no local-inventory work is dispatched.
 
+Google attaches inventory to the *processed* product, which appears some time
+after the offer is published. A `localInventory.apply` that arrives first fails
+with `GMC_PROCESSED_PRODUCT_NOT_READY`, which is retryable: the command is
+retried inside the async adapter's retry budget — about fifteen minutes with the
+built-in adapter's defaults of five attempts on a 30-second exponential backoff.
+Propagation is normally far quicker than that. When it is not, the store row
+dead-letters and stays that way until the next `localInventory.reconcile`, which
+re-derives the desired store rows and re-dispatches them; the offer itself is
+unaffected.
+
 ## 7. Multiple data sources
 
 `additionalDataSourceIds` registers extra API sources. A projected offer selects
