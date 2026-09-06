@@ -3,6 +3,7 @@ import type { Payload, PayloadRequest } from 'payload'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type * as GmcExecutorModule from '../executor.js'
+import type * as GmcBuildFeedModule from '../feed/buildFeed.js'
 import type {
   GmcCommandExecutionContext,
   GmcCommandExecutionResult,
@@ -34,6 +35,20 @@ vi.mock('../executor.js', async (importOriginal) => {
   }
 })
 
+// Counts real catalog scans so the dynamic-feed single-flight and TTL cache can
+// be asserted on the thing they exist to bound: how often a feed is rebuilt.
+const feedBuilds = vi.hoisted(() => ({ count: 0 }))
+vi.mock('../feed/buildFeed.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof GmcBuildFeedModule>()
+  return {
+    ...actual,
+    buildCanonicalFeed: (...args: Parameters<typeof actual.buildCanonicalFeed>) => {
+      feedBuilds.count += 1
+      return actual.buildCanonicalFeed(...args)
+    },
+  }
+})
+
 import { GmcAsyncIdempotencyConflictError, GmcAsyncWorkflowConflictError } from '../async.js'
 import { normalizeGmcV2Options } from '../config.js'
 import { buildGmcV2Endpoints } from '../endpoints.js'
@@ -51,6 +66,9 @@ const build = (
     exposeWorkerEndpoint?: boolean
     feed?: GmcFeedConfig
     find?: Payload['find']
+    // The dynamic-feed cache is module-scoped and keyed per plugin instance, so
+    // a feed test that must observe a real rebuild gives itself its own id.
+    instanceId?: string
     workerAccess?: boolean
   } = {},
 ) => {
@@ -83,6 +101,7 @@ const build = (
         type: 'json',
         credentials: { client_email: 'test@example.com', private_key: 'secret' },
       }),
+    instanceId: args.instanceId,
     merchantId: '123456',
     products: {
       collection: 'products',
@@ -133,6 +152,8 @@ const request = (args: {
 describe('GMC v2 endpoints', () => {
   afterEach(() => {
     executorOverride.current = null
+    feedBuilds.count = 0
+    vi.useRealTimers()
   })
 
   it('durably dispatches a non-mutating API-source deployment preflight', async () => {
@@ -407,7 +428,7 @@ describe('GMC v2 endpoints', () => {
     const find = vi.fn(() =>
       Promise.resolve({ docs: [{ id: 'sku-1' }] }),
     ) as unknown as Payload['find']
-    const test = build({ find })
+    const test = build({ find, instanceId: 'feed-etag' })
     const endpoint = test.endpoints.find((candidate) => candidate.path === '/feeds/google.tsv')
     const response = await endpoint?.handler(request({ payload: test.payload }))
     const etag = response?.headers.get('etag')
@@ -432,12 +453,51 @@ describe('GMC v2 endpoints', () => {
   })
 
   it('never marks an access-controlled feed as publicly cacheable', async () => {
-    const test = build({ feed: { ...dynamicFeed, access: () => true } })
+    const test = build({ feed: { ...dynamicFeed, access: () => true }, instanceId: 'feed-private' })
     const endpoint = test.endpoints.find((candidate) => candidate.path === '/feeds/google.tsv')
     const response = await endpoint?.handler(request({ payload: test.payload }))
 
     expect(response?.status).toBe(200)
     expect(response?.headers.get('cache-control')).toBe('private, no-store')
+  })
+
+  it('coalesces concurrent dynamic feed requests into a single catalog scan', async () => {
+    // A public dynamic feed is an unauthenticated full-catalog scan. A burst
+    // must cost one build, not one build per connection.
+    const test = build({ instanceId: 'feed-single-flight' })
+    const endpoint = test.endpoints.find((candidate) => candidate.path === '/feeds/google.tsv')
+
+    const [first, second] = await Promise.all([
+      endpoint?.handler(request({ payload: test.payload })),
+      endpoint?.handler(request({ payload: test.payload })),
+    ])
+
+    expect(feedBuilds.count).toBe(1)
+    expect(first?.status).toBe(200)
+    expect(second?.status).toBe(200)
+    expect(first?.headers.get('etag')).toBe(second?.headers.get('etag'))
+    await expect(second?.text()).resolves.toContain('sku-1')
+  })
+
+  it('serves the last dynamic feed build from memory until the cache expires', async () => {
+    vi.useFakeTimers()
+    const test = build({ instanceId: 'feed-ttl' })
+    const endpoint = test.endpoints.find((candidate) => candidate.path === '/feeds/google.tsv')
+
+    const first = await endpoint?.handler(request({ payload: test.payload }))
+    expect(feedBuilds.count).toBe(1)
+    const body = await first?.text()
+
+    vi.advanceTimersByTime(59_000)
+    const cached = await endpoint?.handler(request({ payload: test.payload }))
+    expect(feedBuilds.count).toBe(1)
+    expect(cached?.status).toBe(200)
+    await expect(cached?.text()).resolves.toBe(body)
+
+    vi.advanceTimersByTime(2_000)
+    const rebuilt = await endpoint?.handler(request({ payload: test.payload }))
+    expect(feedBuilds.count).toBe(2)
+    expect(rebuilt?.status).toBe(200)
   })
 
   it('does not queue an artifact build for a dynamic feed', async () => {

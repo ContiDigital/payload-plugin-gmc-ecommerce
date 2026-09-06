@@ -207,6 +207,13 @@ promoted artifact. `access` is `'public'` or a function of the request;
 for XML or anything else. Attributes with no documented TSV column are omitted
 and reported in the build's `warnings` rather than failing it.
 
+Dynamic feeds rebuild on every uncached request, and a rebuild scans the whole
+catalog, so keep public dynamic feeds to small catalogs or put them behind a
+CDN; a production catalog uses `delivery: 'artifact'`. The plugin coalesces
+concurrent requests for one feed onto a single build and holds the last
+successful body in memory for 60 seconds, which flattens a burst but does not
+make a large catalog cheap to serve dynamically.
+
 ## 6. Local inventory (optional)
 
 For local listings, declare your store codes and a per-store projector. Store

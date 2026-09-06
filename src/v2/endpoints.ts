@@ -494,6 +494,83 @@ const assertFeedAccess = async (feed: GmcFeedConfig, req: PayloadRequest): Promi
   }
 }
 
+/**
+ * A dynamic feed rebuilds by scanning the whole catalog, so an unauthenticated
+ * burst against a public feed path is a denial-of-service amplifier: every
+ * request would otherwise start its own full projection.
+ *
+ * Two cheap protections bound that. Concurrent requests for the same feed share
+ * one in-flight build, and the last successful build is served from memory for
+ * `DYNAMIC_FEED_CACHE_TTL_MS`. Both maps are module-scoped but keyed per plugin
+ * instance and feed, so two installations in one process never share a body,
+ * and a failed build is never cached.
+ */
+const DYNAMIC_FEED_CACHE_TTL_MS = 60_000
+
+type DynamicFeedBuild = {
+  body: Uint8Array
+  checksum: string
+  contentType: string
+}
+
+const dynamicFeedCache = new Map<string, { expiresAt: number } & DynamicFeedBuild>()
+const dynamicFeedInFlight = new Map<string, Promise<DynamicFeedBuild>>()
+
+const dynamicFeedCacheKey = (instanceId: string, feedId: string): string =>
+  `${instanceId}\u0000${feedId}`
+
+const buildDynamicFeed = async (args: {
+  feed: GmcFeedConfig
+  options: NormalizedGmcV2Options
+  req: PayloadRequest
+}): Promise<DynamicFeedBuild> => {
+  const { feed, options, req } = args
+  const products = await collectCanonicalProducts({
+    maxProducts: feed.limits?.maxProducts,
+    maxProjectedBytes: feed.limits?.maxSerializedBytes,
+    options,
+    payload: req.payload,
+    projectionTime: new Date().toISOString(),
+    selector: feed.selector,
+  })
+  const built = await buildCanonicalFeed({ feed, products })
+  for (const warning of built.warnings) {
+    req.payload.logger.warn(
+      { code: warning.code, feedId: feed.id, path: warning.path },
+      warning.message,
+    )
+  }
+  return { body: built.body, checksum: built.checksum, contentType: built.contentType }
+}
+
+const readDynamicFeed = async (args: {
+  feed: GmcFeedConfig
+  options: NormalizedGmcV2Options
+  req: PayloadRequest
+}): Promise<DynamicFeedBuild> => {
+  const key = dynamicFeedCacheKey(args.options.instanceId, args.feed.id)
+  const cached = dynamicFeedCache.get(key)
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached
+  }
+  const inFlight = dynamicFeedInFlight.get(key)
+  if (inFlight) {
+    return inFlight
+  }
+  const build = buildDynamicFeed(args)
+    .then((result) => {
+      // Only a successful build becomes servable; a failure must be retried by
+      // the next request rather than memoized as the feed's current body.
+      dynamicFeedCache.set(key, { ...result, expiresAt: Date.now() + DYNAMIC_FEED_CACHE_TTL_MS })
+      return result
+    })
+    .finally(() => {
+      dynamicFeedInFlight.delete(key)
+    })
+  dynamicFeedInFlight.set(key, build)
+  return build
+}
+
 const createFeedEndpoint = (feed: GmcFeedConfig, options: NormalizedGmcV2Options): Endpoint =>
   handled({
     handler: async (req) => {
@@ -521,21 +598,7 @@ const createFeedEndpoint = (feed: GmcFeedConfig, options: NormalizedGmcV2Options
         })
       }
 
-      const products = await collectCanonicalProducts({
-        maxProducts: feed.limits?.maxProducts,
-        maxProjectedBytes: feed.limits?.maxSerializedBytes,
-        options,
-        payload: req.payload,
-        projectionTime: new Date().toISOString(),
-        selector: feed.selector,
-      })
-      const built = await buildCanonicalFeed({ feed, products })
-      for (const warning of built.warnings) {
-        req.payload.logger.warn(
-          { code: warning.code, feedId: feed.id, path: warning.path },
-          warning.message,
-        )
-      }
+      const built = await readDynamicFeed({ feed, options, req })
       return feedResponse({
         body: built.body,
         checksum: built.checksum,

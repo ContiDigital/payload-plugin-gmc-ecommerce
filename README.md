@@ -274,6 +274,13 @@ Attributes without a documented TSV column are omitted and reported in the
 build result's `warnings`. A custom `format` adapter can produce XML or any
 other representation from the same canonical products.
 
+A dynamic feed rebuilds on every uncached request, and each rebuild is a full
+catalog scan, so a public dynamic feed is for small catalogs or for a path that
+sits behind a CDN. A production catalog uses `delivery: 'artifact'`, which
+serves the last promoted build instead of scanning. (Concurrent requests share
+one in-flight build and the result is held in memory for 60 seconds, which
+bounds a burst but not sustained traffic.)
+
 ## Local inventory (optional)
 
 For Google local listings, declare store codes and a projector for per-store
