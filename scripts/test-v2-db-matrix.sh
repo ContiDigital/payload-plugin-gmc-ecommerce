@@ -15,6 +15,7 @@ trap cleanup EXIT
 cd "$repo_root"
 
 pnpm exec vitest --run dev/v2.int.spec.ts
+pnpm exec vitest --run dev/v2.jobs.int.spec.ts
 pnpm exec vitest --run dev/v2.no-transactions.int.spec.ts
 
 docker run --detach --name "$postgres_container" \
@@ -36,6 +37,10 @@ docker exec "$postgres_container" pg_isready --dbname gmc_v2 --username gmc_v2 >
 GMC_V2_TEST_DATABASE=postgres \
 GMC_V2_POSTGRES_URL="postgresql://gmc_v2:gmc_v2_password@127.0.0.1:${postgres_port}/gmc_v2" \
 pnpm exec vitest --run dev/v2.int.spec.ts
+
+GMC_V2_TEST_DATABASE=postgres \
+GMC_V2_POSTGRES_URL="postgresql://gmc_v2:gmc_v2_password@127.0.0.1:${postgres_port}/gmc_v2" \
+pnpm exec vitest --run dev/v2.jobs.int.spec.ts
 
 GMC_V2_TEST_DATABASE=postgres \
 GMC_V2_POSTGRES_URL="postgresql://gmc_v2:gmc_v2_password@127.0.0.1:${postgres_port}/gmc_v2" \
@@ -66,5 +71,9 @@ docker exec "$mongo_container" mongosh --quiet --eval 'db.hello().isWritablePrim
 GMC_V2_TEST_DATABASE=mongodb \
 GMC_V2_MONGODB_URL="mongodb://127.0.0.1:${mongo_port}/gmc_v2?replicaSet=gmc-v2-rs&directConnection=true" \
 pnpm exec vitest --run dev/v2.int.spec.ts
+
+GMC_V2_TEST_DATABASE=mongodb \
+GMC_V2_MONGODB_URL="mongodb://127.0.0.1:${mongo_port}/gmc_v2?replicaSet=gmc-v2-rs&directConnection=true" \
+pnpm exec vitest --run dev/v2.jobs.int.spec.ts
 
 echo "GMC v2 database matrix passed: SQLite (including disabled-transaction dispatch/fail-closed), PostgreSQL (including disabled-transaction dispatch/fail-closed), MongoDB."

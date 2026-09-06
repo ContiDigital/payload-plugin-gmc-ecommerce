@@ -18,6 +18,9 @@ export type {
   MCUrlArrayField,
   RateLimitConfig,
 } from '../types/index.js'
+export { buildGmcOperationsCollection } from '../v2/adapters/operationsCollection.js'
+export type { PayloadJobsAsyncAdapterOptions } from '../v2/adapters/payloadJobs.js'
+export { payloadJobsAsyncAdapter } from '../v2/adapters/payloadJobs.js'
 export {
   assertGmcAsyncHealth,
   assertGmcAsyncOperation,

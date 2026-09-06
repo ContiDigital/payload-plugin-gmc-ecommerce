@@ -3,11 +3,10 @@ import { sqliteAdapter } from '@payloadcms/db-sqlite'
 import { lexicalEditor } from '@payloadcms/richtext-lexical'
 import path from 'path'
 import { buildConfig } from 'payload'
-import { payloadGmcEcommerceV2 } from 'payload-plugin-gmc-ecommerce/v2'
+import { payloadGmcEcommerceV2, payloadJobsAsyncAdapter } from 'payload-plugin-gmc-ecommerce/v2'
 import sharp from 'sharp'
 import { fileURLToPath } from 'url'
 
-import { testAsyncAdapter } from './helpers/testAsyncAdapter.js'
 import { testEmailAdapter } from './helpers/testEmailAdapter.js'
 import { seed } from './seed.js'
 
@@ -89,13 +88,19 @@ export default buildConfig({
   }),
   editor: lexicalEditor(),
   email: testEmailAdapter,
+  // Runs whatever `payloadJobsAsyncAdapter` enqueued. `autoRun` is a
+  // long-lived in-process cron: it must not be used on serverless hosts, where
+  // an external scheduler should call the jobs run endpoint instead.
+  jobs: {
+    autoRun: [{ cron: '* * * * *', limit: 25, queue: 'gmc' }],
+  },
   onInit: async (payload) => {
     await seed(payload)
   },
   plugins: [
     payloadGmcEcommerceV2({
       access: () => true,
-      async: testAsyncAdapter,
+      async: payloadJobsAsyncAdapter({ queue: 'gmc' }),
       catalogDependencies: [
         {
           collection: 'categories',

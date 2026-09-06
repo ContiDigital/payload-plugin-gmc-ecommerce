@@ -198,4 +198,39 @@ A host adapter is not production-ready until integration tests prove:
 
 ## Payload Jobs
 
-Payload Jobs can be used only through an adapter which adds the guarantees above. Registering a Payload task and calling `payload.jobs.queue()` does not by itself prove per-subject FIFO execution, immutable-key reuse, aggregate workflow status, or transaction-aware delivery. There is intentionally no built-in `payload-jobs` shortcut in v2.
+Payload Jobs can be used only through an adapter which adds the guarantees above. Registering a Payload task and calling `payload.jobs.queue()` does not by itself prove per-subject FIFO execution, immutable-key reuse, aggregate workflow status, or transaction-aware delivery.
+
+`payloadJobsAsyncAdapter()` is the built-in adapter which supplies those missing pieces:
+
+```ts
+import { payloadGmcEcommerceV2, payloadJobsAsyncAdapter } from 'payload-plugin-gmc-ecommerce/v2'
+
+payloadGmcEcommerceV2({
+  async: payloadJobsAsyncAdapter({ queue: 'gmc' }),
+  // ...
+})
+```
+
+| Option           | Default           | Meaning                                                     |
+| ---------------- | ----------------- | ----------------------------------------------------------- |
+| `queue`          | `gmc`             | Payload Jobs queue name.                                     |
+| `taskSlug`       | `gmc-command`     | Registered task slug; a host collision throws at build time. |
+| `collectionSlug` | `gmc-operations`  | Ledger collection slug; a host collision throws.             |
+| `retries`        | `5`               | Durable retries after the first attempt, exponential from 30s. |
+
+Its `install()` hook adds a hidden, unversioned `gmc-operations` collection and registers the task. That ledger — not `payload-jobs` — is the authority: Payload deletes a job row when it succeeds (`deleteJobOnComplete` defaults to true), so the immutable key, lineage, result and audit history must live somewhere Payload does not garbage-collect. `read` access follows the plugin's `access` option; create/update/delete are closed and every plugin write uses `overrideAccess: true`.
+
+Guarantees it does provide:
+
+- **Transaction-aware delivery.** With a hook `req`, the ledger row, the queue message and the row's `jobId` promotion all commit in the host transaction, so a rollback leaves neither a visible operation nor a runnable job.
+- **Immutable-key reuse.** `key` is uniquely indexed. Dispatch reads by key first (which also keeps a PostgreSQL host transaction out of a constraint abort) and treats the unique index as the atomic decision; a lost race reads the retained winner. A different `getGmcCommandIdempotencyDigest(command)` for the same key raises `GmcAsyncIdempotencyConflictError`. A committed row whose queue publication was lost (`jobId` null) is re-queued by a later dispatch of the same key, and `health()` counts it as backlog.
+- **Durable delayed dispatch.** `scheduledFor` is retained on the immutable row and passed to Payload as `waitUntil`, so `scheduledDelivery: true` is declared and dependency `scheduleAt` is usable.
+- **Aggregate workflow status.** `getOperation()` scopes to `instanceId`, resolves the root through retained lineage, and computes descendant counts with six bounded `payload.count` queries — never by loading descendants into Node.
+- **Terminal-vs-retry separation.** The worker classifies with `classifyGmcCommandError()`. A non-retryable failure persists `failed`, a retryable failure with an exhausted budget persists `dead-lettered`, and both acknowledge the job so a poison loop cannot burn the queue. A retryable failure with budget left persists `queued` plus the error and rethrows so Payload schedules the backoff.
+
+Known limitations to weigh before choosing it:
+
+- **No per-subject FIFO.** Payload Jobs runs the queue by claim order and concurrency, not by message group, so the adapter declares `orderedBySubject: false`. The executor's `desiredAt`/digest fencing still converges out-of-order delivery, but a deployment which needs strict per-subject serialization wants a FIFO transport instead.
+- **No `exclusiveCatalogReconciliation`.** Two concurrent `catalog.reconcile` roots with different keys are not rejected; schedule reconciliation from one caller.
+- **No `reconciliation` summary** on `getOperation()`, because Payload's Local API has no bounded database aggregate over retained result JSON.
+- **Something must run the queue.** Use `jobs.autoRun` on a long-lived host; on serverless platforms `autoRun` must not be used, so drive `/api/payload-jobs/run` from an external scheduler.

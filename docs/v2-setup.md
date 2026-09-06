@@ -133,7 +133,15 @@ The plugin already uses `draft: false` and rejects an explicit `_status` other t
 
 ## 7. Configure the durable adapter
 
-Implement all methods and capabilities from [the adapter contract](./v2-async-adapter.md). The most commonly missed rule is immutable key reuse: the same idempotency key returns the original operation forever, even after success or terminal failure. It never supersedes an in-flight live write.
+The built-in `payloadJobsAsyncAdapter()` runs commands on Payload's own Jobs queue with a plugin-owned ledger collection. It is the fastest correct start, and [the adapter contract](./v2-async-adapter.md#payload-jobs) documents both what it guarantees and what it does not (no per-subject FIFO, no exclusive reconciliation). Something still has to run the queue: `jobs.autoRun` on a long-lived host, or an external scheduler calling the jobs run endpoint on serverless platforms.
+
+```ts
+import { payloadJobsAsyncAdapter } from 'payload-plugin-gmc-ecommerce/v2'
+
+async: payloadJobsAsyncAdapter({ queue: 'gmc' })
+```
+
+To use another transport instead, implement all methods and capabilities from [the adapter contract](./v2-async-adapter.md). The most commonly missed rule is immutable key reuse: the same idempotency key returns the original operation forever, even after success or terminal failure. It never supersedes an in-flight live write.
 
 Persist these values for every row:
 

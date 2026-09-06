@@ -109,7 +109,9 @@ jobs:
         run: pnpm exec tsc --noEmit
 
       - name: Run v2 compatibility suite
-        run: pnpm exec vitest --run src/v2 dev/v2.int.spec.ts dev/v2.no-transactions.int.spec.ts
+        run: >-
+          pnpm exec vitest --run src/v2 dev/v2.int.spec.ts dev/v2.jobs.int.spec.ts
+          dev/v2.no-transactions.int.spec.ts
 
   v2-database-matrix:
     name: V2 Database Matrix
