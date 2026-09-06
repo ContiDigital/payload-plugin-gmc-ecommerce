@@ -5,7 +5,7 @@ import { sqliteAdapter } from '@payloadcms/db-sqlite'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { buildConfig, getPayload } from 'payload'
+import { BasePayload, buildConfig } from 'payload'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import type {
@@ -146,10 +146,16 @@ const buildHarness = async (args: {
     secret: `gmc-v2-no-transactions-test-secret-${args.suffix}`,
   })
 
-  // Payload caches instances globally by key (default: 'default'); without a
-  // distinct key here, the second harness in this file would silently reuse
-  // the first Payload instance instead of building one with its own options.
-  const payload = await getPayload({ config, key: `gmc-v2-no-tx-${args.suffix}` })
+  // getPayload's per-key instance cache (payload/dist/index.js) only keys
+  // global._payload by `key` from Payload 3.88 onward; on the 3.37.0 peer
+  // floor, global._payload is a single unkeyed slot, so a second
+  // getPayload({ config, key }) call in this process would silently return
+  // the *first* harness's already-destroyed Payload instance instead of
+  // building one from this harness's own config. Constructing BasePayload
+  // directly bypasses that cache entirely (it's exactly what getPayload does
+  // internally on a cache miss) and behaves identically on every supported
+  // Payload version.
+  const payload = await new BasePayload().init({ config })
   return {
     databaseFile: databaseKind === 'sqlite' ? databaseFile : undefined,
     dispatch,
