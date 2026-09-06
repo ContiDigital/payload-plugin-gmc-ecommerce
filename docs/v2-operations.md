@@ -75,8 +75,8 @@ alert on.
 `GET /gmc/v2/health` returns the adapter's health plus the identity of the
 installation, and answers 503 when the adapter cannot answer at all. With the
 built-in adapter, `details` carries `queued`, `running`, `staleQueued`,
-`deadLettered`, and a `reasons` array (`queue_backlog_stale`,
-`dead_letters_present`).
+`staleRunning`, `deadLettered`, and a `reasons` array (`queue_backlog_stale`,
+`running_rows_stale`, `dead_letters_present`).
 
 ## Publication status
 
@@ -123,6 +123,28 @@ re-save the product, or POST the publish endpoint with the same
 `Idempotency-Key`. The adapter sees that the referenced job no longer exists,
 or is retained in a terminal error state, and publishes a fresh one against the
 existing row.
+
+### A row is stuck `running` and its job is gone
+
+Symptoms: a `gmc-operations` row sits in `running` with no job behind it, and
+health reports `running_rows_stale` with a non-zero `staleRunning` — a row
+whose `startedAt` (or, if it was claimed before recording one, its `updatedAt`)
+is more than 30 minutes old.
+
+Cause: the command succeeded at Google, and then every attempt to write the
+terminal state back to the ledger failed. The adapter writes the row *after*
+the Merchant call returns, so this window is exactly the one where the ledger
+is unwritable — a database outage, a connection pool exhausted for longer than
+the job's retry budget, or a transaction that could never commit. Google has
+the change; only the row is wrong.
+
+Remediation: nothing needs to be re-applied at Google. Either update the row's
+`state` to `succeeded` by hand, or re-dispatch the same command with a **new**
+`Idempotency-Key` — the executor's desired-state digest makes the repeat a
+no-op against Google and writes a correct terminal row. A later
+`catalog.reconcile` converges the publication state either way, so leaving the
+row alone is safe as long as the alert is understood; it is the alert, not the
+offer, that is stale.
 
 ### Dead letters
 

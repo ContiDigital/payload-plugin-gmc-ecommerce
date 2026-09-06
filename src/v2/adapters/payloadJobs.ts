@@ -71,6 +71,13 @@ const STALE_QUEUE_MS = 15 * 60_000
  */
 const OUTBOX_STUCK_MS = 60_000
 const DEAD_LETTER_WINDOW_MS = 24 * 60 * 60_000
+/**
+ * A `running` row older than this has outlived any plausible command. The
+ * ledger is written after the Merchant call returns, so a row can be stranded
+ * `running` when every attempt to write that terminal state failed — the job
+ * is gone, Google already applied the change, and only the row is wrong.
+ */
+const STALE_RUNNING_MS = 30 * 60_000
 
 /**
  * One executor per normalized plugin option object, shared by every job in the
@@ -510,8 +517,9 @@ export const payloadJobsAsyncAdapter = (
       const now = Date.now()
       const nowIso = new Date(now).toISOString()
       const staleBefore = new Date(now - STALE_QUEUE_MS).toISOString()
+      const staleRunningBefore = new Date(now - STALE_RUNNING_MS).toISOString()
       const deadLetterSince = new Date(now - DEAD_LETTER_WINDOW_MS).toISOString()
-      const [queued, running, staleQueued, deadLettered] = await Promise.all([
+      const [queued, running, staleQueued, staleRunning, deadLettered] = await Promise.all([
         countRows({ payload, req, where: { and: [scope, { state: { equals: 'queued' } }] } }),
         countRows({ payload, req, where: { and: [scope, { state: { equals: 'running' } }] } }),
         countRows({
@@ -537,6 +545,29 @@ export const payloadJobsAsyncAdapter = (
           where: {
             and: [
               scope,
+              { state: { equals: 'running' } },
+              // A row claimed before it could record `startedAt` still ages by
+              // its own write timestamp, so neither shape hides a stuck row.
+              {
+                or: [
+                  { startedAt: { less_than: staleRunningBefore } },
+                  {
+                    and: [
+                      { startedAt: { exists: false } },
+                      { updatedAt: { less_than: staleRunningBefore } },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+        countRows({
+          payload,
+          req,
+          where: {
+            and: [
+              scope,
               { state: { equals: 'dead-lettered' } },
               { finishedAt: { greater_than_equal: deadLetterSince } },
             ],
@@ -547,6 +578,9 @@ export const payloadJobsAsyncAdapter = (
       const reasons: string[] = []
       if (staleQueued > 0) {
         reasons.push('queue_backlog_stale')
+      }
+      if (staleRunning > 0) {
+        reasons.push('running_rows_stale')
       }
       if (deadLettered > 0) {
         reasons.push('dead_letters_present')
@@ -562,6 +596,7 @@ export const payloadJobsAsyncAdapter = (
           reasons,
           running,
           staleQueued,
+          staleRunning,
           task: taskSlug,
         },
         status: reasons.length > 0 ? 'degraded' : 'ok',

@@ -835,6 +835,38 @@ describe('payloadJobsAsyncAdapter health', () => {
     vi.useRealTimers()
   })
 
+  it('degrades on a running row stranded past any plausible command', async () => {
+    // The ledger is written after Google returns, so a row can be left
+    // `running` with its job gone and the Merchant side already correct.
+    const { adapter } = installed()
+    const double = createPayloadDouble([
+      row({ startedAt: '2026-09-01T12:20:00.000Z', state: 'running' }),
+    ])
+    await expect(
+      adapter.health({ instanceId: '123456', payload: double.payload }),
+    ).resolves.toMatchObject({
+      details: { reasons: ['running_rows_stale'], running: 1, staleRunning: 1 },
+      status: 'degraded',
+    })
+    vi.useRealTimers()
+  })
+
+  it('ages a claimed row with no startedAt by its own write timestamp', async () => {
+    const { adapter } = installed()
+    const double = createPayloadDouble([
+      row({ state: 'running', updatedAt: '2026-09-01T12:20:00.000Z' }),
+      // Freshly claimed: neither shape may be reported as stuck.
+      row({ startedAt: '2026-09-01T12:59:00.000Z', state: 'running' }),
+    ])
+    await expect(
+      adapter.health({ instanceId: '123456', payload: double.payload }),
+    ).resolves.toMatchObject({
+      details: { reasons: ['running_rows_stale'], running: 2, staleRunning: 1 },
+      status: 'degraded',
+    })
+    vi.useRealTimers()
+  })
+
   it('degrades while a recent dead letter is retained', async () => {
     const { adapter } = installed()
     const double = createPayloadDouble([
