@@ -324,7 +324,7 @@ localInventory: {
 | `api.exposeWorkerEndpoint`  | no       | Adds `POST /gmc/v2/worker/execute`, which runs one command inline. Off by default |
 | `workerAccess`              | no       | Required when `api.exposeWorkerEndpoint` is on; authorizes that route |
 | `additionalDataSourceIds`   | no       | Extra API sources selectable per offer                    |
-| `disabled`                  | no       | Install nothing (state collection still declared)         |
+| `disabled`                  | no       | No hooks and no endpoints. Schema is unchanged: the state collection, and the adapter's own `install` (the built-in one's ledger collection and Jobs task), are still declared |
 
 ## Documentation
 

@@ -118,11 +118,18 @@ pointing at a job that is either gone or retained with an error. The same
 happens when a row committed but its queue publication was lost, leaving
 `jobId` null. Health reports both as `queue_backlog_stale`.
 
-Remediation: dispatch the same command again with the same idempotency key —
-re-save the product, or POST the publish endpoint with the same
-`Idempotency-Key`. The adapter sees that the referenced job no longer exists,
-or is retained in a terminal error state, and publishes a fresh one against the
-existing row.
+Remediation: re-dispatch against *that row*, which means reusing its
+idempotency key — POST `/gmc/v2/products/publish` with the same
+`Idempotency-Key` the stranded request used, or call
+`createProductPublishCommand` and hand your adapter the original key. The
+adapter then sees that the referenced job no longer exists, or is retained in a
+terminal error state, and publishes a fresh one against the existing row.
+
+Re-saving the product does *not* re-drive the stranded row: the automatic hook
+derives its key from a hash of the document's canonical content, so a save
+produces a **new** operation. That still converges the offer — the new command
+publishes the same desired state — but the old row stays where it is and keeps
+showing in `staleQueued` until you clear it.
 
 ### A row is stuck `running` and its job is gone
 
@@ -239,5 +246,8 @@ command.
 
 Nothing in the plugin needs a maintenance window. To pause publishing entirely,
 stop running the queue — commands accumulate and execute when you resume.
-`disabled: true` goes further: no hooks, no endpoints, and the state collection
-is still declared so your schema does not change.
+`disabled: true` goes further: no hooks and no endpoints. Schema is deliberately
+unaffected — the plugin still declares the publication state collection, and it
+still calls the async adapter's `install`, so the built-in adapter's ledger
+collection and its Payload Jobs task are declared exactly as when enabled. A
+config toggled between enabled and disabled needs no migration.
