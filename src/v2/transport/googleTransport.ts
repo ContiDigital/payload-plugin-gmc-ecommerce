@@ -149,7 +149,7 @@ export const createGoogleMerchantTransport = (
     insertProductInput: async ({ dataSourceName, input, payload }) => {
       await client.insertProductInput(input, payload, dataSourceName)
     },
-    listProcessedProducts: async ({ pageSize = 1_000, pageToken, payload }) => {
+    listProcessedProducts: async ({ pageSize = 250, pageToken, payload }) => {
       if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > MAX_REMOTE_PAGE_SIZE) {
         throw new TypeError(
           `Merchant product pageSize must be between 1 and ${MAX_REMOTE_PAGE_SIZE}`,

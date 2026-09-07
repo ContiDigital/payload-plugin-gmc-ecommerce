@@ -9,6 +9,11 @@
  * release suites separately prove the executor, durable adapter, batch/feed,
  * reconciliation, state-store, and local-inventory contracts.
  *
+ * The full lifecycle can take up to ~20 minutes: Google's processed view
+ * usually reflects an insert within a minute or two, but an update (refresh)
+ * or a delete can lag minutes behind before the processed product converges
+ * or disappears.
+ *
  * Required opt-in:
  *   GOOGLE_MERCHANT_LIVE_TESTS_ENABLED=true
  *   GOOGLE_MERCHANT_TEST_DATA_SOURCE_ID=<non-production primary data source>
@@ -75,18 +80,20 @@ const requiredEnvironment = (name: string): string => {
 
 const waitFor = async <T>(args: {
   attempts?: number
+  intervalMs?: number
   read: () => Promise<T>
   ready: (value: T) => boolean
 }): Promise<T> => {
   let last: T | undefined
   const attempts = args.attempts ?? 24
+  const intervalMs = args.intervalMs ?? 5_000
   for (let attempt = 1; attempt <= attempts; attempt++) {
     last = await args.read()
     if (args.ready(last)) {
       return last
     }
     if (attempt < attempts) {
-      await new Promise((resolve) => setTimeout(resolve, 5_000))
+      await new Promise((resolve) => setTimeout(resolve, intervalMs))
     }
   }
   throw new Error(
@@ -164,11 +171,12 @@ afterAll(async () => {
   }
   await transport.deleteProductInput({ dataSourceName, identity, payload })
   await waitFor({
-    attempts: 24,
+    attempts: 60,
+    intervalMs: 10_000,
     read: () => transport.getProcessedProduct({ identity, payload }),
     ready: (product) => product === null,
   })
-}, 150_000)
+}, 900_000)
 
 liveTest('Google Merchant API v1 transport lifecycle', () => {
   test('inserts, observes, refreshes, and idempotently deletes one isolated offer', async () => {
@@ -232,6 +240,8 @@ liveTest('Google Merchant API v1 transport lifecycle', () => {
       payload,
     })
     const refreshed = await waitFor({
+      attempts: 60,
+      intervalMs: 10_000,
       read: () => transport.getProcessedProduct({ identity, payload }),
       ready: (product) => product?.versionNumber === refreshVersion,
     })
@@ -239,11 +249,13 @@ liveTest('Google Merchant API v1 transport lifecycle', () => {
 
     await transport.deleteProductInput({ dataSourceName, identity, payload })
     await waitFor({
+      attempts: 60,
+      intervalMs: 10_000,
       read: () => transport.getProcessedProduct({ identity, payload }),
       ready: (product) => product === null,
     })
     await expect(
       transport.deleteProductInput({ dataSourceName, identity, payload }),
     ).resolves.toBeUndefined()
-  }, 300_000)
+  }, 1_500_000)
 })

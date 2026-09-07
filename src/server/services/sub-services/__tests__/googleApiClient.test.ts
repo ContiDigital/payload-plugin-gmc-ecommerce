@@ -452,14 +452,14 @@ describe('createGoogleApiClient', () => {
       )
       .mockResolvedValueOnce(
         new Response('small body with a hostile declared size', {
-          headers: { 'Content-Length': String(8 * 1024 * 1024 + 1) },
+          headers: { 'Content-Length': String(32 * 1024 * 1024 + 1) },
           status: 200,
         }),
       )
 
     const client = createGoogleApiClient(buildOptions())
 
-    await expect(client.listProducts(null)).rejects.toThrow(/8388608 byte response limit/i)
+    await expect(client.listProducts(null)).rejects.toThrow(/33554432 byte response limit/i)
   })
 
   test('classifies an OAuth rejection without leaking its response into the message', async () => {

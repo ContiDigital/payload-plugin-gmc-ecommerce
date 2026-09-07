@@ -29,9 +29,9 @@ export default defineConfig(() => {
     },
     test: {
       environment: 'node',
-      hookTimeout: 120_000,
+      hookTimeout: 900_000,
       include: ['dev/v2.live.spec.ts'],
-      testTimeout: 300_000,
+      testTimeout: 1_500_000,
     },
   }
 })

@@ -110,7 +110,7 @@ export class GoogleTransportError extends Error {
   }
 }
 
-const MAX_MERCHANT_RESPONSE_BYTES = 8 * 1024 * 1024
+const MAX_MERCHANT_RESPONSE_BYTES = 32 * 1024 * 1024
 const MAX_OAUTH_RESPONSE_BYTES = 64 * 1024
 
 const hasControlCharacters = (value: string): boolean =>

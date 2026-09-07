@@ -252,6 +252,15 @@ describe('Google Merchant v2 transport', () => {
     )
   })
 
+  it('defaults the list page size to 250 processed products', async () => {
+    const normalized = normalizeGmcV2Options(options())
+    const transport = createGoogleMerchantTransport(normalized)
+
+    await transport.listProcessedProducts({ payload })
+
+    expect(googleClient.listProducts).toHaveBeenCalledWith(payload, 250, undefined)
+  })
+
   it('fails closed on malformed or oversized Merchant list pages', async () => {
     const transport = createGoogleMerchantTransport(normalizeGmcV2Options(options()))
     await expect(transport.listProcessedProducts({ pageSize: 1_001, payload })).rejects.toThrow(
