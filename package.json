@@ -1,6 +1,6 @@
 {
   "name": "payload-plugin-gmc-ecommerce",
-  "version": "2.0.0-rc.36",
+  "version": "2.0.0-rc.37",
   "description": "Publish Payload CMS products to Google Merchant Center: canonical projection, durable commands, TSV feeds.",
   "license": "MIT",
   "repository": {

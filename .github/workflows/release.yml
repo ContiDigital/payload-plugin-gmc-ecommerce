@@ -203,7 +203,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: >-
-          npm publish "${{ steps.release-meta.outputs.tarball }}"
+          npm publish "./${{ steps.release-meta.outputs.tarball }}"
           --provenance
           --access public
           --tag "${{ steps.release-meta.outputs.dist-tag }}"
