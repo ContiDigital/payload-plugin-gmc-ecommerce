@@ -31,6 +31,12 @@ executed:
    the `gmc-local-inventory-publications-v2` table creation.
 7. **PR split** — separate the working tree into transactions + `req`
    plumbing, revalidate outbox, watermark queue, GMC v2, and infra.
+8. **`src/plugins/MerchantCenter/runtime.ts`** — set
+   `products.remotePageSize: 1000` (or raise `maxRemoteReconcilePages` to at
+   least 150) so `maxRemoteReconcilePages × remotePageSize` covers the
+   ~28,000-offer catalog with headroom; the 2.0.0 default `remotePageSize`
+   (250) combined with Fine's `maxRemoteReconcilePages: 100` caps a pass at
+   25,000 offers, below the current catalog size.
 
 ### Typecheck against the 2.0 tarball
 
@@ -267,7 +273,7 @@ MerchantQueue: {
 }
 ```
 
-This is an initial bound, not a substitute for load testing. The configured plugin `products.batchSize` begins at 25 so coordinator dispatch stays bounded, `maxRemoteReconcilePages: 100` caps one pass at 100,000 remote offers, and multi-offer status refresh fans to one child per offer. Fine's worker has a 120-second ECS stop window, shorter than this handler ceiling; Merchant commands are therefore required to tolerate shutdown/redelivery. The three-hour visibility lease protects crash recovery. A caught failure or timeout resets visibility to 60 seconds; on timeout the isolated worker stops polling and fail-stops after a five-second reset grace so the leaked promise cannot race redelivery.
+This is an initial bound, not a substitute for load testing. The configured plugin `products.batchSize` begins at 25 so coordinator dispatch stays bounded, `maxRemoteReconcilePages: 100` caps one pass at `maxRemoteReconcilePages × remotePageSize` remote offers — 100 × 250 (the default `remotePageSize`) = 25,000, below Fine's ~28,000-offer catalog — and multi-offer status refresh fans to one child per offer. Fine's worker has a 120-second ECS stop window, shorter than this handler ceiling; Merchant commands are therefore required to tolerate shutdown/redelivery. The three-hour visibility lease protects crash recovery. A caught failure or timeout resets visibility to 60 seconds; on timeout the isolated worker stops polling and fail-stops after a five-second reset grace so the leaked promise cannot race redelivery.
 
 Keep `MerchantQueue` separate from `NightlyCronQueue`: catalog continuations need a catalog subject, offer writes need offer subjects, and unrelated Pinterest/ranking work must not head-of-line block Merchant recovery.
 

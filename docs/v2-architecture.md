@@ -63,7 +63,11 @@ Google.
 Coordinator commands (`catalog.*`, `localInventory.reconcile`) never do the
 work themselves; they page and dispatch children. Each page has a hard ceiling
 (`products.maxCatalogPages`, `products.maxRemoteReconcilePages`) so a runaway
-sweep fails loudly instead of enqueueing forever.
+sweep fails loudly instead of enqueueing forever. The remote phase of
+`catalog.reconcile` lists Google's processed products in pages of
+`products.remotePageSize` (default 250, Google's maximum 1000); the product of
+`products.maxRemoteReconcilePages × products.remotePageSize` is therefore the
+maximum number of remote offers one reconcile pass can scan.
 
 ## Publication state
 

@@ -85,6 +85,7 @@ const build = (args?: {
   maxRemoteReconcilePages?: number
   rateLimit?: PayloadGmcEcommerceV2Options['rateLimit']
   reconciliation?: PayloadGmcEcommerceV2Options['reconciliation']
+  remotePageSize?: number
   retiredStoreCodes?: string[]
   storeCodes?: string[]
   where?: Where
@@ -156,6 +157,7 @@ const build = (args?: {
       maxCatalogPages: args?.maxCatalogPages,
       maxRemoteReconcilePages: args?.maxRemoteReconcilePages,
       project: productProject,
+      remotePageSize: args?.remotePageSize,
       resolveIdentities: () => [newInput],
       where: args?.where,
     },
@@ -1317,6 +1319,29 @@ describe('GMC v2 command executor', () => {
     )
     expect(test.asyncAdapter.dispatch).not.toHaveBeenCalled()
     expect(test.stateStore.markObserved).toHaveBeenCalledOnce()
+  })
+
+  it('passes the configured remote page size to the processed-products list call', async () => {
+    const test = build({ remotePageSize: 1_000 })
+    vi.mocked(test.transport.listProcessedProducts).mockResolvedValueOnce({
+      products: [],
+    })
+
+    await test.execute({
+      command: {
+        type: 'catalog.reconcile',
+        phase: 'remote',
+        requestedAt: REQUESTED_AT,
+        schemaVersion: 2,
+        startedAt: REQUESTED_AT,
+      },
+      operationId: 'reconcile-page-size',
+      payload: test.payload,
+    })
+
+    expect(test.transport.listProcessedProducts).toHaveBeenCalledWith(
+      expect.objectContaining({ pageSize: 1_000 }),
+    )
   })
 
   it('deletes a remote offer whose owning product no longer exists', async () => {

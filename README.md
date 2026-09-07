@@ -310,7 +310,7 @@ localInventory: {
 | `dataSourceId`              | yes      | Numeric id of an API-backed primary product data source   |
 | `getCredentials`            | yes      | Returns service-account JSON credentials                  |
 | `async`                     | yes      | `payloadJobsAsyncAdapter()` or your adapter               |
-| `products`                  | yes      | `collection`, `project`, `resolveIdentities`, `where?`, `batchSize?`, `fetchDepth?` |
+| `products`                  | yes      | `collection`, `project`, `resolveIdentities`, `where?`, `batchSize?`, `fetchDepth?`, `maxCatalogPages?`, `maxRemoteReconcilePages?`, `remotePageSize?` (reconcile list page size, default 250; `maxRemoteReconcilePages × remotePageSize` is the max remote offers one reconcile pass scans) |
 | `access`                    | no       | Endpoint and state-collection access; default admin-only  |
 | `catalogDependencies`       | no       | Collections whose changes re-publish products             |
 | `catalogGlobalDependencies` | no       | Globals whose changes re-publish products                 |

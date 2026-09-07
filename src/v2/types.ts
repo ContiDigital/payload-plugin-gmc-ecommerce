@@ -333,6 +333,14 @@ export type GmcProductSourceConfig = {
   maxRemoteReconcilePages?: number
   project: (args: GmcProjectionArgs) => GmcProductProjection | Promise<GmcProductProjection>
   /**
+   * Processed-products list page size used while reconciling the remote
+   * catalog. Default 250; Google's maximum is 1000. Roughly 10 KB per
+   * product, so one page is roughly 10 KB × this value. The reconcile
+   * page ceiling (`maxRemoteReconcilePages`) multiplied by this value is the
+   * maximum number of remote offers one reconcile pass can scan.
+   */
+  remotePageSize?: number
+  /**
    * Resolves every offer identity represented by a document. Required so a
    * deleted document and an identity change remain recoverable.
    */
@@ -671,6 +679,7 @@ export type NormalizedGmcV2Options = {
     fetchDepth: number
     maxCatalogPages: number
     maxRemoteReconcilePages: number
+    remotePageSize: number
   } & GmcProductSourceConfig
   publicationState: {
     collectionSlug: string

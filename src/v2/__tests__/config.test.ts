@@ -135,6 +135,7 @@ describe('normalizeGmcV2Options', () => {
     expect(normalized.products.batchSize).toBe(100)
     expect(normalized.products.fetchDepth).toBe(1)
     expect(normalized.products.maxCatalogPages).toBe(10_000)
+    expect(normalized.products.remotePageSize).toBe(250)
     expect(normalized.rateLimit.maxConcurrency).toBe(4)
     expect(normalized.reconciliation.orphanDeletion).toBe('disabled')
   })
@@ -204,6 +205,16 @@ describe('normalizeGmcV2Options', () => {
     const unbounded = validOptions()
     unbounded.products.batchSize = 1_001
     expect(() => normalizeGmcV2Options(unbounded)).toThrow(/no greater than 1000/i)
+  })
+
+  it('rejects an out-of-range remote reconcile page size', () => {
+    const tooLarge = validOptions()
+    tooLarge.products.remotePageSize = 1_001
+    expect(() => normalizeGmcV2Options(tooLarge)).toThrow(/products.remotePageSize.*no greater than 1000/i)
+
+    const tooSmall = validOptions()
+    tooSmall.products.remotePageSize = 0
+    expect(() => normalizeGmcV2Options(tooSmall)).toThrow(/products.remotePageSize/i)
   })
 
   it('allows inert non-numeric resource placeholders only while disabled', () => {

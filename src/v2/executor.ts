@@ -1040,7 +1040,7 @@ export const createGmcCommandExecutor = (
     }
     const page = await merchantCall('products.list', () =>
       transport.listProcessedProducts({
-        pageSize: 250,
+        pageSize: options.products.remotePageSize,
         pageToken: context.command.pageToken,
         payload: context.payload,
       }),

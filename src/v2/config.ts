@@ -738,6 +738,12 @@ export const normalizeGmcV2Options = (
         10_000,
         1_000_000,
       ),
+      remotePageSize: positiveInteger(
+        'products.remotePageSize',
+        options.products.remotePageSize,
+        250,
+        1_000,
+      ),
     },
     publicationState: {
       collectionSlug: payloadCollectionSlug(

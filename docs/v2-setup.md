@@ -106,7 +106,12 @@ deleted, so it must not depend on data that is already gone.
 
 Other `products` options: `fetchDepth` (relationship depth for the worker's
 re-read, default 1), `batchSize` (products per coordinator page, default 100),
-`maxCatalogPages` and `maxRemoteReconcilePages` (safety ceilings).
+`maxCatalogPages` and `maxRemoteReconcilePages` (safety ceilings), and
+`remotePageSize` (processed-products list page size for reconciliation,
+default 250, Google's maximum 1000). `maxRemoteReconcilePages ×
+remotePageSize` is the maximum number of remote offers one reconcile pass can
+scan — raise `remotePageSize` (or `maxRemoteReconcilePages`) if your catalog
+outgrows that ceiling.
 
 ## 3. Run the queue and publish
 
