@@ -11,6 +11,7 @@ that is Payload Jobs on the `gmc` queue:
 ```ts
 // Long-lived host: declare it in the Payload config.
 jobs: {
+  tasks: [], // The plugin appends its task; required by Payload 3.37.
   autoRun: [{ cron: '* * * * *', limit: 25, queue: 'gmc' }],
 }
 

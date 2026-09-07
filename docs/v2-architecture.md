@@ -107,14 +107,16 @@ Two rules decide everything, and there is no third:
    `desiredDigest`, there is nothing to send and the command short-circuits.
    This is what makes a re-publish of an unchanged catalog nearly free.
 
-Neither rule needs a global version counter, a lock, or a FIFO queue. Commands
-for one offer may be delivered out of order or twice; the pair above makes the
-outcome the same either way. That is why the built-in adapter can honestly
-report `orderedBySubject: false`.
+Neither rule needs a global version counter, a lock, or a FIFO queue to fence
+local state. Concurrent HTTP writes can still finish out of order at Google;
+the built-in adapter reports `orderedBySubject: false`.
 
 What the rules do not cover, reconciliation heals. `catalog.reconcile` stamps
 one `startedAt` on its whole run. Its first phase re-publishes the catalog
-(each child verifying that Google really has the offer). Its second phase lists
+(each child checking remote ownership and reasserting canonical content even
+when the offer already exists). Existence alone cannot prove that an older
+concurrent write did not overwrite the remote content. Budget one insert per
+eligible offer for a full reconciliation. Its second phase lists
 the processed products Google holds, records the observation on each row it
 keeps, and treats a remote offer as an orphan when there is no row for it, when
 the row is already `deleted`, or when the row has no `desiredAt` at all or a

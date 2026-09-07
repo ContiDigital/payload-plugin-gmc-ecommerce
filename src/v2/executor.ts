@@ -728,7 +728,9 @@ export const createGmcCommandExecutor = (
           remoteStatus: remote.productStatus,
           remoteVersion: remote.versionNumber,
         })
-        return skipped(1)
+        // Existence does not prove content: an older concurrent HTTP insert
+        // can finish last while the local revision fence retains newer state.
+        // Reconciliation must reassert canonical content to heal that race.
       }
       await merchantCall('productInputs.insert', () =>
         transport.insertProductInput({
@@ -1386,6 +1388,11 @@ export const createGmcCommandExecutor = (
       productId: command.productId,
       storeCode: command.storeCode,
     }
+    const previous = await stateStore.getLocalInventory({
+      identity,
+      payload,
+      storeCode: command.storeCode,
+    })
     const claimed = await stateStore.claimLocalInventory(claim)
     if (!isSameLocalInventoryResource(claimed, identity, command.storeCode)) {
       throw new TypeError('Local-inventory publication store returned the wrong resource')
@@ -1397,9 +1404,15 @@ export const createGmcCommandExecutor = (
     if (claimed.operationId !== operationId) {
       return skipped()
     }
-    if (claimed.status === 'published' && claimed.publishedDigest === command.digest) {
+    if (
+      claimed.status === 'published' &&
+      claimed.publishedDigest === command.digest &&
+      previous?.desiredAt === command.requestedAt
+    ) {
       return skipped()
     }
+    // A fresh reconciliation instant must reassert inventory too: Google can
+    // retain a stale concurrent write even when our local digest is current.
 
     try {
       const dataSourceName = resolveGmcDataSourceName(identity, options)

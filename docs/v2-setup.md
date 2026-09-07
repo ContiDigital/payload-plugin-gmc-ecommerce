@@ -38,6 +38,7 @@ import type { Product } from './payload-types'
 export default buildConfig({
   collections: [Products],
   jobs: {
+    tasks: [], // The plugin appends its task; required by Payload 3.37.
     autoRun: [{ cron: '* * * * *', limit: 25, queue: 'gmc' }],
   },
   plugins: [

@@ -12,6 +12,7 @@ export default buildConfig({
   secret: process.env.PAYLOAD_SECRET!,
   collections: [Products],
   jobs: {
+    tasks: [], // The plugin appends its task; required by Payload 3.37.
     // Runs queued Merchant commands every minute. Not for serverless hosts;
     // there, call payload.jobs.run({ queue: 'gmc', sequential: true }) from a
     // cron endpoint.

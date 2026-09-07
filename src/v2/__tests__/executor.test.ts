@@ -621,6 +621,54 @@ describe('GMC v2 command executor', () => {
     expect(test.transport.insertProductInput).not.toHaveBeenCalled()
   })
 
+  it('repairs stale remote content after an older concurrent insert finishes last', async () => {
+    const test = build()
+    const staleInput = {
+      ...newInput,
+      productAttributes: { ...newInput.productAttributes, title: 'Stale title' },
+    }
+    let releaseOld!: () => void
+    let oldStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      oldStarted = resolve
+    })
+    const blocked = new Promise<void>((resolve) => {
+      releaseOld = resolve
+    })
+    let remoteTitle = ''
+    vi.mocked(test.transport.insertProductInput).mockImplementation(async ({ input }) => {
+      if (input.productAttributes?.title === 'Stale title') {
+        oldStarted()
+        await blocked
+      }
+      remoteTitle = input.productAttributes?.title ?? ''
+    })
+    const old = test.execute({
+      command: offerPublish({
+        digest: canonicalizeProductInput({ input: staleInput }).digest,
+        input: staleInput,
+      }),
+      operationId: 'old',
+      payload: test.payload,
+    })
+    await started
+    await test.execute({
+      command: offerPublish({ requestedAt: '2026-08-29T13:00:00.000Z' }),
+      operationId: 'new',
+      payload: test.payload,
+    })
+    releaseOld()
+    await old
+    expect(remoteTitle).toBe('Stale title')
+    vi.mocked(test.transport.getProcessedProduct).mockResolvedValue(remoteProduct())
+    await test.execute({
+      command: offerPublish({ requestedAt: '2026-08-29T14:00:00.000Z', verifyRemote: true }),
+      operationId: 'repair',
+      payload: test.payload,
+    })
+    expect(remoteTitle).toBe(newInput.productAttributes.title)
+  })
+
   it('skips a product.publish redelivery after its offer child already completed', async () => {
     const find = vi.fn(() => Promise.resolve({ docs: [] })) as unknown as Payload['find']
     const test = build({ find })
@@ -1142,7 +1190,7 @@ describe('GMC v2 command executor', () => {
     expect(test.productProject).not.toHaveBeenCalled()
   })
 
-  it('reconciles an unchanged published product with a remote verification and no insert', async () => {
+  it('reconciles an unchanged published product by reasserting canonical remote content', async () => {
     const find = vi.fn(() =>
       Promise.resolve({ docs: [{ id: 'product-1' }] }),
     ) as unknown as Payload['find']
@@ -1174,7 +1222,7 @@ describe('GMC v2 command executor', () => {
     )
 
     expect(test.transport.getProcessedProduct).toHaveBeenCalledOnce()
-    expect(test.transport.insertProductInput).not.toHaveBeenCalled()
+    expect(test.transport.insertProductInput).toHaveBeenCalledOnce()
     expect(test.stateStore.markObserved).toHaveBeenCalledWith(
       expect.objectContaining({ remoteMissing: false }),
     )
@@ -2184,6 +2232,19 @@ describe('GMC v2 command executor', () => {
 
     expect(test.transport.getApiPrimaryDataSource).not.toHaveBeenCalled()
     expect(test.transport.insertLocalInventory).not.toHaveBeenCalled()
+  })
+
+  it('reasserts unchanged local inventory at a fresh reconciliation instant', async () => {
+    const test = build({ localInventory: true })
+    await seedPublished(test, { digest: newDigest, identity: newIdentity })
+    await test.execute({ command: localApply(), operationId: 'initial', payload: test.payload })
+    vi.mocked(test.transport.insertLocalInventory).mockClear()
+    await test.execute({
+      command: localApply({ requestedAt: '2026-08-29T14:00:00.000Z' }),
+      operationId: 'reconcile-inventory',
+      payload: test.payload,
+    })
+    expect(test.transport.insertLocalInventory).toHaveBeenCalledOnce()
   })
 
   it('skips a local inventory redelivery whose digest is already published', async () => {

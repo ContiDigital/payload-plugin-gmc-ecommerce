@@ -12,6 +12,7 @@ export default buildConfig({
   secret: process.env.PAYLOAD_SECRET!,
   collections: [Products],
   jobs: {
+    tasks: [], // The plugin appends its task; required by Payload 3.37.
     autoRun: [{ cron: '* * * * *', limit: 25, queue: 'gmc' }],
   },
   plugins: [

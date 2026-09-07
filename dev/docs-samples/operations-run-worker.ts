@@ -3,6 +3,7 @@ import type { Config, Payload } from 'payload'
 
 // Long-lived host: declare it in the Payload config.
 export const jobs: Config['jobs'] = {
+  tasks: [], // The plugin appends its task; required by Payload 3.37.
   autoRun: [{ cron: '* * * * *', limit: 25, queue: 'gmc' }],
 }
 
