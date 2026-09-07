@@ -52,13 +52,19 @@ jobs:
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Ensure tagged commit is on main
+      - name: Ensure tagged commit is on an allowed release branch
+        env:
+          GMC_PRERELEASE: ${{ steps.release-version.outputs.prerelease }}
         run: |
-          git fetch origin main --depth=1 || true
+          git fetch origin '+refs/heads/main:refs/remotes/origin/main' '+refs/heads/release/*:refs/remotes/origin/release/*'
           CONTAINING_BRANCHES="$(git branch -r --contains "${GITHUB_SHA}" | sed 's/^[* ]*//')"
+          ALLOWED_BRANCHES='^origin/main$'
+          if [ "${GMC_PRERELEASE}" = 'true' ]; then
+            ALLOWED_BRANCHES='^origin/(main|release/.+)$'
+          fi
 
-          if ! echo "${CONTAINING_BRANCHES}" | grep -Eq '^origin/main$'; then
-            echo "Tagged commit ${GITHUB_SHA} is not contained in origin/main."
+          if ! echo "${CONTAINING_BRANCHES}" | grep -Eq "${ALLOWED_BRANCHES}"; then
+            echo "Tagged commit ${GITHUB_SHA} is not on an allowed branch (stable: main; prerelease: main or release/**)."
             echo "${CONTAINING_BRANCHES}"
             exit 1
           fi
