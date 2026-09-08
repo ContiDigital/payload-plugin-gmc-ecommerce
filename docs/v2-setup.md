@@ -103,7 +103,16 @@ and `warnings`. Do not read the plugin's state collection from it.
 
 `resolveIdentities` is how old offers get cleaned up: it is called on the
 *previous* version of a document during an update and on the document being
-deleted, so it must not depend on data that is already gone.
+deleted, so it must not depend on data that is already gone. Keep identity
+resolution independent of eligibility: for example, an unpriced product should
+return `products: []` from `project` while `resolveIdentities` still returns its
+SKU. Reject missing, non-finite or non-positive prices in your host projector
+when your catalog requires priced offers.
+
+For listings imported from an older integration without v2 publication rows,
+a direct `product.publish` command must include the known old identities in
+`previousIdentities` to remove them. A catalog sweep cannot infer historical
+ownership that was never recorded; review reported orphans separately.
 
 Other `products` options: `fetchDepth` (relationship depth for the worker's
 re-read, default 1), `batchSize` (products per coordinator page, default 100),
@@ -264,7 +273,7 @@ writes, and lags updates and deletes more than inserts. A `localInventory.apply`
 that arrives before the processed product exists fails with
 `GMC_PROCESSED_PRODUCT_NOT_READY`, which is retryable: the command is retried
 inside the async adapter's retry budget — about fifteen minutes with the
-built-in adapter's defaults of five attempts on a 30-second exponential
+built-in adapter's defaults of five retries after the initial attempt, on a 30-second exponential
 backoff. The executor is built for this lag (`verifyRemote` plus the
 `GMC_PROCESSED_PRODUCT_NOT_READY` retry), but when propagation still outlasts
 the budget the store row dead-letters and stays that way until the next
@@ -284,9 +293,9 @@ With more than one source configured, every publish first reads the processed
 product to check which source owns it — `productInputs.insert` moves an
 existing offer to whichever source writes it, and that is not something to do
 by accident. A single-source install skips that read for hook and API
-publishes. It is still made for reconciliation children, which carry
-`verifyRemote` and always read the processed product to prove the offer is
-really there before trusting the local digest shortcut.
+publishes. Reconciliation children still read the processed product to check source
+ownership and reassert canonical content even when the local digest matches;
+this repairs a remote write that raced with an earlier command.
 
 ## 8. Two installations in one process
 

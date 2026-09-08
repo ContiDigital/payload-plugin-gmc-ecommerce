@@ -4,12 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0-rc.37] - 2026-09-07
+## [2.0.0] - 2026-09-07
 
 2.0 replaces the 1.x sync engine with a one-way publisher. Payload product data
 is the only authority: a host projector turns each published product into a
 complete Merchant API `ProductInput`, and every Merchant Center write runs as a
 durable command in a worker. Nothing is written back onto products.
+
+Promotes the rc.37 implementation after a production host deployment, a real
+Merchant product/local-inventory canary, and a 4,419-offer artifact build. Stable
+publication additionally requires the packaged live transport lifecycle in CI.
+This promotion changes the version and documentation, not the runtime contract.
 
 ### Breaking changes
 

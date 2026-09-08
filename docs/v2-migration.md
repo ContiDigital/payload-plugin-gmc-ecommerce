@@ -114,8 +114,10 @@ Three things that catch people out:
 
 ## From a 2.0 release candidate
 
-Queued commands, publication rows, and feed artifacts written by an rc all
-survive the upgrade. The schema does not.
+The changes below apply to older candidates such as rc.35. rc.37 already uses
+the stable 2.0 contract: upgrading rc.37 to 2.0.0 requires no additional plugin
+schema migration. Hosts coming from older candidates must review the schema,
+queued commands, publication rows, and feed artifacts as described below.
 
 ### State collection
 
