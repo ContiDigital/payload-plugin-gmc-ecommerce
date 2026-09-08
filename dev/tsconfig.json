@@ -1,6 +1,15 @@
 {
   "extends": "../tsconfig.json",
-  "exclude": [],
+  // The dev app is a *host*: `payload-types.ts` augments Payload's generated
+  // types, so `CollectionSlug` here is the dev app's own union. The plugin's
+  // unit tests and the documentation samples are authored against the generic
+  // public types and are gated by the root project instead; compiling them
+  // here would only demand fake dev-app slugs. Plugin source is still checked
+  // in full, transitively, through `payload.config.ts`.
+  "exclude": [
+    "docs-samples",
+    "../src/**/__tests__/**"
+  ],
   "include": [
     "**/*.js",
     "**/*.jsx",
@@ -22,11 +31,8 @@
       "payload-plugin-gmc-ecommerce": [
         "../src/index.ts"
       ],
-      "payload-plugin-gmc-ecommerce/client": [
-        "../src/exports/client.ts"
-      ],
-      "payload-plugin-gmc-ecommerce/rsc": [
-        "../src/exports/rsc.ts"
+      "payload-plugin-gmc-ecommerce/v2": [
+        "../src/exports/v2.ts"
       ]
     },
     "noEmit": true,

@@ -1,4 +1,5 @@
-import { RETRYABLE_STATUS_CODES } from '../../../constants.js'
+import { isRetryableMerchantApiError } from '../../../v2/runtimeConstants.js'
+import { GoogleTransportError } from './googleApiClient.js'
 
 type RetryConfig = {
   baseRetryDelayMs: number
@@ -32,6 +33,9 @@ const RETRYABLE_ERROR_CODES = new Set([
 ])
 
 const isRetryableError = (error: unknown): boolean => {
+  if (error instanceof GoogleTransportError) {
+    return true
+  }
   if (error instanceof Error) {
     // Network-level errors (Node.js / undici)
     const code = (error as NodeJS.ErrnoException).code
@@ -43,19 +47,17 @@ const isRetryableError = (error: unknown): boolean => {
     if (error.name === 'AbortError' || error.name === 'TimeoutError') {
       return true
     }
-
-    // HTTP status code in error message
-    const statusMatch = error.message.match(/status[:\s]+(\d{3})/i)
-    if (statusMatch) {
-      return RETRYABLE_STATUS_CODES.has(Number(statusMatch[1]))
-    }
   }
 
   if (typeof error === 'object' && error !== null) {
-    const statusCode = (error as Record<string, unknown>).statusCode
-      ?? (error as Record<string, unknown>).status
+    const statusCode =
+      (error as Record<string, unknown>).statusCode ?? (error as Record<string, unknown>).status
     if (typeof statusCode === 'number') {
-      return RETRYABLE_STATUS_CODES.has(statusCode)
+      const reason = (error as { reason?: unknown }).reason
+      return isRetryableMerchantApiError({
+        reason: typeof reason === 'string' ? reason : undefined,
+        statusCode,
+      })
     }
   }
 
@@ -68,14 +70,19 @@ const computeDelay = (attempt: number, config: RetryConfig): number => {
     config.baseRetryDelayMs * Math.pow(2, attempt),
   )
   const jitter = exponentialDelay * config.jitterFactor * Math.random()
-  return exponentialDelay + jitter
+  return Math.min(config.maxRetryDelayMs, exponentialDelay + jitter)
+}
+
+const retryAfterMsFrom = (error: unknown): number | undefined => {
+  if (!error || typeof error !== 'object') {
+    return undefined
+  }
+  const value = (error as { retryAfterMs?: unknown }).retryAfterMs
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
 }
 
 export const createRetryService = (config: RetryConfig, logger?: Logger) => {
-  const execute = async <T>(
-    fn: () => Promise<T>,
-    context: RetryContext,
-  ): Promise<T> => {
+  const execute = async <T>(fn: () => Promise<T>, context: RetryContext): Promise<T> => {
     let lastError: unknown
 
     for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
@@ -88,7 +95,10 @@ export const createRetryService = (config: RetryConfig, logger?: Logger) => {
           throw error
         }
 
-        const delayMs = computeDelay(attempt, config)
+        const delayMs = Math.min(
+          config.maxRetryDelayMs,
+          Math.max(computeDelay(attempt, config), retryAfterMsFrom(error) ?? 0),
+        )
         logger?.warn(
           `[GMC Retry] ${context.operation} attempt ${attempt + 1}/${config.maxRetries} failed, retrying in ${Math.round(delayMs)}ms`,
           {

@@ -25,10 +25,21 @@
         "name": "next"
       }
     ],
+    // Documentation samples import the package by name, exactly as a host does.
+    "paths": {
+      "payload-plugin-gmc-ecommerce": [
+        "./src/index.ts"
+      ],
+      "payload-plugin-gmc-ecommerce/v2": [
+        "./src/exports/v2.ts"
+      ]
+    },
   },
   "include": [
     "./src/**/*.ts",
     "./src/**/*.tsx",
+    // Every code sample that appears in README.md or docs/v2-*.md.
+    "./dev/docs-samples/**/*.ts",
     "./dev/next-env.d.ts",
   ],
 }

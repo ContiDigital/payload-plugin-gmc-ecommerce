@@ -1,62 +1,20 @@
-import type { CollectionSlug, Config, Payload, PayloadRequest } from 'payload'
+import type { Payload, PayloadRequest } from 'payload'
 
 // ---------------------------------------------------------------------------
 // Enumerations
 // ---------------------------------------------------------------------------
 
-export const SYNC_MODES = ['manual', 'onChange', 'scheduled'] as const
-export type SyncMode = (typeof SYNC_MODES)[number]
-
-export const FIELD_SYNC_MODES = ['permanent', 'initialOnly'] as const
-export type FieldSyncMode = (typeof FIELD_SYNC_MODES)[number]
-
-export const SYNC_STATES = ['idle', 'syncing', 'success', 'error'] as const
-export type SyncState = (typeof SYNC_STATES)[number]
-
-export const SYNC_SOURCES = ['push', 'pull', 'initial'] as const
-export type SyncSource = (typeof SYNC_SOURCES)[number]
-
-export const SYNC_ACTIONS = ['saveSync', 'refresh', 'delete', 'initialSync', 'pullSync'] as const
-export type SyncAction = (typeof SYNC_ACTIONS)[number]
-
-export const CONFLICT_STRATEGIES = ['mc-wins', 'payload-wins', 'newest-wins'] as const
-export type ConflictStrategy = (typeof CONFLICT_STRATEGIES)[number]
-
-export const ADMIN_MODES = ['route', 'dashboard', 'both', 'headless'] as const
-export type AdminMode = (typeof ADMIN_MODES)[number]
-
-export const JOB_STATUSES = ['running', 'completed', 'failed', 'cancelled'] as const
-export type JobStatus = (typeof JOB_STATUSES)[number]
-
-export const JOB_TYPES = ['push', 'pull', 'initialSync', 'pullAll', 'batch'] as const
-export type JobType = (typeof JOB_TYPES)[number]
-
-export const MC_AVAILABILITY = ['IN_STOCK', 'OUT_OF_STOCK', 'PREORDER', 'BACKORDER'] as const
+export const MC_AVAILABILITY = [
+  'IN_STOCK',
+  'LIMITED_AVAILABILITY',
+  'OUT_OF_STOCK',
+  'PREORDER',
+  'BACKORDER',
+] as const
 export type MCAvailability = (typeof MC_AVAILABILITY)[number]
 
 export const MC_CONDITION = ['NEW', 'USED', 'REFURBISHED'] as const
 export type MCCondition = (typeof MC_CONDITION)[number]
-
-export const MC_AGE_GROUP = ['newborn', 'infant', 'toddler', 'kids', 'adult'] as const
-export type MCAgeGroup = (typeof MC_AGE_GROUP)[number]
-
-export const MC_GENDER = ['male', 'female', 'unisex'] as const
-export type MCGender = (typeof MC_GENDER)[number]
-
-export const MC_SIZE_TYPE = ['regular', 'petite', 'plus', 'tall', 'maternity'] as const
-export type MCSizeType = (typeof MC_SIZE_TYPE)[number]
-
-export const TRANSFORM_PRESETS = [
-  'none',
-  'toMicros',
-  'toMicrosString',
-  'extractUrl',
-  'extractAbsoluteUrl',
-  'toArray',
-  'toString',
-  'toBoolean',
-] as const
-export type TransformPreset = (typeof TRANSFORM_PRESETS)[number]
 
 // ---------------------------------------------------------------------------
 // Google service account
@@ -98,13 +56,6 @@ export type MCProductIdentity = {
   offerId: string
 }
 
-export type ResolvedMCIdentity = {
-  dataSourceName: string
-  merchantProductId: string
-  productInputName: string
-  productName: string
-} & MCProductIdentity
-
 // ---------------------------------------------------------------------------
 // Merchant Center price
 // ---------------------------------------------------------------------------
@@ -114,12 +65,42 @@ export type MCPrice = {
   currencyCode: string
 }
 
+/** Merchant API shared Interval: inclusive start, exclusive end. */
+export type MCInterval = {
+  endTime?: string
+  startTime?: string
+}
+
+export type MCProductDetail = {
+  attributeName: string
+  attributeValue: string
+  sectionName?: string
+}
+
+export type MCStructuredContent = {
+  content: string
+  digitalSourceType?: 'DEFAULT' | 'DIGITAL_SOURCE_TYPE_UNSPECIFIED' | 'TRAINED_ALGORITHMIC_MEDIA'
+}
+
 // ---------------------------------------------------------------------------
 // Merchant Center shipping
 // ---------------------------------------------------------------------------
 
+/**
+ * Google's documented shipping sub-attributes. Text feeds declare this layout
+ * in the column header and serialize the sub-attributes in a fixed positional
+ * order, so a sub-attribute added by Google later must be mapped deliberately
+ * rather than appended.
+ */
 export type MCShipping = {
   country?: string
+  locationGroupName?: string
+  locationId?: string
+  maxHandlingTime?: string
+  maxTransitTime?: string
+  minHandlingTime?: string
+  minTransitTime?: string
+  postalCode?: string
   price?: MCPrice
   region?: string
   service?: string
@@ -135,17 +116,6 @@ export type MCFreeShippingThreshold = {
   priceThreshold?: MCPrice
 }
 
-// ---------------------------------------------------------------------------
-// Merchant Center tax
-// ---------------------------------------------------------------------------
-
-export type MCTax = {
-  country?: string
-  rate?: number
-  region?: string
-  taxShip?: boolean
-}
-
 export type MCAttributeValueRow = {
   value: string
 }
@@ -158,80 +128,17 @@ export type MCArrayField = MCAttributeValueRow[] | string[]
 export type MCUrlArrayField = MCAttributeUrlRow[] | string[]
 
 // ---------------------------------------------------------------------------
-// Local inventory (Inventories sub-API)
-// ---------------------------------------------------------------------------
-
-export type LocalInventoryAvailability = 'in_stock' | 'out_of_stock'
-
-/**
- * Pickup SLA turnaround time values accepted by Google Merchant API v1.
- * Google displays the expected pickup date based on this + store hours from GBP.
- * Use 'MULTI_WEEK' for a generic "Store pick-up" annotation without a specific date.
- *
- * @see https://developers.google.com/merchant/api/reference/rpc/google.shopping.merchant.inventories.v1
- */
-export type LocalInventoryPickupSla =
-  | 'FIVE_DAY'
-  | 'FOUR_DAY'
-  | 'MULTI_WEEK'
-  | 'NEXT_DAY'
-  | 'SAME_DAY'
-  | 'SEVEN_DAY'
-  | 'SIX_DAY'
-  | 'THREE_DAY'
-  | 'TWO_DAY'
-
-export type LocalInventoryPickupConfig = {
-  /**
-   * Pickup SLA turnaround time. Google will display the expected pickup date based on this value
-   * and your store's opening hours from Google Business Profile.
-   *
-   * Note: As of September 2024, Google only requires pickupSla. The pickupMethod attribute
-   * is deprecated and should NOT be submitted.
-   */
-  sla: LocalInventoryPickupSla
-}
-
-export type LocalInventoryConfig = {
-  /** Custom resolver returning 'in_stock' for products that should appear as locally available, or null to remove. */
-  availabilityResolver?: (doc: Record<string, unknown>) => LocalInventoryAvailability | null
-  /** Enable local inventory sync. When enabled, in-stock products are synced to the specified store. */
-  enabled?: boolean
-  /** Optional pickup configuration. When set, products are marked as available for in-store pickup. */
-  pickup?: LocalInventoryPickupConfig
-  /** Your Google Business Profile store code for the physical location. */
-  storeCode: string
-}
-
-export type NormalizedLocalInventoryConfig = {
-  availabilityResolver?: (doc: Record<string, unknown>) => LocalInventoryAvailability | null
-  enabled: boolean
-  pickup?: LocalInventoryPickupConfig
-  storeCode: string
-}
-
-export type LocalInventoryInput = {
-  availability: string
-  price?: MCPrice
-  storeCode: string
-}
-
-export type LocalInventorySyncResult = {
-  action: 'delete' | 'insert'
-  error?: string
-  productId: string
-  storeCode: string
-  success: boolean
-}
-
-// ---------------------------------------------------------------------------
 // Merchant Center product attributes
 // ---------------------------------------------------------------------------
 
 export type MCProductAttributes = {
   additionalImageLinks?: MCUrlArrayField
+  adsGrouping?: string
+  adsLabels?: MCArrayField
+  adsRedirect?: string
   adult?: boolean
   ageGroup?: string
+  autoPricingMinPrice?: MCPrice
   availability?: string
   availabilityDate?: string
   brand?: string
@@ -245,8 +152,15 @@ export type MCProductAttributes = {
   customLabel3?: string
   customLabel4?: string
   description?: string
+  disclosureDate?: string
+  displayAdsId?: string
+  displayAdsLink?: string
+  displayAdsSimilarIds?: MCArrayField
+  displayAdsTitle?: string
+  displayAdsValue?: number
   energyEfficiencyClass?: string
   excludedDestinations?: MCArrayField
+  expirationDate?: string
   externalSellerId?: string
   freeShippingThreshold?: MCFreeShippingThreshold[]
   gender?: string
@@ -257,35 +171,55 @@ export type MCProductAttributes = {
   includedDestinations?: MCArrayField
   isBundle?: boolean
   itemGroupId?: string
+  lifestyleImageLinks?: MCUrlArrayField
   link?: string
+  linkTemplate?: string
   material?: string
   maxEnergyEfficiencyClass?: string
+  maxHandlingTime?: string
+  maximumRetailPrice?: MCPrice
   minEnergyEfficiencyClass?: string
+  minHandlingTime?: string
   mobileLink?: string
+  mobileLinkTemplate?: string
   mpn?: string
-  multipack?: number
+  multipack?: number | string
   pattern?: string
   pause?: string
+  pickupMethod?: string
+  pickupSla?: string
   price?: MCPrice
+  productDetails?: MCProductDetail[]
   productHeight?: MCShippingDimension
+  productHighlights?: string[]
   productLength?: MCShippingDimension
   productTypes?: MCArrayField
   productWeight?: MCShippingDimension
   productWidth?: MCShippingDimension
   promotionIds?: MCArrayField
+  returnPolicyLabel?: string
   salePrice?: MCPrice
-  salePriceEffectiveDate?: { endDate?: string; startDate?: string }
+  salePriceEffectiveDate?: MCInterval
+  sellOnGoogleQuantity?: string
   shipping?: MCShipping[]
   shippingHeight?: MCShippingDimension
+  shippingLabel?: string
   shippingLength?: MCShippingDimension
   shippingWeight?: MCShippingDimension
   shippingWidth?: MCShippingDimension
+  shoppingAdsExcludedCountries?: MCArrayField
+  shortTitle?: string
   size?: string
   sizeSystem?: string
+  /** @deprecated Merchant API v1 uses the repeated `sizeTypes` field. */
   sizeType?: string
-  taxes?: MCTax[]
+  sizeTypes?: string[]
+  structuredDescription?: MCStructuredContent
+  structuredTitle?: MCStructuredContent
   title?: string
+  transitTimeLabel?: string
   videoLinks?: MCUrlArrayField
+  virtualModelLink?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -305,220 +239,14 @@ export type MCProductInput = {
   contentLanguage: string
   customAttributes?: MCCustomAttribute[]
   feedLabel: string
+  /**
+   * Merchant API v1 replacement for the Content API `LOCAL` channel: true marks
+   * an offer sold only in physical stores.
+   */
+  legacyLocal?: boolean
   offerId: string
   productAttributes?: MCProductAttributes
 }
-
-// ---------------------------------------------------------------------------
-// Merchant Center sync metadata (stored on product documents)
-// ---------------------------------------------------------------------------
-
-export type MCSyncMeta = {
-  dirty?: boolean
-  lastAction?: SyncAction
-  lastError?: null | string
-  lastSyncedAt?: string
-  state: SyncState
-  syncSource?: SyncSource
-}
-
-// ---------------------------------------------------------------------------
-// Merchant Center product state (the full group stored on products)
-// ---------------------------------------------------------------------------
-
-export type MCProductState = {
-  attrs?: MCProductAttributes
-  customAttributes?: MCCustomAttribute[]
-  enabled?: boolean
-  identity?: Partial<MCProductIdentity>
-  snapshot?: Record<string, unknown>
-  syncMeta?: MCSyncMeta
-}
-
-// ---------------------------------------------------------------------------
-// Payload product document with MC fields injected by the plugin.
-// Used internally to avoid casting through Record<string, unknown> when
-// accessing the merchant center group on Payload documents.
-// ---------------------------------------------------------------------------
-
-export type PayloadProductDoc = {
-  id: number | string
-  mc?: MCProductState
-} & Record<string, unknown>
-
-// ---------------------------------------------------------------------------
-// Field mapping
-// ---------------------------------------------------------------------------
-
-export type FieldMapping = {
-  order?: number
-  source: string
-  syncMode: FieldSyncMode
-  target: string
-  transformPreset?: TransformPreset
-}
-
-// ---------------------------------------------------------------------------
-// Sync results
-// ---------------------------------------------------------------------------
-
-export type SyncResult = {
-  action: 'delete' | 'insert' | 'update'
-  productId: string
-  skipped?: boolean
-  snapshot?: Record<string, unknown>
-  success: boolean
-  warning?: string
-}
-
-export type PullResult = {
-  action: 'pull'
-  populatedFields: string[]
-  productId: string
-  skipped?: boolean
-  success: boolean
-  warning?: string
-}
-
-export type BatchSyncReport = {
-  completedAt?: string
-  errors: Array<{ message: string; offerId?: string; productId: string }>
-  failed: number
-  jobId: string
-  processed: number
-  startedAt: string
-  status: JobStatus
-  succeeded: number
-  total: number
-}
-
-export type InitialSyncReport = {
-  dryRun: boolean
-  existingRemote: number
-  skipped: number
-} & BatchSyncReport
-
-export type PullAllReport = {
-  matched: number
-  orphaned: number
-} & BatchSyncReport
-
-// ---------------------------------------------------------------------------
-// Merchant Center analytics (from Reports API)
-// ---------------------------------------------------------------------------
-
-export type MCPerformanceRow = {
-  clicks: number
-  clickThroughRate: number
-  conversions: number
-  date: string
-  impressions: number
-}
-
-export type MCProductAnalytics = {
-  merchantProductId: string
-  performance: MCPerformanceRow[]
-  status?: Record<string, unknown>
-}
-
-// ---------------------------------------------------------------------------
-// Health
-// ---------------------------------------------------------------------------
-
-export type HealthResult = {
-  admin: { mode: AdminMode }
-  jobs?: {
-    queueName: string
-    runnerRequired: boolean
-    strategy: 'external' | 'payload-jobs'
-    workerBasePath: string
-    workerEndpointsEnabled: boolean
-  }
-  merchant: { accountId: string; dataSourceId: string }
-  rateLimit: { distributed?: boolean; enabled: boolean }
-  status: 'ok'
-  sync: { mode: SyncMode }
-  timestamp: string
-}
-
-export type DeepHealthResult = {
-  apiConnection: 'error' | 'ok'
-  apiError?: string
-} & HealthResult
-
-// ---------------------------------------------------------------------------
-// Plugin options (user-facing)
-// ---------------------------------------------------------------------------
-
-export type ProductsCollectionConfig = {
-  autoInjectTab?: boolean
-  /** Depth used when fetching product documents for push/sync operations. Higher values hydrate more relationship levels (uploads, brands, etc.). Default: 1 */
-  fetchDepth?: number
-  fieldMappings?: FieldMapping[]
-  identityField: string
-  slug: CollectionSlug
-  tabPosition?: 'append' | 'before-last' | number
-}
-
-export type CategoriesCollectionConfig = {
-  googleCategoryIdField?: string
-  nameField: string
-  parentField?: string
-  /** The field on the *product* document that holds the relationship to this categories collection */
-  productCategoryField?: string
-  /** Category field to use for MC `productTypes` (breadcrumb paths). Defaults to `nameField` if not set. */
-  productTypeField?: string
-  slug: CollectionSlug
-}
-
-export type ScheduleConfig = {
-  /** API key for authenticating external scheduler requests (required for 'external' strategy) */
-  apiKey?: string
-  /** Cron expression for scheduled sync (default: '0 4 * * *' = 4am daily) */
-  cron?: string
-  /** Which strategy to use for scheduled sync */
-  strategy?: 'external' | 'payload-jobs'
-}
-
-export type SyncConfig = {
-  conflictStrategy?: ConflictStrategy
-  initialSync?: {
-    batchSize?: number
-    dryRun?: boolean
-    enabled?: boolean
-    onlyIfRemoteMissing?: boolean
-  }
-  mode?: SyncMode
-  permanentSync?: boolean
-  /** Schedule config — only used when mode is 'scheduled' */
-  schedule?: ScheduleConfig
-  scheduleCron?: string
-}
-
-export type AdminConfig = {
-  mode?: AdminMode
-  navLabel?: string
-  route?: `/${string}`
-}
-
-export type APIConfig = {
-  basePath?: `/${string}`
-}
-
-// ---------------------------------------------------------------------------
-// Lifecycle hooks
-// ---------------------------------------------------------------------------
-
-export type BeforePushHookArgs = {
-  doc: Record<string, unknown>
-  operation: 'delete' | 'insert' | 'update'
-  payload: Payload
-  productInput: MCProductInput
-}
-
-export type BeforePushHook = (
-  args: BeforePushHookArgs,
-) => MCProductInput | Promise<MCProductInput>
 
 // ---------------------------------------------------------------------------
 
@@ -551,100 +279,3 @@ export type RateLimitConfig = {
   requestTimeoutMs?: number
   store?: DistributedRateLimitStore
 }
-
-export type PayloadGMCEcommercePluginOptions = {
-  access?: AccessFn
-  admin?: AdminConfig
-  api?: APIConfig
-  /** Called before each product is pushed to Merchant Center. Return a modified MCProductInput to customise what gets sent. */
-  beforePush?: BeforePushHook
-  collections: {
-    categories?: CategoriesCollectionConfig
-    products: ProductsCollectionConfig
-  }
-  dataSourceId: string
-  defaults?: {
-    condition?: string
-    contentLanguage?: string
-    currency?: string
-    feedLabel?: string
-  }
-  disabled?: boolean
-  getCredentials: GetCredentialsFn
-  /** Local inventory configuration for syncing in-store availability to Google. */
-  localInventory?: LocalInventoryConfig
-  merchantId: string
-  rateLimit?: RateLimitConfig
-  /** Base URL of your site (e.g. 'https://example.com'). Used by extractAbsoluteUrl transform to resolve relative media URLs. */
-  siteUrl?: string
-  sync?: SyncConfig
-}
-
-// ---------------------------------------------------------------------------
-// Normalized plugin options (internal, all defaults resolved)
-// ---------------------------------------------------------------------------
-
-export type NormalizedPluginOptions = {
-  access?: AccessFn
-  admin: {
-    mode: AdminMode
-    navLabel: string
-    route: `/${string}`
-  }
-  api: {
-    basePath: `/${string}`
-  }
-  beforePush?: BeforePushHook
-  collections: {
-    categories?: Required<CategoriesCollectionConfig>
-    products: Required<ProductsCollectionConfig>
-  }
-  dataSourceId: string
-  dataSourceName: string
-  defaults: {
-    condition: string
-    contentLanguage: string
-    currency: string
-    feedLabel: string
-  }
-  disabled: boolean
-  getCredentials: GetCredentialsFn
-  localInventory: NormalizedLocalInventoryConfig
-  merchantId: string
-  rateLimit: {
-    baseRetryDelayMs: number
-    enabled: boolean
-    jitterFactor: number
-    maxConcurrency: number
-    maxQueueSize: number
-    maxRequestsPerMinute: number
-    maxRetries: number
-    maxRetryDelayMs: number
-    requestTimeoutMs: number
-    store?: DistributedRateLimitStore
-  }
-  siteUrl: string
-  sync: {
-    conflictStrategy: ConflictStrategy
-    initialSync: {
-      batchSize: number
-      dryRun: boolean
-      enabled: boolean
-      onlyIfRemoteMissing: boolean
-    }
-    mode: SyncMode
-    permanentSync: boolean
-    schedule: {
-      apiKey: string
-      cron: string
-      strategy: 'external' | 'payload-jobs'
-    }
-    scheduleCron: string
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Plugin type alias
-// ---------------------------------------------------------------------------
-
-export type Plugin = Exclude<Config['plugins'], undefined>[number]

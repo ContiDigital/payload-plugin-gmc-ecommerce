@@ -17,25 +17,26 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
-          version: 10
+          version: 10.16.1
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           cache: pnpm
-          node-version: 20
+          node-version: 24
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Ensure tag matches package version
+        id: release-version
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           PKG_VERSION="$(node -e "const fs = require('node:fs'); process.stdout.write(JSON.parse(fs.readFileSync('package.json', 'utf8')).version)")"
@@ -45,19 +46,91 @@ jobs:
             exit 1
           fi
 
-      - name: Ensure tagged commit is on main
-        run: |
-          git fetch origin main --depth=1 || true
-          CONTAINING_BRANCHES="$(git branch -r --contains "${GITHUB_SHA}" | sed 's/^[* ]*//')"
+          if [[ "${PKG_VERSION}" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
 
-          if ! echo "${CONTAINING_BRANCHES}" | grep -Eq '^origin/main$'; then
-            echo "Tagged commit ${GITHUB_SHA} is not contained in origin/main."
+      - name: Ensure tagged commit is on an allowed release branch
+        env:
+          GMC_PRERELEASE: ${{ steps.release-version.outputs.prerelease }}
+        run: |
+          git fetch origin '+refs/heads/main:refs/remotes/origin/main' '+refs/heads/release/*:refs/remotes/origin/release/*'
+          CONTAINING_BRANCHES="$(git branch -r --contains "${GITHUB_SHA}" | sed 's/^[* ]*//')"
+          ALLOWED_BRANCHES='^origin/main$'
+          if [ "${GMC_PRERELEASE}" = 'true' ]; then
+            ALLOWED_BRANCHES='^origin/(main|release/.+)$'
+          fi
+
+          if ! echo "${CONTAINING_BRANCHES}" | grep -Eq "${ALLOWED_BRANCHES}"; then
+            echo "Tagged commit ${GITHUB_SHA} is not on an allowed branch (stable: main; prerelease: main or release/**)."
             echo "${CONTAINING_BRANCHES}"
             exit 1
           fi
 
       - name: Run Release Quality Gates
         run: pnpm release:check
+
+      - name: Run V2 Database Matrix
+        run: pnpm test:v2:db-matrix
+
+      - name: Audit production dependencies
+        run: pnpm audit --prod --audit-level low
+
+      - name: Require and run packaged Merchant transport lifecycle for stable releases
+        if: steps.release-version.outputs.prerelease != 'true'
+        env:
+          GOOGLE_MERCHANT_LIVE_TESTS_ENABLED: ${{ secrets.GOOGLE_MERCHANT_LIVE_TESTS_ENABLED }}
+          GOOGLE_MERCHANT_ID: ${{ secrets.GOOGLE_MERCHANT_ID }}
+          GOOGLE_MERCHANT_TEST_DATA_SOURCE_ID: ${{ secrets.GOOGLE_MERCHANT_TEST_DATA_SOURCE_ID }}
+          GOOGLE_MERCHANT_TEST_FEED_LABEL: ${{ secrets.GOOGLE_MERCHANT_TEST_FEED_LABEL }}
+          GOOGLE_SERVICE_ACCOUNT_EMAIL: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}
+          GOOGLE_SERVICE_ACCOUNT_KEY: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_KEY }}
+        run: |
+          if [ "${GOOGLE_MERCHANT_LIVE_TESTS_ENABLED}" != "true" ] || \
+             [ -z "${GOOGLE_MERCHANT_ID}" ] || \
+             [ -z "${GOOGLE_MERCHANT_TEST_DATA_SOURCE_ID}" ] || \
+             [ -z "${GOOGLE_SERVICE_ACCOUNT_EMAIL}" ] || \
+             [ -z "${GOOGLE_SERVICE_ACCOUNT_KEY}" ]; then
+            echo "Stable releases require the explicitly enabled packaged-transport lifecycle and all test-source credentials."
+            exit 1
+          fi
+          pnpm test:live
+
+      - name: Pack and smoke the exact release artifact
+        id: release-artifact
+        shell: bash
+        run: |
+          GMC_PACKAGE_VERSION="$(node -e "const fs = require('node:fs'); process.stdout.write(JSON.parse(fs.readFileSync('package.json', 'utf8')).version)")"
+          GMC_TARBALL_NAME="payload-plugin-gmc-ecommerce-${GMC_PACKAGE_VERSION}.tgz"
+          GMC_TARBALL_PATH="release-artifact/${GMC_TARBALL_NAME}"
+
+          mkdir -p release-artifact
+          pnpm pack --pack-destination release-artifact
+
+          if [ ! -f "${GMC_TARBALL_PATH}" ]; then
+            echo "Expected release tarball was not produced: ${GMC_TARBALL_PATH}"
+            exit 1
+          fi
+
+          PACK_SMOKE_TARBALL="${GITHUB_WORKSPACE}/${GMC_TARBALL_PATH}" pnpm pack:smoke
+          (
+            cd release-artifact
+            sha256sum "${GMC_TARBALL_NAME}" > "${GMC_TARBALL_NAME}.sha256"
+          )
+          echo "tarball-name=${GMC_TARBALL_NAME}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload the verified release artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-package-${{ github.sha }}
+          path: |
+            release-artifact/${{ steps.release-artifact.outputs.tarball-name }}
+            release-artifact/${{ steps.release-artifact.outputs.tarball-name }}.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
 
   publish:
     name: Publish to npm
@@ -69,25 +142,53 @@ jobs:
       id-token: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          cache: pnpm
-          node-version: 20
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Download the verified release artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-package-${{ github.sha }}
+          path: release-artifact
 
-      - name: Build
-        run: pnpm build
+      - name: Verify release bytes and determine npm dist-tag
+        id: release-meta
+        shell: bash
+        run: |
+          GMC_TAG_VERSION="${GITHUB_REF_NAME#v}"
+          GMC_TARBALL="release-artifact/payload-plugin-gmc-ecommerce-${GMC_TAG_VERSION}.tgz"
+          GMC_MANIFEST="${GMC_TARBALL}.sha256"
+
+          if [ ! -f "${GMC_TARBALL}" ] || [ ! -f "${GMC_MANIFEST}" ]; then
+            echo "Verified release artifact or SHA-256 manifest is missing."
+            exit 1
+          fi
+
+          (
+            cd release-artifact
+            sha256sum -c "$(basename "${GMC_MANIFEST}")"
+          )
+
+          GMC_TARBALL_VERSION="$(tar -xOf "${GMC_TARBALL}" package/package.json | node -e "let input = ''; process.stdin.on('data', (chunk) => { input += chunk }).on('end', () => process.stdout.write(JSON.parse(input).version))")"
+          if [ "${GMC_TARBALL_VERSION}" != "${GMC_TAG_VERSION}" ]; then
+            echo "Tarball version (${GMC_TARBALL_VERSION}) does not match tag (${GMC_TAG_VERSION})."
+            exit 1
+          fi
+
+          if [[ "${GMC_TAG_VERSION}" == *-* ]]; then
+            echo "dist-tag=next" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "dist-tag=latest" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "manifest=${GMC_MANIFEST}" >> "$GITHUB_OUTPUT"
+          echo "tarball=${GMC_TARBALL}" >> "$GITHUB_OUTPUT"
 
       - name: Ensure npm token exists
         env:
@@ -101,9 +202,18 @@ jobs:
       - name: Publish package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --provenance --access public
+        run: >-
+          npm publish "./${{ steps.release-meta.outputs.tarball }}"
+          --provenance
+          --access public
+          --tag "${{ steps.release-meta.outputs.dist-tag }}"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           generate_release_notes: true
+          prerelease: ${{ steps.release-meta.outputs.prerelease == 'true' }}
+          fail_on_unmatched_files: true
+          files: |
+            ${{ steps.release-meta.outputs.tarball }}
+            ${{ steps.release-meta.outputs.manifest }}

@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from 'vitest'
 
 import { errorResponse, parseRequestBody } from '../http.js'
-import { ValidationError } from '../validation.js'
+import { ValidationError } from '../httpError.js'
 
 describe('parseRequestBody', () => {
   test('returns req.data when Payload already parsed a body object', async () => {
@@ -45,7 +45,10 @@ describe('errorResponse', () => {
 
     expect(response.status).toBe(500)
     await expect(response.json()).resolves.toEqual({ error: 'Internal server error' })
-    expect(req.payload.logger.error).toHaveBeenCalledWith('[GMC Plugin] boom', expect.any(Error))
+    expect(req.payload.logger.error).toHaveBeenCalledWith(
+      { err: expect.any(Error) },
+      '[GMC Plugin] boom',
+    )
   })
 
   test('returns validation messages for client errors', async () => {
@@ -56,4 +59,18 @@ describe('errorResponse', () => {
     expect(response.status).toBe(400)
     await expect(response.json()).resolves.toEqual({ error: 'bad input' })
   })
+
+  test.each([200, 399, 600, Number.NaN, 418.5, '400'])(
+    'fails closed for an untrusted statusCode value %p',
+    async (statusCode) => {
+      const logger = { error: vi.fn() }
+      const error = Object.assign(new Error('must stay private'), { statusCode })
+
+      const response = errorResponse({ payload: { logger } } as never, error)
+
+      expect(response.status).toBe(500)
+      await expect(response.json()).resolves.toEqual({ error: 'Internal server error' })
+      expect(logger.error).toHaveBeenCalled()
+    },
+  )
 })

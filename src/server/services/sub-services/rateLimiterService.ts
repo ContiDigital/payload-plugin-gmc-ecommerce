@@ -15,12 +15,31 @@ type QueueItem<T> = {
   task: () => Promise<T>
 }
 
+const DISTRIBUTED_RESET_MAX_WAIT_MS = 65_000
+const DISTRIBUTED_DENIAL_MIN_WAIT_MS = 100
+
 export class RateLimitQueueOverflowError extends Error {
-  public readonly statusCode = 429
+  public readonly code = 'GMC_RATE_LIMIT_QUEUE_OVERFLOW'
 
   constructor(queueSize: number) {
     super(`Rate limit queue overflow: ${queueSize} items in queue, refusing new work`)
     this.name = 'RateLimitQueueOverflowError'
+  }
+}
+
+/**
+ * The distributed rate-limit store's reservation was malformed, implausible,
+ * or unreachable. This is an infrastructure failure of the safety boundary
+ * itself, not a validation/configuration defect — a durable worker must retry
+ * it rather than treat it as terminal.
+ */
+export class RateLimitStoreError extends Error {
+  public readonly code = 'GMC_RATE_LIMIT_STORE'
+  public readonly retryable = true
+
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = 'RateLimitStoreError'
   }
 }
 
@@ -80,7 +99,9 @@ export const createRateLimiterService = (config: RateLimiterConfig) => {
       })
   }
 
-  const reserveDistributedSlot = async (now: number): Promise<{ allowed: boolean; waitTimeMs?: number }> => {
+  const reserveDistributedSlot = async (
+    now: number,
+  ): Promise<{ allowed: boolean; waitTimeMs?: number }> => {
     if (!config.store || !config.enabled || config.maxRequestsPerMinute < 1) {
       return { allowed: true }
     }
@@ -88,17 +109,41 @@ export const createRateLimiterService = (config: RateLimiterConfig) => {
     // Prune stale local timestamps to prevent unbounded growth
     pruneStartedAt(now)
 
-    const reservation = await config.store.claimSlot({
-      key: config.scopeKey ?? 'global',
-      limit: config.maxRequestsPerMinute,
-      scope: 'outbound',
-      windowMs: 60_000,
-    })
+    let reservation: Awaited<ReturnType<DistributedRateLimitStore['claimSlot']>>
+    try {
+      reservation = await config.store.claimSlot({
+        key: config.scopeKey ?? 'global',
+        limit: config.maxRequestsPerMinute,
+        scope: 'outbound',
+        windowMs: 60_000,
+      })
+    } catch (error) {
+      throw new RateLimitStoreError('Distributed rate-limit store is unavailable', {
+        cause: error,
+      })
+    }
+    if (
+      !reservation ||
+      typeof reservation.allowed !== 'boolean' ||
+      !Number.isSafeInteger(reservation.count) ||
+      reservation.count < 0 ||
+      !Number.isSafeInteger(reservation.resetAt)
+    ) {
+      throw new RateLimitStoreError('Distributed rate-limit store returned an invalid reservation')
+    }
 
     if (!reservation.allowed) {
+      // This limiter's window is exactly one minute, so a valid fixed/rolling
+      // store cannot require a multi-window sleep. Allow five seconds of clock
+      // skew, then fail closed instead of extending a durable handler by an
+      // unbounded provider-controlled timeout. A small negative skew is
+      // tolerated below by retrying at a bounded cadence.
+      if (reservation.resetAt - now > DISTRIBUTED_RESET_MAX_WAIT_MS) {
+        throw new RateLimitStoreError('Distributed rate-limit store returned an implausible reset time')
+      }
       return {
         allowed: false,
-        waitTimeMs: Math.max(1, reservation.resetAt - now),
+        waitTimeMs: Math.max(DISTRIBUTED_DENIAL_MIN_WAIT_MS, reservation.resetAt - now),
       }
     }
 
@@ -116,7 +161,9 @@ export const createRateLimiterService = (config: RateLimiterConfig) => {
     return { allowed: true }
   }
 
-  const reserveStartSlot = async (now: number): Promise<{ allowed: boolean; waitTimeMs?: number }> => {
+  const reserveStartSlot = async (
+    now: number,
+  ): Promise<{ allowed: boolean; waitTimeMs?: number }> => {
     if (!config.enabled) {
       return { allowed: true }
     }
@@ -148,7 +195,17 @@ export const createRateLimiterService = (config: RateLimiterConfig) => {
       }
 
       while (activeCount < config.maxConcurrency && queue.length > 0) {
-        const reservation = await reserveStartSlot(Date.now())
+        let reservation: Awaited<ReturnType<typeof reserveStartSlot>>
+        try {
+          reservation = await reserveStartSlot(Date.now())
+        } catch (error) {
+          // The distributed limiter is part of the safety boundary. Reject the
+          // waiting operation so its durable worker can retry; never leave the
+          // promise queued or spin an unhandled processNext rejection.
+          const item = queue.shift()
+          item?.reject(error)
+          continue
+        }
         if (!reservation.allowed) {
           scheduleNextAttempt(reservation.waitTimeMs ?? 1)
           return
