@@ -21,8 +21,8 @@ This promotion changes the version and documentation, not the runtime contract.
 - **The package root exports 2.0.** The 1.x engine, admin dashboard, `./client`
   and `./rsc` entry points, field-mapping and sync-log collections, pull sync,
   conflict resolution, dirty tracking, and the `mc` product field group are
-  gone. 1.x continues on the `release/1.x` branch (1.3.0 is the last 1.x line);
-  keep a 1.x install pinned until you have migrated. See
+  gone. The published 1.x version is 1.2.1; keep an existing installation
+  pinned until you have migrated. See
   [docs/v2-migration.md](docs/v2-migration.md).
 - **New options.** `payloadGmcEcommerce({ merchantId, dataSourceId,
   getCredentials, async, products: { collection, project, resolveIdentities } })`
