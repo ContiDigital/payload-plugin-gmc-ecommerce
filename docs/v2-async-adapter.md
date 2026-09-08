@@ -171,7 +171,8 @@ What it does:
   Either way the job is acknowledged, so a poison message does not loop.
 - `health` counts `queued`, `running`, rows queued for over 15 minutes with no
   future not-before time (`queue_backlog_stale`), and rows dead-lettered in the
-  last 24 hours (`dead_letters_present`). Either reason reports `degraded`.
+  last 24 hours (`dead_letters_present`). It also reports rows running for over
+  30 minutes (`running_rows_stale`). Any of these reasons reports `degraded`.
 
 What it does not do:
 
@@ -199,9 +200,10 @@ unreadable jobs collection is not treated as abandonment, so a transient
 database error cannot cause a double publish.
 
 The remediation for a stranded row is therefore to dispatch the same command
-again with the same idempotency key: re-save the product, or POST the publish
-endpoint with the same `Idempotency-Key`. The new job lands on the original
-row, so the operation id and its lineage do not change.
+again with the original idempotency key and command body, or repeat the publish
+endpoint request with its original `Idempotency-Key`. The new job lands on the
+original row, so the operation id and its lineage do not change. A product save
+can create a different operation; it does not reliably repair the stranded row.
 
 ### Running the queue
 

@@ -1,5 +1,10 @@
 # GMC Plugin 2.0 Defensible Release Implementation Plan
 
+> **Historical implementation plan.** The implementation was merged in PR #3.
+> Unchecked boxes and rc.35 instructions below are historical, not outstanding
+> rollout work. Current contracts are in `docs/v2-*.md`; the deployed host mapping
+> is in `docs/internal/fines-ecs.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Turn the uncommitted 2.0.0-rc.35 tree into a 2.0.0 that keeps the projector + durable-command engine, removes the unverifiable host contract, ships a built-in Payload Jobs adapter, and fixes the eleven defects found in review.

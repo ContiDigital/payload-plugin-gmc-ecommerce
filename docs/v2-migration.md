@@ -13,8 +13,8 @@ kept field mappings and sync logs in Payload, pushed and pulled, and resolved
 conflicts. 2.0 is a one-way publisher with a projector you write. There is no
 in-place upgrade, and no code path that reads 1.x state.
 
-1.x continues on the `release/1.x` branch, with 1.3.0 as its last release. Keep
-your existing install pinned to it until you have finished this migration.
+The published 1.x version is 1.2.1. Keep your existing install pinned until you
+have finished this migration; 1.3.0 was not published.
 
 ### What is gone
 
@@ -114,8 +114,10 @@ Three things that catch people out:
 
 ## From a 2.0 release candidate
 
-Queued commands, publication rows, and feed artifacts written by an rc all
-survive the upgrade. The schema does not.
+The changes below apply to older candidates such as rc.35. rc.37 already uses
+the stable 2.0 contract: upgrading rc.37 to 2.0.0 requires no additional plugin
+schema migration. Hosts coming from older candidates must review the schema,
+queued commands, publication rows, and feed artifacts as described below.
 
 ### State collection
 

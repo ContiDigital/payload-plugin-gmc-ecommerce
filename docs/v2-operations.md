@@ -126,11 +126,10 @@ idempotency key — POST `/gmc/v2/products/publish` with the same
 adapter then sees that the referenced job no longer exists, or is retained in a
 terminal error state, and publishes a fresh one against the existing row.
 
-Re-saving the product does *not* re-drive the stranded row: the automatic hook
-derives its key from a hash of the document's canonical content, so a save
-produces a **new** operation. That still converges the offer — the new command
-publishes the same desired state — but the old row stays where it is and keeps
-showing in `staleQueued` until you clear it.
+Re-saving a product can generate a different hook idempotency key and a new
+operation. That can converge the offer, but it does not reliably re-drive the
+original stranded row; that row can keep reporting `staleQueued`. Reuse the
+original key and command when repairing a specific queued operation.
 
 ### A row is stuck `running` and its job is gone
 
@@ -139,20 +138,18 @@ health reports `running_rows_stale` with a non-zero `staleRunning` — a row
 whose `startedAt` (or, if it was claimed before recording one, its `updatedAt`)
 is more than 30 minutes old.
 
-Cause: the command succeeded at Google, and then every attempt to write the
-terminal state back to the ledger failed. The adapter writes the row *after*
-the Merchant call returns, so this window is exactly the one where the ledger
-is unwritable — a database outage, a connection pool exhausted for longer than
-the job's retry budget, or a transaction that could never commit. Google has
-the change; only the row is wrong.
+A process can stop before, during, or after a Merchant request, or fail to write
+its terminal ledger state. `running` alone does not prove that Google accepted
+the change. Inspect the job, publication state, and current Google product
+before deciding what happened.
 
-Remediation: nothing needs to be re-applied at Google. Either update the row's
-`state` to `succeeded` by hand, or re-dispatch the same command with a **new**
-`Idempotency-Key` — the executor's desired-state digest makes the repeat a
-no-op against Google and writes a correct terminal row. A later
-`catalog.reconcile` converges the publication state either way, so leaving the
-row alone is safe as long as the alert is understood; it is the alert, not the
-offer, that is stale.
+The built-in adapter reports stale running rows but does not automatically
+re-drive them. After resolving the cause, dispatch the command with a **new**
+`Idempotency-Key` and use `catalog.reconcile` when remote state is uncertain.
+Reconciliation reasserts canonical content even when local digests match.
+Verify the resulting workflow and remote state before repairing the old ledger
+record through an operator-controlled database procedure. A new successful
+operation does not clear the old row or its health alert.
 
 ### Dead letters
 
